@@ -17,6 +17,13 @@ import { FileKV } from "./kv.js"
 import { probeDomain, checkSniBlock } from "./probe.js"
 import { resolveAndMeasure, measureTiming, measureTcpOnly } from "./timing.js"
 import { taskManager, monitor, type TaskItemResult } from "./tasks.js"
+import {
+  filterBlocked,
+  markBlocked,
+  listBlocked,
+  unmarkBlocked,
+  clearBlocked,
+} from "./blocked.js"
 // src/index.ts 的默认导出是 { fetch, scheduled } 对象（Workers 入口约定），
 // 不是 Hono 实例，因此不能 route() 挂载，只能直接调用它的 fetch。
 import worker from "../src/index.js"
@@ -92,10 +99,25 @@ const root = new Hono()
 
 root.post("/local/refresh", async (c) => {
   const groupParam = c.req.query("group")
-  const domains = resolveGroupDomains(groupParam)
   const CONCURRENCY = Number(c.req.query("concurrency") || 16)
   // wait=true 时同步等待结果（便于脚本调用），否则立刻返回 taskId 供轮询
   const wait = c.req.query("wait") === "true"
+  // includeBlocked=true 时连已被判定为 SNI 阻断的域名一起重测，用于复核
+  const includeBlocked = c.req.query("includeBlocked") === "true"
+
+  const requested = resolveGroupDomains(groupParam)
+
+  // 默认跳过已知 SNI 阻断的域名：这些域名改 hosts 无效，
+  // 每轮重测只会白等 TLS 超时。需要复核时传 includeBlocked=true。
+  const { allowed: domains, skipped } = includeBlocked
+    ? { allowed: requested, skipped: [] as string[] }
+    : await filterBlocked(requested)
+
+  if (skipped.length > 0) {
+    console.log(
+      `[local/refresh] 跳过 ${skipped.length} 个已知 SNI 阻断域名: ${skipped.join(", ")}`
+    )
+  }
 
   const task = taskManager.create("refresh", domains.length)
 
@@ -117,6 +139,17 @@ root.post("/local/refresh", async (c) => {
           try {
             // 批量也做 SNI 检测：前端点开某个域名时要能看到与单次检测一致的完整信息
             const r = await probeDomain(domain, { checkSni: true })
+
+            // 判定为 SNI 阻断的域名记入排除清单，后续刷新默认跳过。
+            // 判定依据是 checkSniBlock 的双 SNI 对照，可靠性较高：
+            // 真实域名握手失败、换无关 SNI 却成功，说明阻断由域名匹配触发。
+            if (r.sni?.verdict === "sni-blocked") {
+              await markBlocked(domain, {
+                reason: r.sni.explanation,
+                withSniError: r.sni.withSni.error,
+                withoutSniMs: r.sni.withoutSni.ms,
+              })
+            }
 
             // 失败原因：优先取 SNI 结论，否则汇总 TLS 失败原因
             let error: string | undefined
@@ -216,9 +249,14 @@ root.post("/local/refresh", async (c) => {
     const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1)
     console.log(`[local/refresh] done in ${elapsed}s, ${withLatency}/${results.length} with latency`)
 
+    const blockedNow = results.filter(
+      (r) => r.detail?.sni?.verdict === "sni-blocked"
+    ).length
     taskManager.complete(
       task.taskId,
-      `${withLatency}/${results.length} 有延迟，耗时 ${elapsed}s`
+      `${withLatency}/${results.length} 有延迟，耗时 ${elapsed}s` +
+        (skipped.length ? `，跳过 ${skipped.length} 个 SNI 阻断` : "") +
+        (blockedNow ? `，新发现 ${blockedNow} 个 SNI 阻断` : "")
     )
 
     return {
@@ -227,6 +265,8 @@ root.post("/local/refresh", async (c) => {
       probed: results.length,
       stored: results.filter((r) => r.bestIp).length,
       withLatency,
+      skippedBlocked: skipped,
+      newBlocked: blockedNow,
     }
   }
 
@@ -246,7 +286,50 @@ root.post("/local/refresh", async (c) => {
     accepted: true,
     taskId: task.taskId,
     total: domains.length,
+    skippedBlocked: skipped,
     poll: `/local/tasks/${task.taskId}`,
+  })
+})
+
+/* ---------- SNI 阻断域名排除清单 ---------- */
+
+root.get("/local/blocked", async (c) => {
+  const entries = await listBlocked()
+  return c.json({ count: entries.length, entries })
+})
+
+// 解除单个域名的排除，下次刷新会重新检测
+root.delete("/local/blocked/:domain", async (c) => {
+  const domain = decodeURIComponent(c.req.param("domain"))
+  const removed = await unmarkBlocked(domain)
+  return c.json({ ok: removed, domain })
+})
+
+root.post("/local/blocked/clear", async (c) => {
+  const n = await clearBlocked()
+  return c.json({ ok: true, cleared: n })
+})
+
+/** 对一个已知阻断的域名重新检测，确认是否恢复 */
+root.post("/local/blocked/recheck", async (c) => {
+  const entries = await listBlocked()
+  const results = []
+  for (const e of entries) {
+    const r = await probeDomain(e.domain, { checkSni: true })
+    const recovered = r.bestIp !== null
+    if (recovered) {
+      await unmarkBlocked(e.domain)
+    }
+    results.push({
+      domain: e.domain,
+      recovered,
+      verdict: r.sni?.verdict ?? null,
+    })
+  }
+  return c.json({
+    checked: results.length,
+    recovered: results.filter((x) => x.recovered).length,
+    results,
   })
 })
 
@@ -379,10 +462,14 @@ root.get("/local/compare", async (c) => {
 })
 
 /** 长时间监控：启动后按间隔反复采样，结果进入时序，可查趋势 */
-root.post("/local/monitor/start", (c) => {
+root.post("/local/monitor/start", async (c) => {
   const intervalSec = Number(c.req.query("interval") || 300)
   const groupParam = c.req.query("group")
-  const domains = resolveGroupDomains(groupParam)
+  const requested = resolveGroupDomains(groupParam)
+
+  // 监控同样跳过 SNI 阻断的域名：它们每轮都会失败，
+  // 反复采样只会污染趋势图，也会拖慢整轮。
+  const { allowed: domains, skipped } = await filterBlocked(requested)
 
   monitor.configure({
     domainSource: () => domains,
@@ -406,6 +493,7 @@ root.post("/local/monitor/start", (c) => {
     started,
     alreadyRunning: !started,
     domains: domains.length,
+    skippedBlocked: skipped,
     intervalMs: Math.max(intervalSec, 30) * 1000,
   })
 })

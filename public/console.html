@@ -179,7 +179,7 @@
   <div class="tab-content" id="hosts-tab">
     <div class="card">
       <h2>Hosts 文件 <span class="badge gray" id="hostsMeta">加载中</span></h2>
-      <p class="hint">本地版会直接读取当前 KV 数据生成，无需经过 Cloudflare。全部站点共 137 个域名。</p>
+      <p class="hint">本地版直接读取当前 KV 数据生成，无需经过 Cloudflare。可在下方按分组筛选。</p>
       <div class="row">
         <select id="hostsGroup">
           <option value="">全部站点</option>
@@ -214,14 +214,15 @@
   <div class="tab-content" id="refresh-tab">
     <div class="card">
       <h2>批量刷新与进度</h2>
-      <p class="hint">本地没有 subrequest 限制，可一次刷新全部 137 个域名，实时显示进度。</p>
+      <p class="hint">本地没有 subrequest 限制，可一次刷新全部域名。已被判定 SNI 阻断的域名默认跳过。</p>
       <div class="row">
-        <select id="refreshGroup"><option value="">全部站点（137 个）</option></select>
+        <select id="refreshGroup"><option value="">全部站点</option></select>
         <select id="refreshConcurrency">
           <option value="8">并发 8</option>
           <option value="16" selected>并发 16</option>
           <option value="24">并发 24</option>
         </select>
+        <label class="row" style="gap:6px"><input type="checkbox" id="refreshIncludeBlocked"> 包含已阻断域名</label>
         <button class="primary" id="btnRefresh">开始刷新</button>
         <span id="refreshStatus" class="sub"></span>
       </div>
@@ -234,6 +235,19 @@
       <h2>全部结果</h2>
       <p class="hint">失败项自动置顶，点击任意行展开完整详情（候选 IP、各 DNS 服务商返回、SNI 判定）。</p>
       <div id="refreshRecent"><p class="empty">尚未开始</p></div>
+    </div>
+    <div class="card">
+      <h2>已排除的 SNI 阻断域名 <span class="badge gray" id="blockedCount">0</span></h2>
+      <p class="hint">
+        这些域名的阻断发生在 TLS 握手的 SNI 阶段，由中间设备按域名匹配切断，<strong>改 hosts 完全无效，必须走代理</strong>。
+        默认刷新不再检测它们以节省时间。若怀疑已恢复，可先「重新检测」。
+      </p>
+      <div class="row" style="margin-bottom:10px">
+        <button id="btnBlockedRecheck">重新检测全部</button>
+        <button id="btnBlockedClear" class="danger">清空排除清单</button>
+        <span id="blockedStatus" class="sub"></span>
+      </div>
+      <div id="blockedList"><p class="empty">暂无</p></div>
     </div>
   </div>
 
@@ -710,6 +724,7 @@ function renderRecent(recent) {
 async function doRefresh() {
   const group = el('refreshGroup').value
   const concurrency = el('refreshConcurrency').value
+  const includeBlocked = el('refreshIncludeBlocked').checked
   const btn = el('btnRefresh')
   btn.disabled = true
   el('refreshProg').classList.add('on')
@@ -721,7 +736,13 @@ async function doRefresh() {
     const params = new URLSearchParams()
     if (group) params.set('group', group)
     params.set('concurrency', concurrency)
+    if (includeBlocked) params.set('includeBlocked', 'true')
     const start = await (await fetch(`${API}/local/refresh?${params}`, { method: 'POST' })).json()
+
+    const skippedCount = (start.skippedBlocked || []).length
+    if (skippedCount > 0) {
+      el('refreshStatus').textContent = `已跳过 ${skippedCount} 个 SNI 阻断域名`
+    }
 
     if (refreshTimer) clearInterval(refreshTimer)
     refreshTimer = setInterval(async () => {
@@ -738,6 +759,8 @@ async function doRefresh() {
           el('refreshFill').style.width = '100%'
           el('refreshStatus').textContent = t.state === 'done' ? `完成：${t.message || ''}` : `失败：${t.error || ''}`
           toast(t.state === 'done' ? '刷新完成' : '刷新失败')
+          // 刷新过程中可能新判定出 SNI 阻断，完成后同步清单
+          loadBlocked()
         }
       } catch (e) {
         clearInterval(refreshTimer); refreshTimer = null
@@ -917,11 +940,74 @@ async function removeDomain(domain) {
   } catch (e) { toast('删除失败') }
 }
 
+/* ---------- 六、SNI 阻断排除清单 ---------- */
+async function loadBlocked() {
+  try {
+    const d = await (await fetch(`${API}/local/blocked?_t=${Date.now()}`, { cache: 'no-store' })).json()
+    const entries = d.entries || []
+    el('blockedCount').textContent = entries.length
+
+    if (!entries.length) {
+      el('blockedList').innerHTML = '<p class="empty">暂无，所有域名正常检测</p>'
+      return
+    }
+
+    el('blockedList').innerHTML = `<table>
+      <thead><tr><th>域名</th><th>判定时间</th><th>命中次数</th><th>真实 SNI 失败</th><th>对照 SNI</th><th></th></tr></thead>
+      <tbody>${entries.map((e) => `<tr>
+        <td><code>${e.domain}</code></td>
+        <td class="sub">${new Date(e.blockedAt).toLocaleString('zh-CN')}</td>
+        <td class="num">${e.hitCount} 次</td>
+        <td class="bad">${e.withSniError || '—'}</td>
+        <td class="good">${e.withoutSniMs != null ? '成功 ' + e.withoutSniMs + 'ms' : '—'}</td>
+        <td><button class="sm" data-unblock="${e.domain}">恢复检测</button></td>
+      </tr>`).join('')}</tbody>
+    </table>
+    <p class="sub" style="margin-top:10px">
+      「对照 SNI」能用无关域名握手成功，而真实域名失败，说明阻断是按域名匹配触发的。
+    </p>`
+
+    el('blockedList').querySelectorAll('button[data-unblock]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        await fetch(`${API}/local/blocked/${encodeURIComponent(b.dataset.unblock)}`, { method: 'DELETE' })
+        toast(`已恢复检测 ${b.dataset.unblock}`)
+        loadBlocked()
+      })
+    })
+  } catch (e) {
+    el('blockedList').innerHTML = `<p class="empty">加载失败：${e.message}</p>`
+  }
+}
+
+async function recheckBlocked() {
+  const btn = el('btnBlockedRecheck')
+  const status = el('blockedStatus')
+  btn.disabled = true
+  status.textContent = '正在重新检测，可能较慢...'
+  try {
+    const d = await (await fetch(`${API}/local/blocked/recheck`, { method: 'POST' })).json()
+    status.textContent = `检测 ${d.checked} 个，恢复 ${d.recovered} 个`
+    toast(d.recovered > 0 ? `${d.recovered} 个域名已恢复` : '全部仍被阻断')
+    loadBlocked()
+  } catch (e) {
+    status.textContent = '检测失败：' + e.message
+  } finally {
+    btn.disabled = false
+  }
+}
+
 /* ---------- 绑定 ---------- */
 el('btnTiming').addEventListener('click', doTiming)
 el('btnRefresh').addEventListener('click', doRefresh)
 el('btnMonitorStart').addEventListener('click', startMonitor)
 el('btnMonitorStop').addEventListener('click', stopMonitor)
+el('btnBlockedRecheck').addEventListener('click', recheckBlocked)
+el('btnBlockedClear').addEventListener('click', async () => {
+  if (!confirm('清空排除清单后，下次刷新会重新检测这些域名。确定？')) return
+  const d = await (await fetch(`${API}/local/blocked/clear`, { method: 'POST' })).json()
+  toast(`已清空 ${d.cleared} 条`)
+  loadBlocked()
+})
 el('btnSeriesClear').addEventListener('click', async () => {
   await fetch(`${API}/local/series/clear`, { method: 'POST' })
   chartData = {}
@@ -937,6 +1023,7 @@ window.addEventListener('resize', () => drawChart())
 loadGroups()
 loadHosts()
 loadDomains()
+loadBlocked()
 fetch(`${API}/local/monitor/status`).then((r) => r.json()).then((s) => {
   if (s.running) {
     el('btnMonitorStart').disabled = true
