@@ -11,6 +11,7 @@ import {
   type HostEntry,
 } from "./services/hosts"
 import { SITE_GROUPS, resolveGroupDomains } from "./constants"
+import { getAdsEnabled, getAdsRules } from "./services/ads"
 import { Bindings } from "./types"
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -137,7 +138,16 @@ app.get("/hosts", async (c) => {
     }
     
     const updatedAt = await getDataUpdatedAt(c.env)
-    const hostsContent = formatHostsFile(allData, updatedAt)
+
+    // 广告规则：默认跟随全局开关；?ads=false 可只取优选区（不改全局配置）
+    const adsParam = c.req.query('ads')
+    let ads: { content: string; ruleCount: number; fetchedAt?: string } | null = null
+    if (adsParam !== 'false' && (adsParam === 'true' || (await getAdsEnabled(c.env)))) {
+      const meta = await getAdsRules(c.env)
+      if (meta) ads = meta
+    }
+
+    const hostsContent = formatHostsFile(allData, updatedAt, ads)
     console.log(`生成的hosts文件长度: ${hostsContent.length} 字符`)
     
     // 添加缓存控制头

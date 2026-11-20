@@ -26,6 +26,7 @@ import { resolveAndMeasure } from "./timing.js"
 import { taskManager, monitor, type TaskItemResult } from "./tasks.js"
 import { cacheStats, clearCache } from "./ipcache.js"
 import { checkNetworkChange } from "./netcheck.js"
+import { refreshAdsRules, getAdsEnabled, setAdsEnabled, getAdsRules } from "../src/services/ads.js"
 import {
   filterBlocked,
   markBlocked,
@@ -80,6 +81,13 @@ root.post("/local/refresh", async (c) => {
     await clearCache()
     noCache = true
   }
+
+  // 广告规则：每轮批量刷新抓取一次，供 /hosts 拼接。
+  // 与域名探测并行执行，不占用主流程时间；失败时保留上一份规则。
+  const adsEnabled = await getAdsEnabled(env as any)
+  const adsPromise = adsEnabled
+    ? refreshAdsRules(env as any).catch((e) => ({ ok: false, error: String(e) }))
+    : Promise.resolve({ ok: true as const, skipped: true })
 
   const requested = resolveGroupDomains(groupParam)
 
@@ -234,6 +242,8 @@ root.post("/local/refresh", async (c) => {
     const blockedNow = results.filter(
       (r) => r.detail?.sni?.verdict === "sni-blocked"
     ).length
+    const adsResult = await adsPromise
+
     taskManager.complete(
       task.taskId,
       `${withLatency}/${results.length} 有延迟，耗时 ${elapsed}s` +
@@ -249,6 +259,7 @@ root.post("/local/refresh", async (c) => {
       withLatency,
       skippedBlocked: skipped,
       newBlocked: blockedNow,
+      ads: adsResult,
     }
   }
 
@@ -572,6 +583,49 @@ root.get("/local/doh", async (c) => {
 root.post("/local/doh/reset", (c) => {
   resetBreakers()
   return c.json({ ok: true })
+})
+
+/** 广告规则状态：开关、条目数、抓取时间 */
+root.get("/local/ads", async (c) => {
+  const enabled = await getAdsEnabled(env as any)
+  const meta = await getAdsRules(env as any)
+  return c.json({
+    enabled,
+    ruleCount: meta?.ruleCount ?? 0,
+    fetchedAt: meta?.fetchedAt ?? null,
+    version: meta?.version ?? null,
+    upstreamUpdatedAt: meta?.upstreamUpdatedAt ?? null,
+    source: "AWAvenue-Ads-Rule",
+  })
+})
+
+/** 切换开关；开启时若还没有规则则立即抓一次 */
+root.post("/local/ads", async (c) => {
+  let enabled: boolean | null = null
+  try {
+    const body = await c.req.json()
+    if (typeof body?.enabled === "boolean") enabled = body.enabled
+  } catch {
+    // 也接受 query 形式，便于 curl 调用
+  }
+  const q = c.req.query("enabled")
+  if (enabled === null && q != null) enabled = q !== "false"
+  if (enabled === null) return c.json({ error: "enabled 参数必填" }, 400)
+
+  const saved = await setAdsEnabled(env as any, enabled)
+  let fetched = null
+  if (enabled) {
+    const existing = await getAdsRules(env as any)
+    // 首次开启或规则缺失时补抓一次，避免用户还要手动刷一轮
+    if (!existing) fetched = await refreshAdsRules(env as any)
+  }
+  return c.json({ ok: saved, enabled, fetched })
+})
+
+/** 立即重新抓取规则（不影响开关） */
+root.post("/local/ads/refresh", async (c) => {
+  const r = await refreshAdsRules(env as any)
+  return c.json(r)
 })
 
 /** IP 延迟缓存状态：命中情况与条目数 */

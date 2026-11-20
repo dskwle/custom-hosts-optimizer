@@ -353,7 +353,8 @@ export async function updateHostsData(
 // 因此调用方应尽量传入。
 export function formatHostsFile(
   entries: HostEntry[],
-  updatedAt?: string | number | null
+  updatedAt?: string | number | null,
+  ads?: { content: string; ruleCount: number; fetchedAt?: string } | null
 ): string {
   // 对齐宽度按实际最长地址动态计算。
   // 固定 padEnd(30) 在 IPv4 下够用（最长 15 字符），
@@ -375,9 +376,24 @@ export function formatHostsFile(
 
   const groups = SITE_GROUPS.map((g) => g.name).join(" / ")
 
-  return HOSTS_TEMPLATE.replace("{groups}", groups)
+  const base = HOSTS_TEMPLATE.replace("{groups}", groups)
     .replace("{content}", content)
     .replace("{updateTime}", updateTime)
+
+  if (!ads || !ads.content) return base
+
+  // 广告规则单独成段，与优选条目明确分隔，
+  // 方便使用者只取上半部分（优选区）或整体导入。
+  const adsHeader = [
+    "",
+    "# ============================================================",
+    "# 以下为广告拦截规则（AWAvenue-Ads-Rule）",
+    "# 来源：https://github.com/TG-Twilight/AWAvenue-Ads-Rule",
+    `# 规则数：${ads.ruleCount}${ads.fetchedAt ? `，抓取时间：${new Date(ads.fetchedAt).toLocaleString("en-US", { timeZone: "Asia/Shanghai", hour12: false })}` : ""}`,
+    "# ============================================================",
+  ].join("\n")
+
+  return `${base}${adsHeader}\n${ads.content}\n`
 }
 
 // 读取 KV 中域名数据的更新时间，供 hosts 输出标注。

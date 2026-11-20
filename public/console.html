@@ -242,7 +242,13 @@
       <p class="sub" style="margin:10px 0 0">
         IP 延迟缓存：<span id="cacheInfo">—</span>
         <button class="sm" id="btnCacheClear" style="margin-left:8px">清空缓存</button>
-        <span class="sub">（缓存有效期 30 分钟，命中则跳过重测）</span>
+        <span class="sub">（缓存有效期 2 小时，命中则跳过重测）</span>
+      </p>
+      <p class="sub" style="margin:8px 0 0">
+        广告拦截规则：<span id="adsInfo">—</span>
+        <button class="sm" id="btnAdsToggle" style="margin-left:8px">切换</button>
+        <button class="sm" id="btnAdsRefresh">重新抓取</button>
+        <span class="sub">（来自 AWAvenue-Ads-Rule，每轮刷新抓取一次，拼接到 hosts 末尾）</span>
       </p>
       <div class="prog-wrap" id="refreshProg">
         <div class="prog-track"><div class="prog-fill" id="refreshFill"></div></div>
@@ -1028,6 +1034,33 @@ async function loadCacheInfo() {
   }
 }
 
+/* ---------- 广告拦截规则 ---------- */
+async function loadAdsInfo() {
+  try {
+    const d = await (await fetch(`${API}/local/ads?_t=${Date.now()}`, { cache: 'no-store' })).json()
+    const btn = el('btnAdsToggle')
+    if (!d.enabled) {
+      el('adsInfo').innerHTML = '<strong class="mid">已停用</strong>'
+      btn.textContent = '启用'
+      btn.dataset.enabled = 'false'
+      return
+    }
+    if (!d.ruleCount) {
+      el('adsInfo').innerHTML = '<strong class="mid">已启用，但尚无规则</strong>（点“重新抓取”或刷新一次）'
+    } else {
+      const t = d.fetchedAt ? new Date(d.fetchedAt).toLocaleString('zh-CN') : '—'
+      el('adsInfo').innerHTML =
+        `<strong class="good">已启用</strong> · ${d.ruleCount} 条` +
+        (d.version ? ` · 版本 ${d.version}` : '') +
+        ` · 抓取于 ${t}`
+    }
+    btn.textContent = '停用'
+    btn.dataset.enabled = 'true'
+  } catch (e) {
+    el('adsInfo').textContent = '读取失败'
+  }
+}
+
 /* ---------- 六、SNI 阻断排除清单 ---------- */
 async function loadBlocked() {
   try {
@@ -1089,6 +1122,38 @@ el('btnTiming').addEventListener('click', doTiming)
 el('btnRefresh').addEventListener('click', doRefresh)
 el('btnMonitorStart').addEventListener('click', startMonitor)
 el('btnMonitorStop').addEventListener('click', stopMonitor)
+el('btnAdsToggle').addEventListener('click', async () => {
+  const cur = el('btnAdsToggle').dataset.enabled === 'true'
+  const next = !cur
+  el('adsInfo').textContent = next ? '正在启用并抓取规则...' : '正在停用...'
+  try {
+    const d = await (await fetch(`${API}/local/ads`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: next }),
+    })).json()
+    toast(next ? '已启用广告规则' : '已停用广告规则')
+    if (next && d.fetched && !d.fetched.ok) {
+      toast('启用成功，但规则抓取失败：' + (d.fetched.error || '未知'))
+    }
+  } catch (e) {
+    toast('操作失败：' + e.message)
+  }
+  loadAdsInfo()
+})
+
+el('btnAdsRefresh').addEventListener('click', async () => {
+  el('adsInfo').textContent = '正在抓取...'
+  try {
+    const d = await (await fetch(`${API}/local/ads/refresh`, { method: 'POST' })).json()
+    if (d.ok) toast(`已更新 ${d.meta?.ruleCount ?? 0} 条规则`)
+    else toast('抓取失败：' + (d.error || '未知'))
+  } catch (e) {
+    toast('抓取失败：' + e.message)
+  }
+  loadAdsInfo()
+})
+
 el('btnCacheClear').addEventListener('click', async () => {
   const d = await (await fetch(`${API}/local/cache/clear`, { method: 'POST' })).json()
   toast(`已清空 ${d.cleared} 条缓存`)
@@ -1118,6 +1183,7 @@ loadHosts()
 loadDomains()
 loadBlocked()
 loadCacheInfo()
+loadAdsInfo()
 fetch(`${API}/local/monitor/status`).then((r) => r.json()).then((s) => {
   if (s.running) {
     el('btnMonitorStart').disabled = true
