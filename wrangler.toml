@@ -1,3 +1,14 @@
+# ⚠️ 当前为 local-runtime 分支
+#
+# 这个分支用于本地运行，不走 Cloudflare Workers。
+# 请勿在 Cloudflare Workers Builds 中为这个分支配置自动部署。
+#
+# 本地启动：npm run local    （构建后监听 http://127.0.0.1:8788）
+# 线上部署：切回 main 分支后再执行 npm run deploy
+#
+# 本分支的 package.json 已把 deploy / dev 脚本改为报错退出，
+# 防止误执行覆盖线上版本。
+
 name = "custom-hosts-optimizer"
 main = "src/index.ts"
 compatibility_date = "2024-10-28"

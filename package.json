@@ -20,16 +20,24 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "echo '✘ local-runtime 分支请用 npm run local' && exit 1",
     "build": "node scripts/inject-kv.mjs",
-    "deploy": "node scripts/inject-kv.mjs && wrangler deploy --minify"
+    "deploy": "echo '✘ 当前为 local-runtime 分支，禁止部署到 Cloudflare。切换回 main 分支再部署。' && exit 1",
+    "local:build": "node server/build.mjs",
+    "local:watch": "node server/build.mjs --watch",
+    "local": "node server/build.mjs && node dist-server/index.mjs",
+    "local:dev": "node server/build.mjs && node --watch dist-server/index.mjs"
   },
   "dependencies": {
+    "@hono/node-server": "^2.1.11",
     "hono": "^4.6.7"
   },
   "license": "MIT",
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250620.0",
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
     "wrangler": "^4.21.0"
   }
 }

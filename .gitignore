@@ -43,3 +43,6 @@ lerna-debug.log*
 .idea
 
 build
+# 本地运行时产物与数据（local-runtime 分支）
+dist-server/
+data/
