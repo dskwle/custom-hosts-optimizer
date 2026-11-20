@@ -1343,7 +1343,8 @@ app.get("/api/cache/status", async (c) => {
     const lastUpdated = new Date(kvData.lastUpdated)
     const now = new Date()
     const ageMinutes = Math.round((now.getTime() - lastUpdated.getTime()) / 60000)
-    const cacheValidTime = 6 * 60 // 6小时
+    // 与 services/hosts.ts 的 cacheValidTime 保持一致（3 小时，略大于 2 小时的 cron 周期）
+    const cacheValidTime = 3 * 60
     const isValid = ageMinutes < cacheValidTime
 
     return c.json({
