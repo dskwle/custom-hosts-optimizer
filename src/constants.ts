@@ -42,7 +42,7 @@ export const GITHUB_URLS = [
 ]
 
 export const HOSTS_TEMPLATE = `# custom-hosts 自动生成
-# 覆盖：GitHub / npm CDN / Docker Hub / Steam / 开发者资源
+# 覆盖：GitHub / npm CDN / Docker Hub / Steam / 游戏平台 / 开发者资源
 # 原理：绕开 DNS 污染，直连可用 IP
 
 {content}
@@ -113,6 +113,25 @@ export const SITE_GROUPS: SiteGroup[] = [
     ],
   },
   {
+    id: "game",
+    name: "游戏平台",
+    description: "Rockstar、Epic、Battle.net、EA、Ubisoft、Riot",
+    domains: [
+      "socialclub.rockstargames.com",
+      "www.rockstargames.com",
+      "rgl.rockstargames.com",
+      "gamedownloads.rockstargames.com",
+      "store.epicgames.com",
+      "www.epicgames.com",
+      "battle.net",
+      "us.battle.net",
+      "www.ea.com",
+      "ubisoft.com",
+      "www.riotgames.com",
+      "valorant.com",
+    ],
+  },
+  {
     id: "dev",
     name: "开发者资源",
     description: "PyPI、Maven、Go、Rust、Conda、VS Code",
@@ -135,6 +154,11 @@ export const SITE_GROUPS: SiteGroup[] = [
       "dl-cdn.alpinelinux.org",
       "go.dev",
       "golang.org",
+      "nodejs.org",
+      "static.rust-lang.org",
+      "plugins.jetbrains.com",
+      "dl.google.com",
+      "storage.googleapis.com",
     ],
   },
 ]
