@@ -7,19 +7,19 @@ assets = { directory = "public" }
 # KV 绑定（binding 名 custom_hosts 对应代码中的 env.custom_hosts）
 #
 # id 必须是真实存在的 32 位命名空间 ID。wrangler 不会解析环境变量、也不会自动替换占位符，
-# 保留占位符会导致部署失败：
-#   KV namespace 'YOUR_KV_NAMESPACE_ID' is not valid. [code: 10042]
+# 填入非真实 ID 会导致部署失败：
+#   KV namespace 'xxx' is not valid. [code: 10042]
 #
-# 提供 ID 的两种方式（二选一）：
-#   1) 直接把下面两处 YOUR_KV_NAMESPACE_ID 替换成真实 ID（最省事，推荐）
-#   2) 保留占位符，让 scripts/inject-kv.mjs 在构建时从 KV_NAMESPACE_ID 环境变量注入
+# 更换命名空间时，把下面 id / preview_id 同时改为新的 ID（两处必须一致）。
+# 若希望 ID 不落进仓库，可改回占位符 YOUR_KV_NAMESPACE_ID，
+# 由 scripts/inject-kv.mjs 在构建时从 KV_NAMESPACE_ID 环境变量注入。
 #
 # 获取 ID：npx wrangler kv namespace list
 # 或 Dashboard -> Workers & Pages -> KV -> 选中命名空间 -> 右侧 Namespace ID
 [[kv_namespaces]]
 binding = "custom_hosts"
-id = "YOUR_KV_NAMESPACE_ID"
-preview_id = "YOUR_KV_NAMESPACE_ID"
+id = "d6916108024f4976adcaa61966e14f6e"
+preview_id = "d6916108024f4976adcaa61966e14f6e"
 
 # 定时任务配置 - 每小时更新一次 hosts
 [triggers]

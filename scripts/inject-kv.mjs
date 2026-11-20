@@ -10,12 +10,17 @@
  *   1. 环境变量 KV_NAMESPACE_ID（Cloudflare Workers Builds / GitHub Actions 用这个）
  *   2. 本地 .dev.vars 中的 KV_NAMESPACE_ID（本地 pnpm deploy 用这个）
  *
- * 已经填了真实 ID 时脚本直接跳过，可安全重复执行。
+ * 已经填了真实 ID（32 位十六进制）时直接跳过，可安全重复执行。
+ * 只改写 id / preview_id 的值，不碰注释里的文字。
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 
 const CONFIG = 'wrangler.toml'
 const PLACEHOLDER = 'YOUR_KV_NAMESPACE_ID'
+const VALID_ID = /^[0-9a-fA-F]{32}$/
+
+// 只匹配行首的 id = "..." 或 preview_id = "..."，避免误伤注释里的同名文字
+const ID_LINE = /^([ \t]*(?:preview_)?id[ \t]*=[ \t]*)"([^"]*)"/gm
 
 function readDevVars() {
   if (!existsSync('.dev.vars')) return null
@@ -32,8 +37,14 @@ if (!existsSync(CONFIG)) {
 }
 
 const toml = readFileSync(CONFIG, 'utf8')
+const currentIds = [...toml.matchAll(ID_LINE)].map((m) => m[2])
 
-if (!toml.includes(PLACEHOLDER)) {
+if (currentIds.length === 0) {
+  console.error(`[inject-kv] ${CONFIG} 里没有找到 id / preview_id 配置，请检查 [[kv_namespaces]] 段`)
+  process.exit(1)
+}
+
+if (currentIds.every((v) => VALID_ID.test(v))) {
   console.log('[inject-kv] wrangler.toml 已是真实 KV ID，跳过注入')
   process.exit(0)
 }
@@ -42,7 +53,7 @@ const kvId = (process.env.KV_NAMESPACE_ID || readDevVars() || '').trim()
 
 if (!kvId) {
   console.error(`
-[inject-kv] 注入失败：wrangler.toml 里仍是占位符 ${PLACEHOLDER}，但没有拿到真实 ID。
+[inject-kv] 注入失败：${CONFIG} 里仍有占位符 ${PLACEHOLDER}，但没有拿到真实 ID。
 
 请任选一种方式提供：
   A. Cloudflare Workers Builds（Git 集成部署）
@@ -63,16 +74,15 @@ if (!kvId) {
   process.exit(1)
 }
 
-if (!/^[0-9a-fA-F]{32}$/.test(kvId)) {
+if (!VALID_ID.test(kvId)) {
   console.error(
     `[inject-kv] KV_NAMESPACE_ID 格式不正确，应为 32 位十六进制，实际收到 ${kvId.length} 个字符：${kvId}`
   )
   process.exit(1)
 }
 
-const patched = toml.replaceAll(PLACEHOLDER, kvId)
+const patched = toml.replace(ID_LINE, (_m, prefix) => `${prefix}"${kvId}"`)
 writeFileSync(CONFIG, patched)
 
 const masked = `${kvId.slice(0, 6)}...${kvId.slice(-4)}`
-console.log(`[inject-kv] 已注入 KV_NAMESPACE_ID (${masked})`)
-console.log('[inject-kv] 注意：wrangler.toml 已被修改，本地产物不要直接提交回仓库')
+console.log(`[inject-kv] 已注入 KV_NAMESPACE_ID (${masked})，影响 ${currentIds.length} 处配置`)
