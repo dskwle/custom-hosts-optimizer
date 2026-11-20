@@ -52,6 +52,10 @@ export interface TaskItemResult {
       tlsError?: string
     }[]
     systemIps: string[]
+    /** 绕过 hosts 的上游解析结果，用于对照 */
+    upstreamIps?: string[]
+    /** 该域名是否被 /etc/hosts 覆盖 */
+    hostsOverride?: boolean
     inconsistent: boolean
     systemDiffers: boolean
     totalResolvedEntries: number

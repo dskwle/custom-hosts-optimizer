@@ -57,8 +57,12 @@ export interface ProbeResult {
   candidates: ProbeCandidate[]
   /** 每家 DoH 分别返回了什么，按配置顺序 */
   providers: DohProviderResult[]
-  /** 系统 DNS 解析出的 IP，用于判断本地是否被污染 */
+  /** 本机实际使用的 IP（已合并 /etc/hosts，即 dns.lookup 的结果） */
   systemIps: string[]
+  /** 绕过 hosts 的上游 DNS 结果（dns.resolve4），用于对照是否被 hosts 覆盖 */
+  upstreamIps: string[]
+  /** 该域名是否被 /etc/hosts 覆盖 */
+  hostsOverride: boolean
   /** 去重后的候选 IP 总数 */
   uniqueIpCount: number
   /** 各 DNS 源返回的原始条目数之和（含重复），用于说明去重效果 */
@@ -158,14 +162,61 @@ async function queryDoh(
 }
 
 /** 系统 DNS 解析，用于比对污染情况 */
-async function querySystemDns(domain: string): Promise<string[]> {
-  try {
-    // 部分环境（如公司路由器）会返回伪造记录，这里只做参考
-    const res = await dns.resolve4(domain)
-    return res.filter((ip) => /^\d+\.\d+\.\d+\.\d+$/.test(ip))
-  } catch {
-    return []
-  }
+/**
+ * 查询「本机实际会用的地址」。
+ *
+ * 关键区别（这里踩过坑）：
+ *   dns.resolve4()  用 c-ares 直接向 DNS 服务器查询，**不读 /etc/hosts**
+ *   dns.lookup()    走系统解析器，**会读 /etc/hosts**
+ *
+ * 对 hosts 工具而言，必须用 dns.lookup()：
+ * 用户改了 hosts 之后，想知道的就是「本机现在会连哪个 IP」。
+ * 早期版本误用 resolve4，导致已改 hosts 仍报告「系统 DNS 与被篡改」，
+ * 而且显示的是绕过 hosts 的上游结果，与用户预期相反。
+ *
+ * 同时也返回 upstream（调用 resolve4）作为对照：
+ * 若 hosts 已生效，lookup 结果来自 hosts，upstream 才是运营商返回的。
+ */
+async function querySystemDns(domain: string): Promise<{
+  /** 本机实际使用（含 /etc/hosts 覆盖） */
+  lookup: string[]
+  /** 绕过 hosts 的上游 DNS 结果，用于对照 */
+  upstream: string[]
+  /** 该域名是否被 hosts 覆盖（lookup 与 upstream 不同且 lookup 有值） */
+  hostsOverride: boolean
+}> {
+  const isV4 = (ip: string) => /^\d+\.\d+\.\d+\.\d+$/.test(ip)
+
+  const [lookupRes, upstreamRes] = await Promise.all([
+    // 走系统解析器，能读到 /etc/hosts
+    (async () => {
+      try {
+        const all = await dns.lookup(domain, { all: true })
+        return all.map((a) => a.address).filter(isV4)
+      } catch {
+        return []
+      }
+    })(),
+    // 绕过 hosts，直接问上游 DNS
+    (async () => {
+      try {
+        return (await dns.resolve4(domain)).filter(isV4)
+      } catch {
+        return []
+      }
+    })(),
+  ])
+
+  const lookupSet = new Set(lookupRes)
+  const upstreamSet = new Set(upstreamRes)
+  // 两边都有值且不完全一致，说明 hosts 起了作用
+  const hostsOverride =
+    lookupRes.length > 0 &&
+    upstreamRes.length > 0 &&
+    (lookupRes.some((ip) => !upstreamSet.has(ip)) ||
+      upstreamRes.some((ip) => !lookupSet.has(ip)))
+
+  return { lookup: lookupRes, upstream: upstreamRes, hostsOverride }
 }
 
 /** TCP 443 握手测速 */
@@ -365,6 +416,8 @@ export async function probeDomain(
     candidates: [],
     providers: [],
     systemIps: [],
+    upstreamIps: [],
+    hostsOverride: false,
     uniqueIpCount: 0,
     totalResolvedEntries: 0,
     tlsOkCount: 0,
@@ -373,14 +426,18 @@ export async function probeDomain(
     sni: null,
   }
 
-  const [dohResults, systemIps] = await Promise.all([
+  const [dohResults, sysDns] = await Promise.all([
     Promise.all(DOH_PROVIDERS.map((p) => queryDoh(domain, p))),
     querySystemDns(domain),
   ])
 
   // 保留每家 DoH 的明细，前端可以逐条展示
   result.providers = dohResults
-  result.systemIps = systemIps
+  // systemIps 现在是「本机实际会连的地址」（含 hosts 覆盖）
+  result.systemIps = sysDns.lookup
+  result.upstreamIps = sysDns.upstream
+  result.hostsOverride = sysDns.hostsOverride
+  const systemIps = sysDns.lookup
 
   // 关键：用 Set 做全局去重。
   // 多家 DoH 常常返回完全相同的 IP（尤其大厂域名用 anycast），
@@ -405,7 +462,11 @@ export async function probeDomain(
     )
   }
 
-  // 系统 DNS 与 DoH 的差异——这是本地被污染最直接的证据
+  // 「本机解析结果与 DoH 不一致」有两种含义，必须区分：
+  //   A. hosts 已生效且指向正确 IP  -> 这是正常状态，不该报「被篡改」
+  //   B. hosts 未生效，或指向错误 IP -> 这才是需要警示的情况
+  // 判据：看 upstream（绕过 hosts 的上游结果）是否也与 DoH 不同。
+  // 若 upstream 与 DoH 一致、只有 lookup 不同，说明问题已被 hosts 修复。
   if (systemIps.length > 0 && ipsFromDoh.size > 0) {
     const dohSet = ipsFromDoh
     result.systemDiffers = systemIps.some((ip) => !dohSet.has(ip))

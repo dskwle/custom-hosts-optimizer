@@ -159,7 +159,7 @@ export const SITE_GROUPS: SiteGroup[] = [
   {
     id: "web",
     name: "网页工具",
-    description: "必应、微软账户、Edge、DeepL、验证码、数据站",
+    description: "必应、微软账户、Edge、DeepL、验证码、数据站、hanime1",
     domains: [
       "www.bing.com",
       "login.live.com",
@@ -176,6 +176,7 @@ export const SITE_GROUPS: SiteGroup[] = [
       "sourceforge.net",
       "pan.baidu.com",
       "api.bilibili.com",
+      "hanime1.me",
     ],
   },
   {

@@ -427,8 +427,9 @@ function renderTimingBars(r) {
   </div>`
 }
 
-function renderProviders(providers, systemIps, inconsistent, systemDiffers) {
+function renderProviders(providers, systemIps, inconsistent, systemDiffers, extra) {
   if (!providers || !providers.length) return ''
+  const { upstreamIps = [], hostsOverride = false } = extra || {}
 
   // 统计每个 IP 被几家 DNS 返回，用来标注重叠情况
   const ipFreq = new Map()
@@ -457,18 +458,32 @@ function renderProviders(providers, systemIps, inconsistent, systemDiffers) {
     </div>`
   }).join('')
 
+  // 本机实际解析（含 /etc/hosts）单独一行，与 DoH 结果并列展示
+  const localRow = `<div class="prov-row" style="border-top:1px solid #e5e3dc;margin-top:4px;padding-top:8px">
+    <span class="prov-name" style="color:#2c2c2a">本机解析</span>
+    <span class="prov-ips">${(systemIps || []).join('  ') || '<span class="bad">无结果</span>'}
+      ${hostsOverride ? '<span class="badge good" style="margin-left:6px">已由 hosts 覆盖</span>' : ''}</span>
+    <span class="prov-ms">${hostsOverride && upstreamIps.length ? '上游 ' + upstreamIps.join(',') : ''}</span>
+  </div>`
+
   let note = ''
-  if (systemDiffers) {
+  if (hostsOverride && systemDiffers) {
+    // hosts 生效了，且指向的地址与 DoH 不同——这正是工具推荐的用法
+    note = `<p class="sub" style="margin-top:10px;color:#0f6e56">
+      ✓ /etc/hosts 已生效，本机使用 <code>${(systemIps || []).join(', ')}</code>；
+      绕过 hosts 的上游解析为 <code>${(upstreamIps || []).join(', ') || '—'}</code>。
+      这是正常的 hosts 覆盖状态，不是污染。</p>`
+  } else if (systemDiffers && !hostsOverride) {
     note = `<p class="sub bad" style="margin-top:10px">
-      ⚠ 系统 DNS 与所有 DoH 结果都不同，本地解析被篡改——这正是 hosts 能修复的问题。
-      系统返回：<code>${(systemIps || []).join(', ') || '—'}</code></p>`
+      ⚠ 本机解析结果与所有 DoH 都不同，且未检测到 hosts 覆盖——本地解析可能被篡改。
+      本机返回：<code>${(systemIps || []).join(', ') || '—'}</code></p>`
   } else if (inconsistent) {
-    note = `<p class="sub" style="margin-top:10px;color:#854f0b">各家 DoH 返回不一致（可能存在地域性解析差异），但系统 DNS 在候选范围内。</p>`
+    note = `<p class="sub" style="margin-top:10px;color:#854f0b">各家 DoH 返回不一致（可能存在地域性解析差异），但本机解析在候选范围内。</p>`
   } else if (systemIps && systemIps.length) {
-    note = `<p class="sub" style="margin-top:10px;color:#0f6e56">各家 DoH 与系统 DNS 一致，本地解析正常。</p>`
+    note = `<p class="sub" style="margin-top:10px;color:#0f6e56">各家 DoH 与本机解析一致，解析正常。</p>`
   }
 
-  return `<div class="prov-list"><p class="sub" style="margin:0 0 4px">各 DNS 服务商分别返回</p>${rows}${note}</div>`
+  return `<div class="prov-list"><p class="sub" style="margin:0 0 4px">各 DNS 服务商分别返回</p>${rows}${localRow}${note}</div>`
 }
 
 function renderSni(sni) {
@@ -553,7 +568,7 @@ async function doTiming() {
               : '域名可能不存在，或本地与所有 DoH 都被拦截。'}</div>
             ${listHtml}
           </div>
-          ${renderProviders(d.providers, d.systemIps, d.inconsistent, d.systemDiffers)}
+          ${renderProviders(d.providers, d.systemIps, d.inconsistent, d.systemDiffers, { upstreamIps: d.upstreamIps, hostsOverride: d.hostsOverride })}
           ${renderSni(d.sni)}`
         status.textContent = title
         btn.disabled = false
@@ -595,7 +610,7 @@ async function doTiming() {
           只有握手成功的地址会被写入 hosts。
         </p>
         ${excludedHtml}
-        ${renderProviders(d.providers, d.systemIps, d.inconsistent, d.systemDiffers)}
+        ${renderProviders(d.providers, d.systemIps, d.inconsistent, d.systemDiffers, { upstreamIps: d.upstreamIps, hostsOverride: d.hostsOverride })}
         ${renderSni(d.sni)}`
       status.textContent = `完成，推荐 ${d.recommended}`
     }
