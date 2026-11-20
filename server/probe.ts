@@ -313,7 +313,15 @@ export async function checkSniBlock(
   timeoutMs = 6000,
   knownTcpMs?: number | null
 ): Promise<SniCheckResult> {
-  const handshake = (servername: string) =>
+  /**
+   * 对指定 IP 发起 TLS 握手，SNI 用 servername。
+   *
+   * 注意：这里必须显式传 IP。早期版本让对照域名复用被测目标的 IP，
+   * 等于向 mikanani 的服务器发 SNI=example.com 的握手，服务端自然拒绝，
+   * 导致对照组永远失败、结论在 sni-blocked 与 unknown 之间摇摆。
+   * 对照组必须连「它自己解析出的地址」才有意义。
+   */
+  const handshake = (servername: string, targetIp: string) =>
     new Promise<{ ok: boolean; ms: number | null; error?: string }>((resolve) => {
       const start = Date.now()
       let settled = false
@@ -325,7 +333,7 @@ export async function checkSniBlock(
 
       const socket = tls.connect(
         {
-          host: ip,
+          host: targetIp,
           port: 443,
           servername,
           // 不校验证书：这里只关心握手能否完成，证书有效性另行判断
@@ -365,7 +373,14 @@ export async function checkSniBlock(
     }
   }
 
-  const withSni = await handshake(domain)
+  // 真实 SNI 也重试：单次 ECONNRESET 可能是抖动。
+  // 并发发两次，任一成功即判定无阻断——串行重试会让最坏耗时翻倍。
+  const withSniAttempts = await Promise.all([
+    handshake(domain, ip),
+    handshake(domain, ip),
+  ])
+  const withSni = withSniAttempts.find((r) => r.ok) ?? withSniAttempts[0]
+
   if (withSni.ok) {
     return {
       verdict: "ok",
@@ -375,8 +390,36 @@ export async function checkSniBlock(
     }
   }
 
-  // 真实 SNI 失败，用无关域名做对照
-  const control = await handshake("example.com")
+  // 真实 SNI 失败，用无关域名做对照。
+  //
+  // 对照组必须连接「它自己解析出的地址」，不能复用被测目标的 IP，
+  // 否则等于向目标服务器索要别的域名的证书，服务端必然拒绝，
+  // 会让结论永远落入 unknown。
+  const CONTROL_DOMAINS = ["example.com", "cloudflare.com", "wikipedia.org"]
+
+  const controlResults = await Promise.all(
+    CONTROL_DOMAINS.map(async (cd) => {
+      let controlIp: string | null = null
+      try {
+        const ips = await dns.resolve4(cd)
+        controlIp = ips[0] ?? null
+      } catch {
+        controlIp = null
+      }
+      // 解析不出就跳过，不能拿被测 IP 顶替
+      if (!controlIp) {
+        return { ok: false, ms: null, error: "对照域名解析失败" } as {
+          ok: boolean
+          ms: number | null
+          error?: string
+        }
+      }
+      return handshake(cd, controlIp)
+    })
+  )
+
+  const control =
+    controlResults.find((r) => r.ok) ?? controlResults[controlResults.length - 1]
 
   if (control.ok) {
     return {
@@ -395,8 +438,10 @@ export async function checkSniBlock(
     withSni,
     withoutSni: control,
     explanation:
-      `TCP 可连接（${tcpMs}ms），但两种 SNI 都无法完成握手（真实 SNI：${withSni.error}；` +
-      `对照 SNI：${control.error}）。无法归因为 SNI 阻断，可能是该 IP 上的服务异常或限流。`,
+      `TCP 可连接（${tcpMs}ms），但真实 SNI 握手失败（${withSni.error}），` +
+      `且对照 SNI 也无法完成握手（${control.error}）。` +
+      `对照失败说明当前网络对外连接不稳定，本次结果不可采信，建议稍后重测；` +
+      `若持续如此，可能是该 IP 上的服务异常或限流。`,
   }
 }
 
@@ -549,10 +594,24 @@ export async function probeDomain(
   // SNI 检测：对 TLS 失败的候选才有归因价值；
   // 若已有 TLS 成功的候选，说明不存在 SNI 阻断，做一次确认即可。
   if (options.checkSni) {
-    const probeTarget = result.bestIp ?? measured.find((m) => m.latency !== null)?.ip
+    // 优先用 TLS 成功的 IP；否则退回到任一 TCP 可达的 IP 做归因分析。
+    // 若所有 IP 连 TCP 都不通，说明是 IP 层封锁，测 SNI 没有意义。
+    const probeTarget =
+      result.bestIp ?? measured.find((m) => m.latency !== null)?.ip
     if (probeTarget) {
       const known = measured.find((m) => m.ip === probeTarget)?.latency ?? null
       result.sni = await checkSniBlock(domain, probeTarget, 6000, known)
+    } else if (measured.length > 0) {
+      // 全部 IP 的 TCP 都不可达：直接给出 IP 层封锁的结论，
+      // 不必再走 SNI 对照（TCP 都建不起来，无法区分是否按域名切断）。
+      result.sni = {
+        verdict: "tcp-blocked",
+        withSni: { ok: false, ms: null, error: "TCP 不可达" },
+        withoutSni: { ok: false, ms: null, error: "TCP 不可达" },
+        explanation:
+          `解析出 ${measured.length} 个 IP，但全部无法建立 TCP 连接，` +
+          `属于 IP 层封锁或地址已失效，与 SNI 无关。改 hosts 无效。`,
+      }
     }
   }
 
