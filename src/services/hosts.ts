@@ -261,16 +261,26 @@ export async function getHostsData(env: Bindings, forceRefresh: boolean = false)
     }
 
     // 从缓存获取数据
+    // 只输出 isOptimized 为 true 的记录：该字段表示该 IP 通过了连通性验证。
+    // 历史上有一批只测了 DNS 就写入、TLS 实际握不上手的记录（isOptimized=false），
+    // 把它们输出到 hosts 会让对应域名彻底不可用，必须过滤掉。
     const entries: HostEntry[] = []
     for (const domain of ALL_DOMAINS) {
       const domainData = kvData!.domain_data[domain]
-      if (domainData) {
+      if (domainData && domainData.isOptimized !== false) {
         entries.push([domainData.ip, domain])
       }
     }
-    
+
+    const skipped = ALL_DOMAINS.filter((d) => {
+      const dd = kvData!.domain_data[d]
+      return dd && dd.isOptimized === false
+    }).length
     const cacheAge = Math.round((Date.now() - new Date(kvData!.lastUpdated).getTime()) / 60000)
-    console.log(`Loaded ${entries.length} entries from cache (age: ${cacheAge} minutes)`)
+    console.log(
+      `Loaded ${entries.length} entries from cache (age: ${cacheAge} minutes)` +
+        (skipped > 0 ? `, skipped ${skipped} unverified` : "")
+    )
     return entries
   } catch (error) {
     console.error("Error getting hosts data:", error)

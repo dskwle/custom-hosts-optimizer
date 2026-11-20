@@ -500,30 +500,73 @@ async function doTiming() {
     } else {
       const d = await (await fetch(`${API}/local/compare?domain=${encodeURIComponent(domain)}&rounds=3`)).json()
       if (!d.details || !d.details.length) {
-        box.innerHTML = `<p class="empty">没有可用的候选 IP，无法测速</p>
+        // 区分两种失败：DNS 没解析出来 vs 解析出来了但全部 TLS 握手失败
+        const all = d.allCandidates || []
+        const hasIps = all.length > 0
+        const title = hasIps
+          ? `解析出 ${all.length} 个 IP，但无一能完成 TLS 握手`
+          : '所有 DNS 源均未返回 A 记录'
+
+        const listHtml = hasIps
+          ? `<table style="margin-top:12px">
+              <thead><tr><th>IP</th><th>TCP</th><th>失败原因</th></tr></thead>
+              <tbody>${all.map((x) => `<tr>
+                <td><code>${x.ip}</code></td>
+                <td class="num">${x.latency != null ? x.latency + 'ms' : '不通'}</td>
+                <td class="bad">${x.tlsError || '未知'}</td>
+              </tr>`).join('')}</tbody>
+            </table>`
+          : ''
+
+        box.innerHTML = `<div class="verdict blocked">
+            <h4>${title} <span class="badge bad">不写入 hosts</span></h4>
+            <div class="sub">${hasIps
+              ? '这些地址即使写进 hosts 也无法建立加密连接，该域名需要走代理而非改 hosts。'
+              : '域名可能不存在，或本地与所有 DoH 都被拦截。'}</div>
+            ${listHtml}
+          </div>
           ${renderProviders(d.providers, d.systemIps, d.inconsistent, d.systemDiffers)}
           ${renderSni(d.sni)}`
-        const allFailed = (d.providers || []).every((p) => !p.ips || !p.ips.length)
-        status.textContent = allFailed ? '所有 DNS 源均未返回 A 记录' : '无可用候选'
+        status.textContent = title
         btn.disabled = false
         return
       }
       const rows = d.details.map((x) => `<tr>
         <td><code>${x.ip}</code>${x.ip === d.recommended ? ' <span class="badge">推荐</span>' : ''}</td>
         <td class="num">${x.tcpMs != null ? x.tcpMs + 'ms' : '—'}</td>
+        <td class="num ${x.tlsOk ? 'good' : 'bad'}">${x.tlsOk ? (x.tlsMs != null ? x.tlsMs + 'ms' : '✓') : '✗ 失败'}</td>
         <td class="num ${latencyClass(x.avgTotalMs)}">${x.avgTotalMs != null ? x.avgTotalMs + 'ms' : '—'}</td>
         <td class="num">${x.bestTotalMs != null ? x.bestTotalMs + 'ms' : '—'}</td>
         <td class="num ${x.okRate === 100 ? 'good' : x.okRate === 0 ? 'bad' : 'mid'}">${x.okRate}%</td>
       </tr>`).join('')
+
+      // 被排除的候选单独列出，说明为何不写入 hosts
+      const excluded = (d.allCandidates || []).filter((x) => !x.tlsOk)
+      const excludedHtml = excluded.length
+        ? `<div class="verdict warn" style="margin-top:14px">
+            <h4>已排除 ${excluded.length} 个不可用 IP <span class="badge bad">不写入 hosts</span></h4>
+            <div class="sub">以下地址虽被 DNS 解析出来，但无法完成 TLS 握手。写入 hosts 会让该域名彻底不可访问，因此一律排除。</div>
+            <table style="margin-top:10px">
+              <thead><tr><th>IP</th><th>TCP</th><th>失败原因</th></tr></thead>
+              <tbody>${excluded.map((x) => `<tr>
+                <td><code>${x.ip}</code></td>
+                <td class="num">${x.latency != null ? x.latency + 'ms' : '不通'}</td>
+                <td class="bad">${x.tlsError || '未知'}</td>
+              </tr>`).join('')}</tbody>
+            </table>
+          </div>`
+        : ''
+
       box.innerHTML = `<table>
-        <thead><tr><th>候选 IP</th><th>TCP</th><th>平均总耗时</th><th>最快</th><th>成功率</th></tr></thead>
+        <thead><tr><th>可用 IP（TLS 已握手）</th><th>TCP</th><th>TLS</th><th>平均总耗时</th><th>最快</th><th>成功率</th></tr></thead>
         <tbody>${rows}</tbody></table>
         <p class="sub" style="margin-top:10px">
           ${d.dedupSaved > 0
-            ? `各 DNS 源共返回 ${d.totalResolvedEntries} 条记录，去重后 <strong>${d.candidateCount} 个唯一 IP</strong>（省去 ${d.dedupSaved} 次重复检测）。`
-            : `共 ${d.candidateCount} 个唯一 IP，无重复。`}
-          成功率低于 100% 说明该 IP 能建 TCP 连接但 TLS 失败，不可用。
+            ? `各 DNS 源共返回 ${d.totalResolvedEntries} 条记录，去重后 <strong>${d.candidateCount} 个唯一 IP</strong>（省去 ${d.dedupSaved} 次重复检测），其中 <strong>${d.tlsOkCount} 个 TLS 握手成功</strong>。`
+            : `共 ${d.candidateCount} 个唯一 IP，其中 <strong>${d.tlsOkCount} 个 TLS 握手成功</strong>。`}
+          只有握手成功的地址会被写入 hosts。
         </p>
+        ${excludedHtml}
         ${renderProviders(d.providers, d.systemIps, d.inconsistent, d.systemDiffers)}
         ${renderSni(d.sni)}`
       status.textContent = `完成，推荐 ${d.recommended}`

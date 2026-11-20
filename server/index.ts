@@ -118,9 +118,12 @@ root.post("/local/refresh", async (c) => {
             const r = await probeDomain(domain)
             const item: TaskItemResult = {
               domain,
-              ok: r.latency !== null,
+              ok: r.bestIp !== null,   // bestIp 非空 == TLS 握手成功，才可写进 hosts
               bestIp: r.bestIp,
               latency: r.latency,
+              tlsOk: r.tlsOkCount > 0,
+              candidateCount: r.uniqueIpCount,
+              tlsOkCount: r.tlsOkCount,
               source: "local",
             }
             results.push(item)
@@ -148,14 +151,29 @@ root.post("/local/refresh", async (c) => {
     }
 
     for (const r of results) {
-      if (!r.bestIp) continue
+      // bestIp 为空说明没有任何 IP 能完成 TLS 握手。
+      // 这种情况要把已有记录标记为不可用，而不是留着旧的好地址——
+      // 旧地址可能早已失效（比如 golang 那批），继续输出会误导。
+      if (!r.bestIp) {
+        const prev = existing.domain_data[r.domain]
+        if (prev) {
+          existing.domain_data[r.domain] = {
+            ...prev,
+            lastChecked: now,
+            isOptimized: false,
+          }
+        }
+        continue
+      }
+
       existing.domain_data[r.domain] = {
         ip: r.bestIp,
         lastUpdated: now,
         lastChecked: now,
         responseTime: r.latency ?? undefined,
         provider: "local-multi-doh",
-        isOptimized: r.latency !== null,
+        // 只有 TLS 握手成功才会走到这里，因此恒为 true
+        isOptimized: true,
         resolvedAt: now,
       }
     }
@@ -263,9 +281,14 @@ root.get("/local/compare", async (c) => {
   const rounds = Math.min(Math.max(roundRaw, 1), 5)
 
   // probeDomain 内部已用 Set 对所有 DNS 源去重，
-  // 每个唯一 IP 只做一次 TCP 测速，结果通过 candidates 返回。
+  // 每个唯一 IP 只做一次 TCP + TLS 检测，结果通过 candidates 返回。
   const probe = await probeDomain(domain, { checkSni: true })
-  const candidates = probe.candidates.filter((x) => x.latency !== null).slice(0, 5)
+
+  // 只对 TLS 握手成功的候选做多轮完整计时：
+  // TLS 都握不上的 IP 本来就不能用，测它的 TTFB 没有意义。
+  const candidates = probe.candidates
+    .filter((x) => x.tlsOk && x.latency !== null)
+    .slice(0, 5)
 
   const details = await Promise.all(
     candidates.map(async (cand) => {
@@ -286,6 +309,8 @@ root.get("/local/compare", async (c) => {
       return {
         ip: cand.ip,
         tcpMs: cand.latency,
+        tlsMs: cand.tlsMs,
+        tlsOk: cand.tlsOk,
         avgTotalMs: avg,
         bestTotalMs: best,
         okRate: Math.round((okSamples.length / rounds) * 100),
@@ -305,6 +330,10 @@ root.get("/local/compare", async (c) => {
     domain,
     rounds,
     candidateCount: probe.uniqueIpCount,
+    /** TLS 握手成功的候选数 —— 只有这些能用于 hosts */
+    tlsOkCount: probe.tlsOkCount,
+    /** 全部候选的检测明细，含 TLS 失败项，便于说明为何被排除 */
+    allCandidates: probe.candidates,
     // 去重前各 DNS 源返回的条目数之和，与 candidateCount 对比即可看出重叠程度
     totalResolvedEntries: probe.totalResolvedEntries,
     dedupSaved: Math.max(probe.totalResolvedEntries - probe.uniqueIpCount, 0),
@@ -330,7 +359,7 @@ root.post("/local/monitor/start", (c) => {
       const r = await probeDomain(domain)
       return {
         domain,
-        ok: r.latency !== null,
+        ok: r.bestIp !== null,   // bestIp 非空 == TLS 握手成功，才可写进 hosts
         bestIp: r.bestIp,
         latency: r.latency,
         source: "probe" as const,

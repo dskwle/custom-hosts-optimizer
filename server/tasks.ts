@@ -31,6 +31,11 @@ export interface TaskItemResult {
   ok: boolean
   bestIp: string | null
   latency: number | null
+  /** TLS 握手是否成功。false 表示该域名本次没有可用 IP */
+  tlsOk?: boolean
+  /** 候选 IP 数 / TLS 成功数，便于看出筛选比例 */
+  candidateCount?: number
+  tlsOkCount?: number
   source: "local" | "probe"
 }
 
