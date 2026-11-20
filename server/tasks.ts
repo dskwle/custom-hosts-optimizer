@@ -38,6 +38,8 @@ export interface TaskItemResult {
   /** 候选 IP 总数 / TLS 成功数，便于看出筛选比例 */
   candidateCount?: number
   tlsOkCount?: number
+  /** 本次从缓存复用的候选数 */
+  cacheHits?: number
   /** 最优 IP 的 TLS 握手耗时 */
   tlsMs?: number | null
   /** 失败原因汇总，用于在列表上直接说明为什么不可用 */

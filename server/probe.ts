@@ -12,6 +12,7 @@
 import dns from "node:dns/promises"
 import net from "node:net"
 import tls from "node:tls"
+import { getCachedMany, setCached, cacheKey } from "./ipcache.js"
 
 /** 单家 DNS 服务商的查询结果 */
 export interface DohProviderResult {
@@ -77,6 +78,8 @@ export interface ProbeResult {
   v4Count?: number
   /** 其中 IPv6 数量 */
   v6Count?: number
+  /** 本次从缓存复用的候选数 */
+  cacheHits?: number
   /** 各 DNS 源返回的原始条目数之和（含重复），用于说明去重效果 */
   totalResolvedEntries: number
   /** TLS 握手成功的候选数——只有这些才值得写进 hosts */
@@ -729,7 +732,7 @@ export async function checkSniBlock(
  */
 export async function probeDomain(
   domain: string,
-  options: { checkSni?: boolean } = {}
+  options: { checkSni?: boolean; useCache?: boolean } = {}
 ): Promise<ProbeResult> {
   const result: ProbeResult = {
     domain,
@@ -744,6 +747,7 @@ export async function probeDomain(
     uniqueIpCount: 0,
     totalResolvedEntries: 0,
     tlsOkCount: 0,
+    cacheHits: 0,
     inconsistent: false,
     systemDiffers: false,
     sni: null,
@@ -819,44 +823,77 @@ export async function probeDomain(
 
   const candidates = [...allCandidates]
 
-  // 第一层：TCP 握手。连不上就没必要做 TLS，直接淘汰。
-  // 限流：候选可能多达十几个，无上限并发会触发系统连接数限制。
-  const tcpProbed = await mapLimit(candidates, CANDIDATE_CONCURRENCY, async (ip) => ({
-    ip,
-    family: (ipFamily(ip) ?? "v4") as IpFamily,
-    latency: await measureTcp(ip),
-  }))
+  // 先批量取缓存：一次读完，避免逐个 await 造成 IO 开销。
+  // key 是 ip|domain，因为 TLS 结果与 SNI 相关，不能跨域名复用。
+  const cacheHit = options.useCache === false
+    ? new Map()
+    : await getCachedMany(candidates.map((ip) => ({ ip, domain })))
 
-  // 第二层：对 TCP 可达的 IP 逐个验证 TLS 握手。
-  // 只有握手成功的才算有效候选——这是「保留的项目一定能正常建立 TLS 连接」
-  // 这条要求的落地：TCP 通但 TLS 被打断的 IP 一律排除。
-  const tlsCandidates = tcpProbed.filter((x) => x.latency !== null)
-  const tlsProbed = await mapLimit(tlsCandidates, CANDIDATE_CONCURRENCY, async (x) => {
-    const t = await checkTlsHandshake(domain, x.ip)
-    return {
-      ip: x.ip,
-      family: x.family,
-      latency: x.latency,
+  let cachedCount = 0
+
+  /**
+   * 一次探测同时拿到 TCP 与 TLS 结果。
+   * 缓存命中则完全跳过网络请求——这是提速的主要来源。
+   */
+  const probed = await mapLimit(candidates, CANDIDATE_CONCURRENCY, async (ip) => {
+    const family = (ipFamily(ip) ?? "v4") as IpFamily
+    const cached = cacheHit.get(cacheKey(ip, domain))
+
+    if (cached) {
+      cachedCount++
+      return {
+        ip,
+        family,
+        latency: cached.latency,
+        tlsOk: cached.tlsOk,
+        tlsMs: cached.tlsMs,
+        tlsError: cached.tlsError,
+      } as ProbeCandidate
+    }
+
+    // TCP 不通就没必要做 TLS
+    const latency = await measureTcp(ip)
+    if (latency === null) {
+      const item: ProbeCandidate = {
+        ip,
+        family,
+        latency: null,
+        tlsOk: false,
+        tlsMs: null,
+        tlsError: "TCP 不可达",
+      }
+      await setCached(ip, domain, {
+        latency: null,
+        tlsOk: false,
+        tlsMs: null,
+        tlsError: "TCP 不可达",
+      })
+      return item
+    }
+
+    const t = await checkTlsHandshake(domain, ip)
+    const item: ProbeCandidate = {
+      ip,
+      family,
+      latency,
       tlsOk: t.ok,
       tlsMs: t.ok ? t.ms : null,
       tlsError: t.error,
-    } as ProbeCandidate
+    }
+    await setCached(ip, domain, {
+      latency,
+      tlsOk: t.ok,
+      tlsMs: t.ok ? t.ms : null,
+      tlsError: t.error,
+    })
+    return item
   })
 
-  // TCP 就不通的也保留在列表里，让用户看到「解析出了这些 IP 但都用不了」；
-  // 但它们 tlsOk=false，不会被选为 bestIp，也不会写进 hosts。
-  const tcpFailed: ProbeCandidate[] = tcpProbed
-    .filter((x) => x.latency === null)
-    .map((x) => ({
-      ip: x.ip,
-      family: x.family,
-      latency: null,
-      tlsOk: false,
-      tlsMs: null,
-      tlsError: "TCP 不可达",
-    }))
+  result.cacheHits = cachedCount
 
-  const measured: ProbeCandidate[] = [...tlsProbed, ...tcpFailed]
+  // TCP 不通的也保留在列表里，让用户看到「解析出了这些 IP 但都用不了」；
+  // 但它们 tlsOk=false，不会被选为 bestIp，也不会写进 hosts。
+  const measured: ProbeCandidate[] = [...probed]
 
   // 排序：TLS 成功的排前面（按 TCP 延迟），其余靠后
   measured.sort((a, b) => {

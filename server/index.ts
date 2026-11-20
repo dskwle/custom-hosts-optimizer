@@ -24,6 +24,7 @@ import {
 } from "./probe.js"
 import { resolveAndMeasure, measureTiming, measureTcpOnly } from "./timing.js"
 import { taskManager, monitor, type TaskItemResult } from "./tasks.js"
+import { cacheStats, clearCache } from "./ipcache.js"
 import {
   filterBlocked,
   markBlocked,
@@ -113,6 +114,8 @@ root.post("/local/refresh", async (c) => {
   const wait = c.req.query("wait") === "true"
   // includeBlocked=true 时连已被判定为 SNI 阻断的域名一起重测，用于复核
   const includeBlocked = c.req.query("includeBlocked") === "true"
+  // noCache=true 强制全部重测，用于验证缓存是否失效
+  const noCache = c.req.query("noCache") === "true"
 
   const requested = resolveGroupDomains(groupParam)
 
@@ -147,7 +150,7 @@ root.post("/local/refresh", async (c) => {
           taskManager.startItem(task.taskId, domain)
           try {
             // 批量也做 SNI 检测：前端点开某个域名时要能看到与单次检测一致的完整信息
-            const r = await probeDomain(domain, { checkSni: true })
+            const r = await probeDomain(domain, { checkSni: true, useCache: !noCache })
 
             // 判定为 SNI 阻断的域名记入排除清单，后续刷新默认跳过。
             // 判定依据是 checkSniBlock 的双 SNI 对照，可靠性较高：
@@ -186,6 +189,7 @@ root.post("/local/refresh", async (c) => {
               tlsOk: r.tlsOkCount > 0,
               candidateCount: r.uniqueIpCount,
               tlsOkCount: r.tlsOkCount,
+              cacheHits: r.cacheHits,
               tlsMs: r.tlsMs,
               error,
               detail: {
@@ -603,6 +607,20 @@ root.get("/local/doh", async (c) => {
 root.post("/local/doh/reset", (c) => {
   resetBreakers()
   return c.json({ ok: true })
+})
+
+/** IP 延迟缓存状态：命中情况与条目数 */
+root.get("/local/cache", async (c) => {
+  const stats = await cacheStats()
+  return c.json({
+    ...stats,
+    ttlMinutes: Math.round(stats.ttlMs / 60000),
+  })
+})
+
+root.post("/local/cache/clear", async (c) => {
+  const n = await clearCache()
+  return c.json({ ok: true, cleared: n })
 })
 
 // 本地增强功能页面（真实延迟、进度、监控），仅本分支提供

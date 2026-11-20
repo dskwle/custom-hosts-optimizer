@@ -235,9 +235,15 @@
           <option value="24">并发 24</option>
         </select>
         <label class="row" style="gap:6px"><input type="checkbox" id="refreshIncludeBlocked"> 包含已阻断域名</label>
+        <label class="row" style="gap:6px"><input type="checkbox" id="refreshNoCache"> 忽略缓存</label>
         <button class="primary" id="btnRefresh">开始刷新</button>
         <span id="refreshStatus" class="sub"></span>
       </div>
+      <p class="sub" style="margin:10px 0 0">
+        IP 延迟缓存：<span id="cacheInfo">—</span>
+        <button class="sm" id="btnCacheClear" style="margin-left:8px">清空缓存</button>
+        <span class="sub">（缓存有效期 30 分钟，命中则跳过重测）</span>
+      </p>
       <div class="prog-wrap" id="refreshProg">
         <div class="prog-track"><div class="prog-fill" id="refreshFill"></div></div>
         <div class="prog-text" id="refreshText"></div>
@@ -735,7 +741,7 @@ function renderRecent(recent) {
       点击任意行可展开完整详情。
     </p>
     <table>
-      <thead><tr><th style="width:26px"></th><th>域名</th><th>最优 IP</th><th>TCP</th><th>TLS</th><th>候选/成功</th><th>状态</th></tr></thead>
+      <thead><tr><th style="width:26px"></th><th>域名</th><th>最优 IP</th><th>TCP</th><th>TLS</th><th>候选/成功</th><th>缓存</th><th>状态</th></tr></thead>
       <tbody>
         ${sorted.map((r, i) => `
           <tr class="expandable" data-idx="${i}" style="cursor:pointer">
@@ -745,10 +751,11 @@ function renderRecent(recent) {
             <td class="num ${latencyClass(r.latency)}">${r.latency != null ? r.latency + 'ms' : '—'}</td>
             <td class="num ${r.tlsOk ? 'good' : 'bad'}">${r.tlsOk ? (r.tlsMs != null ? r.tlsMs + 'ms' : '✓') : '✗'}</td>
             <td class="num">${r.candidateCount ?? '—'}/${r.tlsOkCount ?? '—'}</td>
+            <td class="num ${(r.cacheHits || 0) === r.candidateCount ? 'good' : ''}">${r.cacheHits != null ? r.cacheHits + '/' + r.candidateCount : '—'}</td>
             <td class="${r.ok ? 'good' : 'bad'}">${r.ok ? '正常' : '失败'}</td>
           </tr>
           <tr class="detail-row" data-detail="${i}" style="display:none">
-            <td colspan="7">${renderDetailRow(r)}</td>
+            <td colspan="8">${renderDetailRow(r)}</td>
           </tr>
         `).join('')}
       </tbody>
@@ -798,6 +805,7 @@ async function doRefresh() {
     if (group) params.set('group', group)
     params.set('concurrency', concurrency)
     if (includeBlocked) params.set('includeBlocked', 'true')
+    if (el('refreshNoCache').checked) params.set('noCache', 'true')
     const start = await (await fetch(`${API}/local/refresh?${params}`, { method: 'POST' })).json()
 
     const skippedCount = (start.skippedBlocked || []).length
@@ -822,6 +830,7 @@ async function doRefresh() {
           toast(t.state === 'done' ? '刷新完成' : '刷新失败')
           // 刷新过程中可能新判定出 SNI 阻断，完成后同步清单
           loadBlocked()
+          loadCacheInfo()
         }
       } catch (e) {
         clearInterval(refreshTimer); refreshTimer = null
@@ -1001,6 +1010,18 @@ async function removeDomain(domain) {
   } catch (e) { toast('删除失败') }
 }
 
+/* ---------- IP 延迟缓存 ---------- */
+async function loadCacheInfo() {
+  try {
+    const d = await (await fetch(`${API}/local/cache?_t=${Date.now()}`, { cache: 'no-store' })).json()
+    el('cacheInfo').innerHTML = d.total
+      ? `<strong>${d.fresh}</strong> 条有效${d.stale ? `，${d.stale} 条已过期` : ''}，有效期 ${d.ttlMinutes} 分钟`
+      : '空（首次刷新会建立）'
+  } catch (e) {
+    el('cacheInfo').textContent = '读取失败'
+  }
+}
+
 /* ---------- 六、SNI 阻断排除清单 ---------- */
 async function loadBlocked() {
   try {
@@ -1062,6 +1083,11 @@ el('btnTiming').addEventListener('click', doTiming)
 el('btnRefresh').addEventListener('click', doRefresh)
 el('btnMonitorStart').addEventListener('click', startMonitor)
 el('btnMonitorStop').addEventListener('click', stopMonitor)
+el('btnCacheClear').addEventListener('click', async () => {
+  const d = await (await fetch(`${API}/local/cache/clear`, { method: 'POST' })).json()
+  toast(`已清空 ${d.cleared} 条缓存`)
+  loadCacheInfo()
+})
 el('btnBlockedRecheck').addEventListener('click', recheckBlocked)
 el('btnBlockedClear').addEventListener('click', async () => {
   if (!confirm('清空排除清单后，下次刷新会重新检测这些域名。确定？')) return
@@ -1085,6 +1111,7 @@ loadGroups()
 loadHosts()
 loadDomains()
 loadBlocked()
+loadCacheInfo()
 fetch(`${API}/local/monitor/status`).then((r) => r.json()).then((s) => {
   if (s.running) {
     el('btnMonitorStart').disabled = true
