@@ -28,7 +28,24 @@ app.get("/hosts.json", async (c) => {
     const groupParam = c.req.query('group')
     
     console.log(`JSON request - refresh: ${forceRefresh}, group: ${groupParam || 'all'}`)
-    
+
+    // 同 /hosts：KV 为空时直接返回空结构，避免回落到慢速抓取
+    const dataAt = await getDataUpdatedAt(c.env)
+    if (!dataAt) {
+      c.header('Cache-Control', 'no-store')
+      return c.json({
+        entries: [],
+        total: 0,
+        groups: [],
+        github: [],
+        custom: [],
+        includeCustom: true,
+        timestamp: null,
+        dataUpdatedAt: null,
+        hint: '尚无数据，请先调用 POST /local/refresh 生成，再访问本接口',
+      })
+    }
+
     const allData = await getCompleteHostsData(c.env, forceRefresh)
     
     // 系统域名按分组过滤，用户自定义域名始终保留
@@ -113,7 +130,26 @@ app.get("/hosts", async (c) => {
     const includeCustomDomains = customParam !== 'false'
     
     console.log(`Hosts request - refresh: ${forceRefresh}, optimize: ${enableOptimization}, custom: ${includeCustomDomains}, group: ${groupParam || 'all'}`)
-    
+
+    // 首启动保护：KV 为空时不要回落到 Workers 的慢速抓取路径
+    // （那条路会串行解析 151 个域名并逐个测速，实测超过 60 秒）。
+    // 本分支的数据只由 /local/refresh 产生，因此直接提示去刷新。
+    const dataAt = await getDataUpdatedAt(c.env)
+    if (!dataAt) {
+      c.header('Content-Type', 'text/plain; charset=utf-8')
+      c.header('Cache-Control', 'no-store')
+      return c.text(
+        [
+          '# custom-hosts 尚未生成数据',
+          '#',
+          '# 请先在本地控制台 http://127.0.0.1:8788/ 点击「开始刷新」，',
+          '# 或执行：curl -X POST http://127.0.0.1:8788/local/refresh',
+          '#',
+          '# 刷新完成后再访问本地址即可获取 hosts 内容。',
+        ].join('\n')
+      )
+    }
+
     let allData: HostEntry[]
     
     if (includeCustomDomains) {
