@@ -22,7 +22,7 @@ import {
   INTL_DOH_ENABLED,
   IPV6_ENABLED,
 } from "./probe.js"
-import { resolveAndMeasure, measureTiming, measureTcpOnly } from "./timing.js"
+import { resolveAndMeasure } from "./timing.js"
 import { taskManager, monitor, type TaskItemResult } from "./tasks.js"
 import { cacheStats, clearCache } from "./ipcache.js"
 import { checkNetworkChange } from "./netcheck.js"
@@ -43,58 +43,11 @@ const HOST = process.env.HOST || "127.0.0.1"
 
 const kv = new FileKV()
 
-// 静态资源：把 public/ 读进内存，模拟 ASSETS.fetch 的行为
+// 静态资源目录：控制台页面直接从这里读取
 const PUBLIC_DIR = path.resolve(process.cwd(), "public")
-
-function contentType(file: string): string {
-  const ext = path.extname(file).toLowerCase()
-  return (
-    {
-      ".html": "text/html; charset=utf-8",
-      ".js": "application/javascript; charset=utf-8",
-      ".css": "text/css; charset=utf-8",
-      ".svg": "image/svg+xml",
-      ".ico": "image/x-icon",
-      ".json": "application/json; charset=utf-8",
-      ".png": "image/png",
-      ".jpg": "image/jpeg",
-    }[ext] || "application/octet-stream"
-  )
-}
-
-const assetsBinding = {
-  async fetch(input: any): Promise<Response> {
-    // 兼容两种调用：传 Request 对象（原应用写法），或传 URL/字符串
-    const urlStr =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : input?.url
-    if (!urlStr) {
-      return new Response("bad request", { status: 400 })
-    }
-    const url = new URL(urlStr)
-    const rel = url.pathname === "/" ? "/index.html" : url.pathname
-    // 防目录穿越
-    const target = path.join(PUBLIC_DIR, path.normalize(rel).replace(/^(\.\.[/\\])+/, ""))
-    if (!target.startsWith(PUBLIC_DIR)) {
-      return new Response("forbidden", { status: 403 })
-    }
-    try {
-      const buf = await readFile(target)
-      return new Response(buf, {
-        headers: { "content-type": contentType(target) },
-      })
-    } catch {
-      return new Response("not found", { status: 404 })
-    }
-  },
-}
 
 const env = {
   custom_hosts: kv as any,
-  ASSETS: assetsBinding as any,
   WORKER_URL: `http://${HOST}:${PORT}`,
   INTERNAL_TOKEN: process.env.INTERNAL_TOKEN || "local-dev-token",
   ADMIN_USERNAME: process.env.ADMIN_USERNAME || "admin",
@@ -674,31 +627,9 @@ const fakeCtx = {
   },
 }
 
-// 本地版不做权限控制，但 src/index.ts 的 apiAuth 中间件会拦截管理类 API
-// （它要求 Referer 或 x-api-key 匹配管理路径）。
-// 与其改动线上代码，不如在转发时补上凭据，让本地无感通过。
-const LOCAL_API_KEY = "admin-x7k9m3q2"
-
-root.all("*", (c) => {
-  const req = c.req.raw
-  const url = new URL(req.url)
-
-  // 只为管理类 API 补凭据，静态资源和公开接口保持原样
-  const isProtected = url.pathname.startsWith("/api/")
-  if (isProtected) {
-    const headers = new Headers(req.headers)
-    if (!headers.has("x-api-key")) {
-      headers.set("x-api-key", LOCAL_API_KEY)
-    }
-    if (!headers.has("referer")) {
-      headers.set("referer", `${url.origin}/${LOCAL_API_KEY}`)
-    }
-    const patched = new Request(req, { headers })
-    return worker.fetch(patched, env as any, fakeCtx as any)
-  }
-
-  return worker.fetch(req, env as any, fakeCtx as any)
-})
+// 兜底：/local/* 之外的请求交给原应用（hosts / hosts.json / api）。
+// 认证中间件已随管理后台一并移除，本地不再需要补凭据。
+root.all("*", (c) => worker.fetch(c.req.raw, env as any, fakeCtx as any))
 
 serve({ fetch: (req) => root.fetch(req, env), port: PORT, hostname: HOST }, (info) => {
   console.log(`\n  本地运行时已启动: http://${HOST}:${info.port}`)

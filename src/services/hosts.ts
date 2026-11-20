@@ -412,26 +412,6 @@ export async function getDomainData(
   }
 }
 
-// 重置 hosts 数据
-export async function resetHostsData(env: Bindings): Promise<HostEntry[]> {
-  try {
-    console.log("Clearing KV data...")
-    await env.custom_hosts.delete("domain_data")
-    console.log("KV data cleared")
-
-    console.log("Fetching new data...")
-    const newEntries = await fetchLatestHostsData()
-    console.log("New entries fetched:", newEntries)
-
-    await updateHostsData(env, newEntries)
-    console.log("New data stored in KV")
-
-    return newEntries
-  } catch (error) {
-    console.error("Error resetting hosts data:", error)
-    return []
-  }
-}
 
 // 自定义域名相关功能
 export interface CustomDomain {

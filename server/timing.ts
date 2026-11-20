@@ -182,27 +182,3 @@ export async function resolveAndMeasure(
   const r = await measureTiming({ host: domain, ip: targetIp })
   return { ...r, dnsMs }
 }
-
-/** 纯 TCP 握手测速，用于大量候选 IP 的初筛（比完整计时快得多） */
-export function measureTcpOnly(
-  ip: string,
-  port = 443,
-  timeoutMs = 2500
-): Promise<number | null> {
-  return new Promise((resolve) => {
-    const start = Date.now()
-    const socket = new net.Socket()
-    let settled = false
-    const done = (v: number | null) => {
-      if (settled) return
-      settled = true
-      socket.destroy()
-      resolve(v)
-    }
-    socket.setTimeout(timeoutMs)
-    socket.once("connect", () => done(Date.now() - start))
-    socket.once("timeout", () => done(null))
-    socket.once("error", () => done(null))
-    socket.connect(port, ip)
-  })
-}

@@ -1,7 +1,6 @@
 <div align="center">
-  <img src="public/logo.svg" width="140" height="140" alt="优选自定义host logo">
-  <h1>优选自定义host</h1>
-  <p>自定义域名访问加速，智能 IP 优选解决访问慢的问题。基于 Cloudflare Workers 部署。</p>
+  <h1>优选自定义host · 本地运行时</h1>
+  <p>自定义域名访问加速，智能 IP 优选。当前分支为<b>本地运行版</b>，不依赖 Cloudflare Workers。</p>
 
   <p>
     <a href="#项目声明">项目声明</a> •
@@ -13,6 +12,20 @@
     <a href="#故障排除">故障排除</a>
   </p>
 </div>
+
+> **本分支（local-runtime）说明**
+>
+> 与主干 `main` 的差异：本分支在本地 Node 环境运行，摆脱 Workers 的两条限制
+> （每请求 50 个 subrequest、cron 执行时长上限），并新增完整探测、SNI 归因、
+> 稳定性监控、服务端缓存等能力。
+>
+> 启动：`npm run local`（默认 <http://127.0.0.1:8788>）
+>
+> 本分支已移除的、仅 CF 版需要的内容：内联管理后台、`index.html/js/css`
+> 静态页面、`ASSETS` 绑定、cron 分片刷新与 `scheduled` 事件。
+> `npm run deploy` / `npm run dev` 已改为直接报错，避免误部署覆盖线上。
+>
+> 下方“部署指南”等内容对应主干版本，仅作参考。
 
 ## 项目声明
 

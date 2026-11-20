@@ -91,18 +91,6 @@ async function scheduleFlush(): Promise<void> {
   saveTimer.unref?.()
 }
 
-/** 读缓存，过期或不存在返回 null */
-export async function getCached(
-  ip: string,
-  domain: string
-): Promise<CachedEntry | null> {
-  const all = await load()
-  const e = all[cacheKey(ip, domain)]
-  if (!e) return null
-  if (Date.now() - e.at > CACHE_TTL_MS) return null
-  return e
-}
-
 /** 批量读取，用于在探测前一次性取出所有可用缓存 */
 export async function getCachedMany(
   items: { ip: string; domain: string }[]
@@ -126,18 +114,6 @@ export async function setCached(
 ): Promise<void> {
   const all = await load()
   all[cacheKey(ip, domain)] = { ...entry, at: Date.now() }
-  await scheduleFlush()
-}
-
-/** 批量写入 */
-export async function setCachedMany(
-  items: { ip: string; domain: string; entry: Omit<CachedEntry, "at"> }[]
-): Promise<void> {
-  const all = await load()
-  const now = Date.now()
-  for (const { ip, domain, entry } of items) {
-    all[cacheKey(ip, domain)] = { ...entry, at: now }
-  }
   await scheduleFlush()
 }
 
