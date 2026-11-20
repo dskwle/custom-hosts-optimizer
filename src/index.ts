@@ -4,6 +4,7 @@ import {
   getDomainData,
   getCompleteHostsData,
   getHostsData,
+  getDataUpdatedAt,
   getCustomDomains,
   addCustomDomain,
   removeCustomDomain,
@@ -65,6 +66,9 @@ app.get("/hosts.json", async (c) => {
     c.header('Cache-Control', forceRefresh ? 'no-cache' : 'public, max-age=3600') // 1小时缓存
     c.header('X-Cache-Status', forceRefresh ? 'MISS' : 'HIT')
 
+    // 用数据自身更新时间，避免每次请求时间都不同
+    const updatedAt = await getDataUpdatedAt(c.env)
+
     return c.json({
       entries,
       total: entries.length,
@@ -77,7 +81,8 @@ app.get("/hosts.json", async (c) => {
       github: byGroup['github'] ?? [],
       custom: customData,
       includeCustom: true,
-      timestamp: new Date().toISOString(),
+      timestamp: updatedAt ?? new Date().toISOString(),
+      dataUpdatedAt: updatedAt,
       cacheStatus: forceRefresh ? 'refreshed' : 'cached'
     })
   } catch (error) {
@@ -131,7 +136,8 @@ app.get("/hosts", async (c) => {
       console.log(`按分组 [${groupParam}] 过滤后: ${allData.length} 条`)
     }
     
-    const hostsContent = formatHostsFile(allData)
+    const updatedAt = await getDataUpdatedAt(c.env)
+    const hostsContent = formatHostsFile(allData, updatedAt)
     console.log(`生成的hosts文件长度: ${hostsContent.length} 字符`)
     
     // 添加缓存控制头

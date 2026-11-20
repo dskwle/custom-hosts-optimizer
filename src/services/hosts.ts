@@ -1,5 +1,5 @@
 import { connect } from "cloudflare:sockets"
-import { ALL_DOMAINS, DNS_PROVIDERS, HOSTS_TEMPLATE } from "../constants"
+import { ALL_DOMAINS, DNS_PROVIDERS, HOSTS_TEMPLATE, SITE_GROUPS } from "../constants"
 import { Bindings } from "../types"
 
 export type HostEntry = [string, string]
@@ -348,7 +348,13 @@ export async function updateHostsData(
 }
 
 // 格式化 hosts 文件
-export function formatHostsFile(entries: HostEntry[]): string {
+// updatedAt 传入数据的真实更新时间（KV 里的 lastUpdated）。
+// 不传则回退到当前时间——但每次请求都会变，无法据此判断数据新旧，
+// 因此调用方应尽量传入。
+export function formatHostsFile(
+  entries: HostEntry[],
+  updatedAt?: string | number | null
+): string {
   // 对齐宽度按实际最长地址动态计算。
   // 固定 padEnd(30) 在 IPv4 下够用（最长 15 字符），
   // 但 IPv6 完整形式可达 39 字符，会导致列错位。
@@ -359,15 +365,31 @@ export function formatHostsFile(entries: HostEntry[]): string {
     .map(([ip, domain]) => `${ip.padEnd(pad)}${domain}`)
     .join("\n")
 
-  const updateTime = new Date().toLocaleString("en-US", {
-    timeZone: "Asia/Shanghai",
-    hour12: false,
-  })
+  // 用数据自身的更新时间，而不是「本次请求的时间」。
+  // 后者每次调用都变，会让使用者误以为数据刚刷新过。
+  const ts = updatedAt != null ? new Date(updatedAt) : null
+  const updateTime =
+    ts && !Number.isNaN(ts.getTime())
+      ? ts.toLocaleString("en-US", { timeZone: "Asia/Shanghai", hour12: false })
+      : "未知（KV 中无时间戳）"
 
-  return HOSTS_TEMPLATE.replace("{content}", content).replace(
-    "{updateTime}",
-    updateTime
-  )
+  const groups = SITE_GROUPS.map((g) => g.name).join(" / ")
+
+  return HOSTS_TEMPLATE.replace("{groups}", groups)
+    .replace("{content}", content)
+    .replace("{updateTime}", updateTime)
+}
+
+// 读取 KV 中域名数据的更新时间，供 hosts 输出标注。
+export async function getDataUpdatedAt(env: Bindings): Promise<string | null> {
+  try {
+    const kvData = (await env.custom_hosts.get("domain_data", {
+      type: "json",
+    })) as { lastUpdated?: string } | null
+    return kvData?.lastUpdated ?? null
+  } catch {
+    return null
+  }
 }
 
 // 获取单个域名数据

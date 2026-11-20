@@ -37,7 +37,7 @@ export const GITHUB_URLS = [
 ]
 
 export const HOSTS_TEMPLATE = `# custom-hosts 自动生成
-# 覆盖：GitHub / npm / Docker / Steam / 游戏平台 / 游戏模组 / 网页工具 / 开发者资源
+# 覆盖：{groups}
 # 原理：绕开 DNS 污染，直连可用 IP
 
 {content}
