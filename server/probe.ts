@@ -114,6 +114,63 @@ const DOH_PROVIDERS = [
   },
 ]
 
+/**
+ * DoH 熔断器。
+ *
+ * 问题：Cloudflare(1.1.1.1) 与 Google(dns.google) 在国内网络基本不可达，
+ * 每次查询必然等到超时。142 个域名 × 2 个不可达源 × 5s ≈ 24 分钟纯浪费，
+ * 而且会让每个域名的探测时间被这两家拖到 10 秒以上。
+ *
+ * 策略：连续失败 N 次后进入熔断，一段时间内直接跳过（记 cachedError），
+ * 冷却期过后再试探一次。这样既省时间，又能在网络恢复后自动接回来。
+ */
+interface BreakerState {
+  consecutiveFailures: number
+  /** 熔断到期时间戳，0 表示未熔断 */
+  openUntil: number
+  /** 熔断期间对外展示的原因 */
+  lastError?: string
+}
+
+const DOH_BREAKER = new Map<string, BreakerState>()
+const BREAKER_THRESHOLD = 3
+const BREAKER_COOLDOWN_MS = 10 * 60 * 1000
+
+function getBreaker(name: string): BreakerState {
+  let s = DOH_BREAKER.get(name)
+  if (!s) {
+    s = { consecutiveFailures: 0, openUntil: 0 }
+    DOH_BREAKER.set(name, s)
+  }
+  return s
+}
+
+/** 查询熔断器状态，供接口/前端展示 */
+export function getBreakerStatus(): {
+  name: string
+  open: boolean
+  consecutiveFailures: number
+  retryAfterSec: number
+  lastError?: string
+}[] {
+  const now = Date.now()
+  return DOH_PROVIDERS.map((p) => {
+    const s = getBreaker(p.name)
+    return {
+      name: p.name,
+      open: s.openUntil > now,
+      consecutiveFailures: s.consecutiveFailures,
+      retryAfterSec: s.openUntil > now ? Math.ceil((s.openUntil - now) / 1000) : 0,
+      lastError: s.lastError,
+    }
+  })
+}
+
+/** 手动重置所有熔断状态 */
+export function resetBreakers(): void {
+  DOH_BREAKER.clear()
+}
+
 interface DohAnswer {
   type: number
   data: string
@@ -123,11 +180,48 @@ interface DohAnswer {
 async function queryDoh(
   domain: string,
   provider: (typeof DOH_PROVIDERS)[number],
-  timeoutMs = 5000
+  timeoutMs = 3000
 ): Promise<DohProviderResult> {
+  const breaker = getBreaker(provider.name)
+
+  // 熔断中：直接跳过，不发起网络请求。
+  // 明确标注原因，避免前端显示成「超时」让人误以为是偶然现象。
+  if (breaker.openUntil > Date.now()) {
+    const wait = Math.ceil((breaker.openUntil - Date.now()) / 1000)
+    return {
+      name: provider.name,
+      ips: [],
+      ms: null,
+      error: `已熔断（连续失败 ${breaker.consecutiveFailures} 次，${wait}s 后重试）`,
+    }
+  }
+
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   const t0 = Date.now()
+
+  /** 网络层失败：累计失败次数，达阈值则熔断 */
+  const onNetworkFailure = (msg: string): DohProviderResult => {
+    breaker.consecutiveFailures += 1
+    breaker.lastError = msg
+
+    // 安全阀：若其它 provider 当前全部处于熔断，则本家不熔断。
+    // 否则可能因偶发波动把所有源都熔断，导致整个探测无 DNS 可用。
+    const othersAllOpen = DOH_PROVIDERS.filter((p) => p.name !== provider.name).every(
+      (p) => {
+        const s = getBreaker(p.name)
+        return s.openUntil > Date.now()
+      }
+    )
+
+    if (breaker.consecutiveFailures >= BREAKER_THRESHOLD && !othersAllOpen) {
+      breaker.openUntil = Date.now() + BREAKER_COOLDOWN_MS
+      console.warn(
+        `[doh] ${provider.name} 熔断 ${BREAKER_COOLDOWN_MS / 60000} 分钟（${msg}）`
+      )
+    }
+    return { name: provider.name, ips: [], ms: null, error: msg }
+  }
 
   try {
     const res = await fetch(provider.url(domain), {
@@ -135,6 +229,11 @@ async function queryDoh(
       signal: controller.signal,
     })
     const ms = Date.now() - t0
+
+    // HTTP 层通了就算这家可达，重置失败计数（即便返回 4xx/5xx）
+    breaker.consecutiveFailures = 0
+    breaker.openUntil = 0
+
     if (!res.ok) {
       return { name: provider.name, ips: [], ms, error: `HTTP ${res.status}` }
     }
@@ -150,12 +249,11 @@ async function queryDoh(
     }
     return { name: provider.name, ips, ms }
   } catch (err) {
-    const ms = Date.now() - t0
     const msg =
       (err as Error).name === "AbortError"
         ? `超时（>${timeoutMs}ms）`
         : (err as Error).message
-    return { name: provider.name, ips: [], ms: null, error: msg }
+    return onNetworkFailure(msg)
   } finally {
     clearTimeout(timer)
   }

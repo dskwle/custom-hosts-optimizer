@@ -14,7 +14,7 @@ import { Hono } from "hono"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { FileKV } from "./kv.js"
-import { probeDomain, checkSniBlock } from "./probe.js"
+import { probeDomain, checkSniBlock, getBreakerStatus, resetBreakers } from "./probe.js"
 import { resolveAndMeasure, measureTiming, measureTcpOnly } from "./timing.js"
 import { taskManager, monitor, type TaskItemResult } from "./tasks.js"
 import {
@@ -538,6 +538,41 @@ root.get("/local/groups", (c) =>
 root.get("/local/health", (c) =>
   c.json({ ok: true, runtime: "node", pid: process.pid, port: PORT })
 )
+
+/** 各 DoH 服务商的可达性/熔断状态，便于排查「永久超时」 */
+root.get("/local/doh", async (c) => {
+  // 顺带做一次实时探测，让用户看到当前是否真的不可达
+  const probes = await Promise.all(
+    [
+      { name: "Cloudflare", url: "https://1.1.1.1/dns-query?name=example.com&type=A" },
+      { name: "Google", url: "https://dns.google/resolve?name=example.com&type=A" },
+      { name: "AliDNS", url: "https://dns.alidns.com/resolve?name=example.com&type=A" },
+      { name: "DNSPod", url: "https://doh.pub/dns-query?name=example.com&type=A" },
+    ].map(async (p) => {
+      const t0 = Date.now()
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 3000)
+      try {
+        const res = await fetch(p.url, {
+          headers: { accept: "application/dns-json" },
+          signal: controller.signal,
+        })
+        return { name: p.name, reachable: res.ok, ms: Date.now() - t0 }
+      } catch {
+        return { name: p.name, reachable: false, ms: null }
+      } finally {
+        clearTimeout(timer)
+      }
+    })
+  )
+
+  return c.json({ breakers: getBreakerStatus(), live: probes })
+})
+
+root.post("/local/doh/reset", (c) => {
+  resetBreakers()
+  return c.json({ ok: true })
+})
 
 // 本地增强功能页面（真实延迟、进度、监控），仅本分支提供
 root.get("/local", async (c) => {

@@ -449,6 +449,7 @@ function renderProviders(providers, systemIps, inconsistent, systemDiffers, extr
         return n > 1 ? `${ip}<span class="sub"> ×${n}</span>` : ip
       }).join('  ')
     } else {
+      // 熔断中/超时的源，用更明确的措辞而非笼统「失败」
       txt = `<span class="bad">${p.error || '无结果'}</span>`
     }
     return `<div class="prov-row">
@@ -483,7 +484,18 @@ function renderProviders(providers, systemIps, inconsistent, systemDiffers, extr
     note = `<p class="sub" style="margin-top:10px;color:#0f6e56">各家 DoH 与本机解析一致，解析正常。</p>`
   }
 
-  return `<div class="prov-list"><p class="sub" style="margin:0 0 4px">各 DNS 服务商分别返回</p>${rows}${localRow}${note}</div>`
+  // 若存在长时间不可达的源，明确说明原因，避免被误认为程序出错
+  const unreachable = providers.filter(
+    (p) => p.error && (p.error.includes("熔断") || p.error.includes("超时"))
+  )
+  const hintHtml = unreachable.length
+    ? `<p class="sub" style="margin-top:8px;color:#854f0b">
+        ${unreachable.map((p) => p.name).join('、')} 在当前网络下不可达（国内直连通常无法访问 1.1.1.1 与 dns.google）。
+        连续失败后会自动熔断并跳过，不再拖慢每次探测；国内两家（AliDNS、DNSPod）仍可正常解析。
+      </p>`
+    : ''
+
+  return `<div class="prov-list"><p class="sub" style="margin:0 0 4px">各 DNS 服务商分别返回</p>${rows}${hintHtml}${localRow}${note}</div>`
 }
 
 function renderSni(sni) {
