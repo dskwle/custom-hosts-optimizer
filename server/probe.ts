@@ -11,6 +11,39 @@
  */
 import dns from "node:dns/promises"
 import net from "node:net"
+import tls from "node:tls"
+
+/** 单家 DNS 服务商的查询结果 */
+export interface DohProviderResult {
+  name: string
+  /** 该家解析出的 IPv4 列表 */
+  ips: string[]
+  /** 查询耗时（ms），失败时为 null */
+  ms: number | null
+  /** 失败原因；成功时为 undefined */
+  error?: string
+}
+
+/** SNI 阻断判定：区分「IP 不通」与「TCP 通了但 TLS 被切断」 */
+export type SniVerdict =
+  /** TLS 握手成功，无阻断 */
+  | "ok"
+  /** TCP 可连接，但 TLS 握手被重置/超时——典型 SNI 阻断特征 */
+  | "sni-blocked"
+  /** TCP 都连不上，属于 IP 层封锁 */
+  | "tcp-blocked"
+  /** 未能建立任何连接，且原因不明 */
+  | "unknown"
+
+export interface SniCheckResult {
+  verdict: SniVerdict
+  /** 用真实域名作 SNI 时的握手结果 */
+  withSni: { ok: boolean; ms: number | null; error?: string }
+  /** 用占位 SNI 时的握手结果，用于区分是 SNI 匹配触发阻断还是目标本身拒绝 */
+  withoutSni: { ok: boolean; ms: number | null; error?: string }
+  /** 人类可读的结论 */
+  explanation: string
+}
 
 export interface ProbeResult {
   domain: string
@@ -20,10 +53,16 @@ export interface ProbeResult {
   latency: number | null
   /** 全部候选 IP 及其延迟，按延迟升序 */
   candidates: { ip: string; latency: number | null }[]
+  /** 每家 DoH 分别返回了什么，按配置顺序 */
+  providers: DohProviderResult[]
   /** 系统 DNS 解析出的 IP，用于判断本地是否被污染 */
   systemIps: string[]
   /** 多个 DoH 结果不一致，说明可能存在地域性解析差异 */
   inconsistent: boolean
+  /** 系统 DNS 与 DoH 结果不同，强烈提示本地被污染 */
+  systemDiffers: boolean
+  /** SNI 阻断检测结果 */
+  sni: SniCheckResult | null
   error?: string
 }
 
@@ -55,26 +94,43 @@ interface DohAnswer {
   data: string
 }
 
-/** 向单家 DoH 查询 A 记录，返回 IPv4 列表 */
+/** 向单家 DoH 查询 A 记录，连同耗时和错误一起返回 */
 async function queryDoh(
   domain: string,
   provider: (typeof DOH_PROVIDERS)[number],
   timeoutMs = 5000
-): Promise<string[]> {
+): Promise<DohProviderResult> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const t0 = Date.now()
+
   try {
     const res = await fetch(provider.url(domain), {
       headers: provider.headers,
       signal: controller.signal,
     })
-    if (!res.ok) return []
-    const data = (await res.json()) as { Answer?: DohAnswer[] }
-    return (data.Answer || [])
+    const ms = Date.now() - t0
+    if (!res.ok) {
+      return { name: provider.name, ips: [], ms, error: `HTTP ${res.status}` }
+    }
+    const data = (await res.json()) as { Answer?: DohAnswer[]; Status?: number }
+    const ips = (data.Answer || [])
       .filter((a) => a.type === 1 && /^\d+\.\d+\.\d+\.\d+$/.test(a.data))
       .map((a) => a.data)
-  } catch {
-    return []
+
+    if (ips.length === 0) {
+      // Status 3 表示域名不存在，0 但无 A 记录说明只有 AAAA 或 CNAME 链
+      const reason = data.Status === 3 ? "NXDOMAIN（域名不存在）" : "无 A 记录"
+      return { name: provider.name, ips: [], ms, error: reason }
+    }
+    return { name: provider.name, ips, ms }
+  } catch (err) {
+    const ms = Date.now() - t0
+    const msg =
+      (err as Error).name === "AbortError"
+        ? `超时（>${timeoutMs}ms）`
+        : (err as Error).message
+    return { name: provider.name, ips: [], ms: null, error: msg }
   } finally {
     clearTimeout(timer)
   }
@@ -114,17 +170,125 @@ function measureTcp(ip: string, port = 443, timeoutMs = 3000): Promise<number | 
 }
 
 /**
+ * SNI 阻断检测。
+ *
+ * 判定逻辑：对同一个 IP 做两次 TLS 握手——
+ *   1. 用真实域名作 SNI：正常应该成功
+ *   2. 用无关域名作 SNI：如果这个能成功、而第一次失败，
+ *      说明阻断是「按 SNI 域名匹配」触发的，即典型 SNI 阻断
+ *
+ * 之所以要做对照组，是因为 TLS 握手失败还有很多别的原因
+ * （证书不匹配、服务器要求特定协议版本、限流等），
+ * 只看单次失败无法归因。
+ */
+export async function checkSniBlock(
+  domain: string,
+  ip: string,
+  timeoutMs = 6000
+): Promise<SniCheckResult> {
+  const handshake = (servername: string) =>
+    new Promise<{ ok: boolean; ms: number | null; error?: string }>((resolve) => {
+      const start = Date.now()
+      let settled = false
+      const finish = (ok: boolean, error?: string) => {
+        if (settled) return
+        settled = true
+        resolve({ ok, ms: ok ? Date.now() - start : null, error })
+      }
+
+      const socket = tls.connect(
+        {
+          host: ip,
+          port: 443,
+          servername,
+          // 不校验证书：这里只关心握手能否完成，证书有效性另行判断
+          rejectUnauthorized: false,
+          ALPNProtocols: ["http/1.1"],
+        },
+        () => {
+          const ms = Date.now() - start
+          socket.destroy()
+          if (!settled) {
+            settled = true
+            resolve({ ok: true, ms })
+          }
+        }
+      )
+
+      socket.setTimeout(timeoutMs)
+      socket.once("timeout", () => {
+        socket.destroy()
+        finish(false, "握手超时")
+      })
+      socket.once("error", (err) => {
+        finish(false, (err as NodeJS.ErrnoException).code || (err as Error).message)
+      })
+    })
+
+  // 先确认 TCP 是否可达，不可达就没必要做 TLS 判定了
+  const tcpMs = await measureTcp(ip, 443, 4000)
+  if (tcpMs === null) {
+    return {
+      verdict: "tcp-blocked",
+      withSni: { ok: false, ms: null, error: "TCP 不可达" },
+      withoutSni: { ok: false, ms: null, error: "TCP 不可达" },
+      explanation: `无法与 ${ip}:443 建立 TCP 连接，属于 IP 层封锁或该 IP 已失效，与 SNI 无关。`,
+    }
+  }
+
+  const withSni = await handshake(domain)
+  if (withSni.ok) {
+    return {
+      verdict: "ok",
+      withSni,
+      withoutSni: { ok: true, ms: null },
+      explanation: `使用真实 SNI（${domain}）TLS 握手成功，耗时 ${withSni.ms}ms，不存在 SNI 阻断。`,
+    }
+  }
+
+  // 真实 SNI 失败，用无关域名做对照
+  const control = await handshake("example.com")
+
+  if (control.ok) {
+    return {
+      verdict: "sni-blocked",
+      withSni,
+      withoutSni: control,
+      explanation:
+        `TCP 可连接（${tcpMs}ms），但用真实 SNI「${domain}」握手失败（${withSni.error}）；` +
+        `改用无关 SNI 则握手成功（${control.ms}ms）。` +
+        `说明中间设备是按 SNI 域名匹配切断连接的——这是典型 SNI 阻断，改 hosts 无效，必须走代理。`,
+    }
+  }
+
+  return {
+    verdict: "unknown",
+    withSni,
+    withoutSni: control,
+    explanation:
+      `TCP 可连接（${tcpMs}ms），但两种 SNI 都无法完成握手（真实 SNI：${withSni.error}；` +
+      `对照 SNI：${control.error}）。无法归因为 SNI 阻断，可能是该 IP 上的服务异常或限流。`,
+  }
+}
+
+/**
  * 完整探测一个域名：多源解析 -> 候选去重 -> 逐个测速 -> 取最优。
  * 相比 Cloudflare 版「解析出一个 IP 就用」的做法，这里才真正做了优选。
  */
-export async function probeDomain(domain: string): Promise<ProbeResult> {
+export async function probeDomain(
+  domain: string,
+  options: { checkSni?: boolean } = {}
+): Promise<ProbeResult> {
   const result: ProbeResult = {
     domain,
     bestIp: null,
     latency: null,
     candidates: [],
+    providers: [],
     systemIps: [],
     inconsistent: false,
+    systemDiffers: false,
+    sni: null,
   }
 
   const [dohResults, systemIps] = await Promise.all([
@@ -132,24 +296,34 @@ export async function probeDomain(domain: string): Promise<ProbeResult> {
     querySystemDns(domain),
   ])
 
+  // 保留每家 DoH 的明细，前端可以逐条展示
+  result.providers = dohResults
   result.systemIps = systemIps
 
   const ipsFromDoh = new Set<string>()
-  for (const list of dohResults) {
-    for (const ip of list) ipsFromDoh.add(ip)
+  for (const r of dohResults) {
+    for (const ip of r.ips) ipsFromDoh.add(ip)
   }
 
-  // 各 DoH 结果存在差异，说明解析受地域/运营商影响
-  const nonEmpty = dohResults.filter((l) => l.length > 0)
+  // 各 DoH 之间的结果差异
+  const nonEmpty = dohResults.filter((r) => r.ips.length > 0)
   if (nonEmpty.length > 1) {
-    const first = [...nonEmpty[0]].sort().join(",")
-    result.inconsistent = nonEmpty.some((l) => [...l].sort().join(",") !== first)
+    const first = [...nonEmpty[0].ips].sort().join(",")
+    result.inconsistent = nonEmpty.some(
+      (r) => [...r.ips].sort().join(",") !== first
+    )
+  }
+
+  // 系统 DNS 与 DoH 的差异——这是本地被污染最直接的证据
+  if (systemIps.length > 0 && ipsFromDoh.size > 0) {
+    const dohSet = ipsFromDoh
+    result.systemDiffers = systemIps.some((ip) => !dohSet.has(ip))
   }
 
   const allCandidates = new Set<string>([...ipsFromDoh, ...systemIps])
 
   if (allCandidates.size === 0) {
-    result.error = "all DNS sources failed"
+    result.error = "所有 DNS 源均未返回 A 记录"
     return result
   }
 
@@ -173,6 +347,11 @@ export async function probeDomain(domain: string): Promise<ProbeResult> {
   } else {
     // 全都不通时保留一个 IP，避免 hosts 条目消失
     result.bestIp = candidates[0]
+  }
+
+  // SNI 检测开销较大（多次 TLS 握手），仅在显式要求时执行
+  if (options.checkSni && result.bestIp) {
+    result.sni = await checkSniBlock(domain, result.bestIp)
   }
 
   return result

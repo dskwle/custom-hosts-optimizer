@@ -14,7 +14,7 @@ import { Hono } from "hono"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { FileKV } from "./kv.js"
-import { probeDomain } from "./probe.js"
+import { probeDomain, checkSniBlock } from "./probe.js"
 import { resolveAndMeasure, measureTiming, measureTcpOnly } from "./timing.js"
 import { taskManager, monitor, type TaskItemResult } from "./tasks.js"
 // src/index.ts 的默认导出是 { fetch, scheduled } 对象（Workers 入口约定），
@@ -214,8 +214,29 @@ root.get("/local/tasks/:id", (c) => {
 root.get("/local/probe", async (c) => {
   const domain = c.req.query("domain")
   if (!domain) return c.json({ error: "domain required" }, 400)
-  const r = await probeDomain(domain)
+  // 默认做 SNI 检测：这是判断「改了 hosts 到底有没有用」的关键依据
+  const checkSni = c.req.query("sni") !== "false"
+  const r = await probeDomain(domain, { checkSni })
   return c.json(r)
+})
+
+/** 仅做 SNI 阻断检测，用于快速判断某域名属于哪类问题 */
+root.get("/local/sni", async (c) => {
+  const domain = c.req.query("domain")
+  if (!domain) return c.json({ error: "domain required" }, 400)
+  const ip = c.req.query("ip") || undefined
+
+  let targetIp = ip
+  if (!targetIp) {
+    const probe = await probeDomain(domain)
+    targetIp = probe.bestIp ?? undefined
+  }
+  if (!targetIp) {
+    return c.json({ domain, error: "无法解析出可用 IP" }, 400)
+  }
+
+  const r = await checkSniBlock(domain, targetIp)
+  return c.json({ domain, ip: targetIp, ...r })
 })
 
 /**
@@ -241,7 +262,7 @@ root.get("/local/compare", async (c) => {
   const roundRaw = Number(c.req.query("rounds") || 3)
   const rounds = Math.min(Math.max(roundRaw, 1), 5)
 
-  const probe = await probeDomain(domain)
+  const probe = await probeDomain(domain, { checkSni: true })
   const candidates = probe.candidates.filter((x) => x.latency !== null).slice(0, 5)
 
   const details = await Promise.all(
@@ -283,6 +304,9 @@ root.get("/local/compare", async (c) => {
     candidateCount: probe.candidates.length,
     systemIps: probe.systemIps,
     inconsistent: probe.inconsistent,
+    systemDiffers: probe.systemDiffers,
+    providers: probe.providers,
+    sni: probe.sni,
     recommended: details[0]?.ip ?? null,
     details,
   })
