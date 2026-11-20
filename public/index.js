@@ -1442,7 +1442,12 @@ async function probeDomain(domain, rounds) {
 
   samples.sort((a, b) => a - b)
   const best = samples[0]
-  const median = samples[Math.floor(samples.length / 2)]
+  // 偶数个样本时取中间两个的平均，否则直接取下标 mid 的值。
+  // 只取 samples[mid] 会让 2 轮采样时的「中位」永远等于最大值（因为下标 1 就是最大）。
+  const mid = Math.floor(samples.length / 2)
+  const median = samples.length % 2 === 0
+    ? Math.round((samples[mid - 1] + samples[mid]) / 2)
+    : samples[mid]
   // 抖动 = 最大与最小之差，反映链路稳定性
   const jitter = samples.length > 1 ? samples[samples.length - 1] - best : 0
 
