@@ -793,6 +793,7 @@ app.get("/hosts.json", async (c) => {
         id: g.id,
         name: g.name,
         count: byGroup[g.id].length,
+        entries: byGroup[g.id],
       })),
       github: byGroup['github'] ?? [],
       custom: customData,

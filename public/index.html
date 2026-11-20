@@ -51,6 +51,7 @@
   <!-- 主功能选项卡 -->
   <div class="tabs">
     <div class="tab active" data-tab="hosts">Hosts 文件</div>
+    <div class="tab" data-tab="speedtest">本地测速</div>
     <div class="tab" data-tab="api">API 文档</div>
     <div class="tab" data-tab="help">使用帮助</div>
   </div>
@@ -95,6 +96,75 @@
   </div>
 
   <!-- 自定义域名选项卡已移至管理后台 -->
+
+  <!-- 本地测速选项卡 -->
+  <div class="tab-content" id="speedtest-tab">
+    <h2>你的网络实测</h2>
+    <p class="speedtest-note">
+      以下测试由你的浏览器直接发起，<strong>不经过 Cloudflare 服务器</strong>，测得的是你自己网络到目标站点的真实延迟。
+      建议先应用 hosts 再测，结果才代表实际体验。
+    </p>
+
+    <div class="control-panel">
+      <button id="startSpeedtest" class="btn btn-primary">开始测速</button>
+      <button id="stopSpeedtest" class="btn btn-secondary" disabled>停止</button>
+      <span id="speedtestStatus" class="status-text">未开始</span>
+    </div>
+
+    <div class="speedtest-options">
+      <label class="speedtest-opt">
+        <input type="checkbox" id="stFilterGroups" checked>
+        仅测已应用 hosts 的站点
+      </label>
+      <label class="speedtest-opt">
+        测速轮数
+        <select id="stRounds">
+          <option value="1">1 轮</option>
+          <option value="2" selected>2 轮</option>
+          <option value="3">3 轮</option>
+        </select>
+      </label>
+      <label class="speedtest-opt">
+        并发数
+        <select id="stConcurrency">
+          <option value="3">3</option>
+          <option value="6" selected>6</option>
+          <option value="10">10</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="speedtest-summary" id="speedtestSummary" style="display:none">
+      <div class="st-card"><span class="st-num" id="stOk">0</span><span class="st-label">可联通</span></div>
+      <div class="st-card"><span class="st-num" id="stFail">0</span><span class="st-label">不通</span></div>
+      <div class="st-card"><span class="st-num" id="stAvg">-</span><span class="st-label">平均 RTT</span></div>
+      <div class="st-card"><span class="st-num" id="stBest">-</span><span class="st-label">最低 RTT</span></div>
+    </div>
+
+    <div class="speedtest-table-wrap">
+      <table class="api-table" id="speedtestTable">
+        <thead>
+          <tr>
+            <th>域名</th>
+            <th>分组</th>
+            <th>延迟</th>
+            <th>DNS</th>
+            <th>TCP</th>
+            <th>TLS</th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody id="speedtestBody">
+          <tr><td colspan="7" style="text-align:center;color:#888">点击「开始测速」后显示结果</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="speedtest-footnote">
+      说明：浏览器不允许指定 IP 连接，因此本测速反映的是「按当前 DNS 解析结果连接」的真实耗时。
+      若已应用本页生成的 hosts，即为应用后的实际效果。
+    </p>
+  </div>
 
   <!-- API 文档选项卡 -->
   <div class="tab-content" id="api-tab">

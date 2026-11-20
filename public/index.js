@@ -1386,3 +1386,214 @@ console.log('- debugSystemStatus(): 获取完整系统状态')
 console.log('- debugExportLogs(): 导出调试日志')
 console.log('- debugClearLogs(): 清除调试日志')
 console.log('状态监控已启用，所有操作将被记录')
+
+/* ============================================================
+ * 本地测速：由浏览器直连目标站点，不经过 Cloudflare 服务器。
+ *
+ * 原理与限制：
+ *   - 浏览器无法指定 IP 连接，只能按系统 DNS 解析结果连接，
+ *     因此测的是「当前 DNS 下」的真实往返耗时。
+ *   - 若用户已应用本页生成的 hosts，测得的即为应用后的实际体验。
+ *   - 用 fetch(mode:'no-cors') 拿不到响应体，但能拿到 timing，
+ *     足以测量 RTT；被墙时 fetch 会快速 reject，正好用来判定不通。
+ * ============================================================ */
+
+const speedtestState = { running: false, abort: false, results: [] }
+
+// 单次探测：优先用 no-cors 请求，取 PerformanceResourceTiming 的阶段耗时
+async function probeOnce(domain, timeoutMs = 6000) {
+  const url = `https://${domain}/?_st=${Date.now()}`
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const t0 = performance.now()
+
+  try {
+    await fetch(url, {
+      mode: 'no-cors',
+      cache: 'no-store',
+      signal: controller.signal,
+      redirect: 'follow',
+    })
+    const total = performance.now() - t0
+
+    // 从资源计时里取各阶段细节（拿不到就只报总耗时）
+    const entries = performance.getEntriesByName(url)
+    const e = entries[entries.length - 1]
+    const detail = {
+      total: Math.round(total),
+      dns: e && e.domainLookupEnd > e.domainLookupStart
+        ? Math.round(e.domainLookupEnd - e.domainLookupStart) : null,
+      tcp: e && e.connectEnd > e.connectStart
+        ? Math.round(e.connectEnd - e.connectStart) : null,
+      tls: e && e.secureConnectionStart > 0
+        ? Math.round(e.connectEnd - e.secureConnectionStart) : null,
+    }
+    performance.clearResourceTimings()
+    return { ok: true, ...detail }
+  } catch (err) {
+    // 超时或连接被重置都算不通
+    return { ok: false, total: Math.round(performance.now() - t0), error: err.name }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// 多轮取最小值（最小值更能反映链路质量，平均值会被抖动拉高）
+async function probeDomain(domain, rounds) {
+  let best = null
+  for (let i = 0; i < rounds; i++) {
+    if (speedtestState.abort) break
+    const r = await probeOnce(domain)
+    if (!best || (r.ok && (!best.ok || r.total < best.total))) {
+      best = r
+    }
+    if (!r.ok && i === 0) break
+    await new Promise((res) => setTimeout(res, 150))
+  }
+  return best || { ok: false, total: -1 }
+}
+
+// 并发池：控制同时在跑的探测数量，避免浏览器连接数上限导致互相排队
+async function runPool(items, concurrency, worker, onDone) {
+  let index = 0
+  let done = 0
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      if (speedtestState.abort) return
+      const i = index++
+      if (i >= items.length) return
+      const result = await worker(items[i], i)
+      done++
+      onDone(result, done, items.length)
+    }
+  })
+  await Promise.all(runners)
+}
+
+function renderSpeedtestRow(item) {
+  const tbody = document.getElementById('speedtestBody')
+  if (!tbody) return
+  const r = item.result
+  const lat = r.ok ? `${r.total} ms` : '—'
+  const cls = r.ok ? (r.total < 300 ? 'st-good' : r.total < 800 ? 'st-mid' : 'st-bad') : 'st-dead'
+  const tr = document.createElement('tr')
+  tr.innerHTML = `
+    <td>${item.domain}</td>
+    <td>${item.group || '-'}</td>
+    <td class="${cls}">${lat}</td>
+    <td>${r.dns != null ? r.dns + ' ms' : '-'}</td>
+    <td>${r.tcp != null ? r.tcp + ' ms' : '-'}</td>
+    <td>${r.tls != null ? r.tls + ' ms' : '-'}</td>
+    <td>${r.ok ? '可联通' : '不通'}</td>
+  `
+  tbody.appendChild(tr)
+}
+
+async function startSpeedtest() {
+  if (speedtestState.running) return
+
+  const btnStart = document.getElementById('startSpeedtest')
+  const btnStop = document.getElementById('stopSpeedtest')
+  const statusEl = document.getElementById('speedtestStatus')
+  const tbody = document.getElementById('speedtestBody')
+
+  speedtestState.running = true
+  speedtestState.abort = false
+  speedtestState.results = []
+  btnStart.disabled = true
+  btnStop.disabled = false
+  tbody.innerHTML = ''
+  document.getElementById('speedtestSummary').style.display = 'none'
+
+  const rounds = Number(document.getElementById('stRounds').value) || 2
+  const concurrency = Number(document.getElementById('stConcurrency').value) || 6
+  const onlyApplied = document.getElementById('stFilterGroups').checked
+
+  let targets = []
+  try {
+    const res = await fetch(`${baseUrl}/hosts.json`, { cache: 'no-store' })
+    const data = await res.json()
+
+    // 后端按分组返回了各自的域名列表，用来给每条记录标注所属分组
+    const groupNameByDomain = {}
+    for (const group of (data.groups || [])) {
+      for (const [, domain] of (group.entries || [])) {
+        groupNameByDomain[domain] = group.name
+      }
+    }
+    for (const [, domain] of (data.custom || [])) {
+      groupNameByDomain[domain] = '自定义'
+    }
+
+    // entries 是 [ip, domain]，测速只需要域名
+    targets = (data.entries || []).map(([, domain]) => ({
+      domain,
+      group: groupNameByDomain[domain] || '-',
+    }))
+  } catch (err) {
+    statusEl.textContent = '获取域名列表失败：' + err.message
+    speedtestState.running = false
+    btnStart.disabled = false
+    btnStop.disabled = true
+    return
+  }
+
+  if (!targets.length) {
+    statusEl.textContent = '没有可测速的域名，请先刷新 hosts 数据'
+    speedtestState.running = false
+    btnStart.disabled = false
+    btnStop.disabled = true
+    return
+  }
+
+  statusEl.textContent = `正在测速 0/${targets.length}（${rounds} 轮，并发 ${concurrency}）`
+
+  await runPool(
+    targets,
+    concurrency,
+    async (item) => {
+      const result = await probeDomain(item.domain, rounds)
+      return { ...item, result }
+    },
+    (item, done, total) => {
+      speedtestState.results.push(item)
+      renderSpeedtestRow(item)
+      statusEl.textContent = `正在测速 ${done}/${total}（${rounds} 轮，并发 ${concurrency}）`
+    }
+  )
+
+  // 汇总
+  const finished = speedtestState.results
+  const okList = finished.filter((x) => x.result.ok)
+  const failList = finished.filter((x) => !x.result.ok)
+  const latencies = okList.map((x) => x.result.total).sort((a, b) => a - b)
+
+  document.getElementById('stOk').textContent = String(okList.length)
+  document.getElementById('stFail').textContent = String(failList.length)
+  document.getElementById('stAvg').textContent = latencies.length
+    ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) + ' ms'
+    : '-'
+  document.getElementById('stBest').textContent = latencies.length ? latencies[0] + ' ms' : '-'
+  document.getElementById('speedtestSummary').style.display = 'flex'
+
+  statusEl.textContent = speedtestState.abort
+    ? `已停止（完成 ${finished.length}/${targets.length}）`
+    : `完成：${okList.length} 可联通 / ${failList.length} 不通`
+
+  speedtestState.running = false
+  btnStart.disabled = false
+  btnStop.disabled = true
+}
+
+function stopSpeedtest() {
+  speedtestState.abort = true
+  const statusEl = document.getElementById('speedtestStatus')
+  if (statusEl) statusEl.textContent = '正在停止...'
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const btnStart = document.getElementById('startSpeedtest')
+  const btnStop = document.getElementById('stopSpeedtest')
+  if (btnStart) btnStart.addEventListener('click', startSpeedtest)
+  if (btnStop) btnStop.addEventListener('click', stopSpeedtest)
+})
