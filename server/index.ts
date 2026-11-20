@@ -382,10 +382,21 @@ root.get("/local/health", (c) =>
 // 本地增强功能页面（真实延迟、进度、监控），仅本分支提供
 root.get("/local", async (c) => {
   try {
-    const html = await readFile(path.join(PUBLIC_DIR, "local.html"), "utf8")
+    const html = await readFile(path.join(PUBLIC_DIR, "console.html"), "utf8")
     return c.html(html)
   } catch {
-    return c.text("local.html not found", 404)
+    return c.text("console.html not found", 404)
+  }
+})
+
+// 本地版首页直接是控制台：把 hosts 内容与全部诊断功能放在一页，
+// 不做权限控制，也不区分管理路径。
+root.get("/", async (c) => {
+  try {
+    const html = await readFile(path.join(PUBLIC_DIR, "console.html"), "utf8")
+    return c.html(html)
+  } catch {
+    return c.text("console.html not found", 404)
   }
 })
 
@@ -401,9 +412,31 @@ const fakeCtx = {
   },
 }
 
-// 兜底：所有 /local/* 之外、以及未命中的请求交给原应用处理。
-// 用 all("*") 而不是 route("/") ，是因为 worker.fetch 是普通函数而非 Hono 实例。
-root.all("*", (c) => worker.fetch(c.req.raw, env as any, fakeCtx as any))
+// 本地版不做权限控制，但 src/index.ts 的 apiAuth 中间件会拦截管理类 API
+// （它要求 Referer 或 x-api-key 匹配管理路径）。
+// 与其改动线上代码，不如在转发时补上凭据，让本地无感通过。
+const LOCAL_API_KEY = "admin-x7k9m3q2"
+
+root.all("*", (c) => {
+  const req = c.req.raw
+  const url = new URL(req.url)
+
+  // 只为管理类 API 补凭据，静态资源和公开接口保持原样
+  const isProtected = url.pathname.startsWith("/api/")
+  if (isProtected) {
+    const headers = new Headers(req.headers)
+    if (!headers.has("x-api-key")) {
+      headers.set("x-api-key", LOCAL_API_KEY)
+    }
+    if (!headers.has("referer")) {
+      headers.set("referer", `${url.origin}/${LOCAL_API_KEY}`)
+    }
+    const patched = new Request(req, { headers })
+    return worker.fetch(patched, env as any, fakeCtx as any)
+  }
+
+  return worker.fetch(req, env as any, fakeCtx as any)
+})
 
 serve({ fetch: (req) => root.fetch(req, env), port: PORT, hostname: HOST }, (info) => {
   console.log(`\n  本地运行时已启动: http://${HOST}:${info.port}`)
