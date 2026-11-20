@@ -55,23 +55,24 @@ interface DnsResponse {
   Answer: DnsAnswer[]
 }
 
-// 重试机制 - 优化超时和重试策略
+// 重试机制 - DoH 正常响应在 200ms 内，重试只用于应对偶发抖动。
+// 原 2 次重试配合 8s 超时，最坏单域名耗时 24s，是 cron 跑不完的主因。
 async function retry<T>(
   fn: () => Promise<T>,
-  retries: number = 2, // 减少重试次数，避免过长等待
-  delay: number = 500  // 减少延迟时间
+  retries: number = 1,
+  delay: number = 300
 ): Promise<T> {
   try {
     return await fn()
   } catch (error) {
     if (retries === 0) throw error
     await new Promise((resolve) => setTimeout(resolve, delay))
-    return retry(fn, retries - 1, delay * 1.5) // 减少延迟增长倍数
+    return retry(fn, retries - 1, delay * 1.5)
   }
 }
 
-// DNS查询超时控制
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number = 8000): Promise<T> {
+// DNS查询超时控制：DoH 通常 <500ms，5s 已足够宽松
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number = 5000): Promise<T> {
   return Promise.race([
     promise,
     new Promise<T>((_, reject) => 
@@ -93,7 +94,7 @@ export async function fetchIPFromDNS(
       retry(() =>
         fetch(provider.url(domain), { 
           headers: provider.headers,
-          signal: AbortSignal.timeout(5000) // 5秒超时
+          signal: AbortSignal.timeout(4000)
         })
       )
     )
@@ -140,7 +141,7 @@ export async function fetchIPFromMultipleDNS(domain: string): Promise<string | n
 export async function measureLatency(
   ip: string,
   port: number = 443,
-  timeoutMs: number = 2500
+  timeoutMs: number = 1800
 ): Promise<number | null> {
   const start = Date.now()
   let socket: any = null
@@ -244,7 +245,9 @@ export async function getHostsData(env: Bindings, forceRefresh: boolean = false)
     })) as KVData | null
 
     // 检查缓存是否有效（6小时内的数据认为有效，而不是1小时）
-    const cacheValidTime = 6 * 60 * 60 * 1000 // 6小时
+    // 缓存有效期略大于 cron 周期（2 小时），留 1 小时容错，
+    // 这样即使某次 cron 失败，已有数据仍可继续服务，不会立刻回源全量抓取。
+    const cacheValidTime = 3 * 60 * 60 * 1000 // 3小时
     const isDataValid = kvData?.lastUpdated && 
       (new Date(kvData.lastUpdated).getTime() + cacheValidTime > Date.now()) &&
       Object.keys(kvData.domain_data || {}).length > 0

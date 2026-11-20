@@ -7,6 +7,10 @@ import { fetchLatestHostsData, storeData } from "./services/hosts"
 // 8 个域名约 32 个，安全落在免费版 50 个/请求的限制内。
 const CHUNK_SIZE = 8
 
+// 单轮刷新总预算。超出后主动停止后续分片，避免撞上 cron 执行上限
+// 导致「前半成功、后半静默丢弃」。
+const BUDGET_MS = 240_000
+
 /**
  * 定时任务：按片刷新全部域名。
  *
@@ -43,8 +47,16 @@ export async function handleSchedule(
 
   let ok = 0
   let failed = 0
+  let skipped = 0
+  const startedAt = Date.now()
 
   for (const offset of offsets) {
+    if (Date.now() - startedAt > BUDGET_MS) {
+      skipped = offsets.length - ok - failed
+      console.warn(`budget exceeded (${BUDGET_MS}ms), skip ${skipped} remaining chunks`)
+      break
+    }
+
     try {
       const res = await fetch(
         `${baseUrl}/internal/refresh?offset=${offset}&limit=${CHUNK_SIZE}`,
@@ -68,5 +80,8 @@ export async function handleSchedule(
     }
   }
 
-  console.log(`Scheduled refresh finished: ${ok} ok / ${failed} failed (${total} domains)`)
+  const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1)
+  console.log(
+    `Scheduled refresh finished in ${elapsed}s: ${ok} ok / ${failed} failed / ${skipped} skipped (${total} domains)`
+  )
 }
