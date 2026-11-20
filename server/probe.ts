@@ -51,12 +51,16 @@ export interface ProbeResult {
   bestIp: string | null
   /** 最优 IP 的 TCP 握手延迟（ms） */
   latency: number | null
-  /** 全部候选 IP 及其延迟，按延迟升序 */
+  /** 全部候选 IP 及其延迟，按延迟升序。同一 IP 无论被几家 DNS 返回，只测一次 */
   candidates: { ip: string; latency: number | null }[]
   /** 每家 DoH 分别返回了什么，按配置顺序 */
   providers: DohProviderResult[]
   /** 系统 DNS 解析出的 IP，用于判断本地是否被污染 */
   systemIps: string[]
+  /** 去重后的候选 IP 总数 */
+  uniqueIpCount: number
+  /** 各 DNS 源返回的原始条目数之和（含重复），用于说明去重效果 */
+  totalResolvedEntries: number
   /** 多个 DoH 结果不一致，说明可能存在地域性解析差异 */
   inconsistent: boolean
   /** 系统 DNS 与 DoH 结果不同，强烈提示本地被污染 */
@@ -180,11 +184,14 @@ function measureTcp(ip: string, port = 443, timeoutMs = 3000): Promise<number | 
  * 之所以要做对照组，是因为 TLS 握手失败还有很多别的原因
  * （证书不匹配、服务器要求特定协议版本、限流等），
  * 只看单次失败无法归因。
+ *
+ * knownTcpMs：调用方若已测过该 IP 的 TCP 延迟，传进来即可跳过重复测量。
  */
 export async function checkSniBlock(
   domain: string,
   ip: string,
-  timeoutMs = 6000
+  timeoutMs = 6000,
+  knownTcpMs?: number | null
 ): Promise<SniCheckResult> {
   const handshake = (servername: string) =>
     new Promise<{ ok: boolean; ms: number | null; error?: string }>((resolve) => {
@@ -225,8 +232,10 @@ export async function checkSniBlock(
       })
     })
 
-  // 先确认 TCP 是否可达，不可达就没必要做 TLS 判定了
-  const tcpMs = await measureTcp(ip, 443, 4000)
+  // 先确认 TCP 是否可达，不可达就没必要做 TLS 判定了。
+  // 调用方已测过就直接复用，避免对同一 IP 重复握手。
+  const tcpMs =
+    knownTcpMs !== undefined ? knownTcpMs : await measureTcp(ip, 443, 4000)
   if (tcpMs === null) {
     return {
       verdict: "tcp-blocked",
@@ -286,6 +295,8 @@ export async function probeDomain(
     candidates: [],
     providers: [],
     systemIps: [],
+    uniqueIpCount: 0,
+    totalResolvedEntries: 0,
     inconsistent: false,
     systemDiffers: false,
     sni: null,
@@ -300,10 +311,19 @@ export async function probeDomain(
   result.providers = dohResults
   result.systemIps = systemIps
 
+  // 关键：用 Set 做全局去重。
+  // 多家 DoH 常常返回完全相同的 IP（尤其大厂域名用 anycast），
+  // 若按来源逐个测速，同一个 IP 会被重复测量多次，纯属浪费。
+  // 这里把「所有 DoH + 系统 DNS」合并到一个 Set，保证每个 IP 只进候选一次。
   const ipsFromDoh = new Set<string>()
+  let rawCount = 0
   for (const r of dohResults) {
+    rawCount += r.ips.length
     for (const ip of r.ips) ipsFromDoh.add(ip)
   }
+  rawCount += systemIps.length
+
+  result.totalResolvedEntries = rawCount
 
   // 各 DoH 之间的结果差异
   const nonEmpty = dohResults.filter((r) => r.ips.length > 0)
@@ -321,6 +341,7 @@ export async function probeDomain(
   }
 
   const allCandidates = new Set<string>([...ipsFromDoh, ...systemIps])
+  result.uniqueIpCount = allCandidates.size
 
   if (allCandidates.size === 0) {
     result.error = "所有 DNS 源均未返回 A 记录"
@@ -328,6 +349,7 @@ export async function probeDomain(
   }
 
   const candidates = [...allCandidates]
+  // 去重后的每个 IP 只测一次，结果写入 measured 后复用
   const measured = await Promise.all(
     candidates.map(async (ip) => ({ ip, latency: await measureTcp(ip) }))
   )
@@ -349,9 +371,11 @@ export async function probeDomain(
     result.bestIp = candidates[0]
   }
 
-  // SNI 检测开销较大（多次 TLS 握手），仅在显式要求时执行
+  // SNI 检测开销较大（多次 TLS 握手），仅在显式要求时执行。
+  // 把上面已测出的 TCP 延迟传进去，避免对同一个 IP 再握手一次。
   if (options.checkSni && result.bestIp) {
-    result.sni = await checkSniBlock(domain, result.bestIp)
+    const known = measured.find((m) => m.ip === result.bestIp)?.latency ?? null
+    result.sni = await checkSniBlock(domain, result.bestIp, 6000, known)
   }
 
   return result

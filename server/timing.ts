@@ -140,9 +140,16 @@ export function measureTiming(opts: TlsOptions): Promise<TimingResult> {
 }
 
 /** 先解析出 IP，再对该 IP 做完整计时 */
+/**
+ * 先解析出 IP，再对该 IP 做完整计时。
+ *
+ * skipDns：调用方已有 IP 时跳过解析，dnsMs 置 null。
+ *          既然 IP 是外部给定的，再解析一次毫无意义。
+ */
 export async function resolveAndMeasure(
   domain: string,
-  ip?: string
+  ip?: string,
+  options: { skipDns?: boolean } = {}
 ): Promise<TimingResult> {
   let targetIp = ip
   let dnsMs: number | null = null
@@ -167,6 +174,9 @@ export async function resolveAndMeasure(
         error: `dns: ${(err as Error).message}`,
       }
     }
+  } else if (options.skipDns) {
+    // 指定了 IP 就是不想再查 DNS
+    dnsMs = null
   }
 
   const r = await measureTiming({ host: domain, ip: targetIp })

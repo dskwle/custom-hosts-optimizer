@@ -262,6 +262,8 @@ root.get("/local/compare", async (c) => {
   const roundRaw = Number(c.req.query("rounds") || 3)
   const rounds = Math.min(Math.max(roundRaw, 1), 5)
 
+  // probeDomain 内部已用 Set 对所有 DNS 源去重，
+  // 每个唯一 IP 只做一次 TCP 测速，结果通过 candidates 返回。
   const probe = await probeDomain(domain, { checkSni: true })
   const candidates = probe.candidates.filter((x) => x.latency !== null).slice(0, 5)
 
@@ -269,7 +271,8 @@ root.get("/local/compare", async (c) => {
     candidates.map(async (cand) => {
       const samples: Awaited<ReturnType<typeof resolveAndMeasure>>[] = []
       for (let i = 0; i < rounds; i++) {
-        samples.push(await resolveAndMeasure(domain, cand.ip))
+        // skipDns：IP 已确定，不必再解析一次
+        samples.push(await resolveAndMeasure(domain, cand.ip, { skipDns: true }))
       }
       const okSamples = samples.filter((s) => s.ok && s.totalMs !== null)
       const avg = okSamples.length
@@ -301,7 +304,10 @@ root.get("/local/compare", async (c) => {
   return c.json({
     domain,
     rounds,
-    candidateCount: probe.candidates.length,
+    candidateCount: probe.uniqueIpCount,
+    // 去重前各 DNS 源返回的条目数之和，与 candidateCount 对比即可看出重叠程度
+    totalResolvedEntries: probe.totalResolvedEntries,
+    dedupSaved: Math.max(probe.totalResolvedEntries - probe.uniqueIpCount, 0),
     systemIps: probe.systemIps,
     inconsistent: probe.inconsistent,
     systemDiffers: probe.systemDiffers,

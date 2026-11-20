@@ -401,9 +401,27 @@ function renderTimingBars(r) {
 
 function renderProviders(providers, systemIps, inconsistent, systemDiffers) {
   if (!providers || !providers.length) return ''
+
+  // 统计每个 IP 被几家 DNS 返回，用来标注重叠情况
+  const ipFreq = new Map()
+  for (const p of providers) {
+    for (const ip of (p.ips || [])) {
+      ipFreq.set(ip, (ipFreq.get(ip) || 0) + 1)
+    }
+  }
+
   const rows = providers.map((p) => {
     const has = p.ips && p.ips.length
-    const txt = has ? p.ips.join('  ') : `<span class="bad">${p.error || '无结果'}</span>`
+    let txt
+    if (has) {
+      txt = p.ips.map((ip) => {
+        const n = ipFreq.get(ip) || 1
+        // 多家返回同一 IP 时标注次数，说明会被去重合并
+        return n > 1 ? `${ip}<span class="sub"> ×${n}</span>` : ip
+      }).join('  ')
+    } else {
+      txt = `<span class="bad">${p.error || '无结果'}</span>`
+    }
     return `<div class="prov-row">
       <span class="prov-name">${p.name}</span>
       <span class="prov-ips">${txt}</span>
@@ -500,7 +518,12 @@ async function doTiming() {
       box.innerHTML = `<table>
         <thead><tr><th>候选 IP</th><th>TCP</th><th>平均总耗时</th><th>最快</th><th>成功率</th></tr></thead>
         <tbody>${rows}</tbody></table>
-        <p class="sub" style="margin-top:10px">共 ${d.candidateCount} 个候选。成功率低于 100% 说明该 IP 能建 TCP 连接但 TLS 失败，不可用。</p>
+        <p class="sub" style="margin-top:10px">
+          ${d.dedupSaved > 0
+            ? `各 DNS 源共返回 ${d.totalResolvedEntries} 条记录，去重后 <strong>${d.candidateCount} 个唯一 IP</strong>（省去 ${d.dedupSaved} 次重复检测）。`
+            : `共 ${d.candidateCount} 个唯一 IP，无重复。`}
+          成功率低于 100% 说明该 IP 能建 TCP 连接但 TLS 失败，不可用。
+        </p>
         ${renderProviders(d.providers, d.systemIps, d.inconsistent, d.systemDiffers)}
         ${renderSni(d.sni)}`
       status.textContent = `完成，推荐 ${d.recommended}`
