@@ -4,7 +4,8 @@
 export interface Bindings {
   custom_hosts: KVNamespace
   API_KEY: string
-  ASSETS: { get(key: string): Promise<string | null> }
+  // 静态资源绑定：Cloudflare 暴露为 Fetcher，只有 fetch()，没有 get()
+  ASSETS: Fetcher
   ENABLE_OPTIMIZATION?: string
   ADMIN_USERNAME?: string
   ADMIN_PASSWORD?: string

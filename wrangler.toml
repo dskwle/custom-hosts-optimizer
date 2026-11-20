@@ -2,7 +2,9 @@ name = "custom-hosts-optimizer"
 main = "src/index.ts"
 compatibility_date = "2024-10-28"
 compatibility_flags = ["nodejs_compat"]
-assets = { directory = "public" }
+# 静态资源：Cloudflare 自动托管 public/ 下的文件；
+# binding = "ASSETS" 让 Worker 也能主动读取（暴露为 Fetcher，只能 fetch，没有 get）
+assets = { directory = "public", binding = "ASSETS" }
 
 # KV 绑定（binding 名 custom_hosts 对应代码中的 env.custom_hosts）
 #

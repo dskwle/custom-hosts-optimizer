@@ -20,6 +20,26 @@ import { Bindings } from "./types"
 
 const app = new Hono<{ Bindings: Bindings }>()
 
+// 从静态资源绑定读取文件并返回响应。
+// 注意：ASSETS 是 Fetcher（只有 fetch），不是 KV，没有 get() 方法。
+async function serveAsset(c: any, pathname: string, contentType: string, cacheControl?: string) {
+  try {
+    const res = await c.env.ASSETS.fetch(new URL(pathname, c.req.url))
+    if (!res.ok) {
+      return c.text(`${pathname} not found`, 404)
+    }
+    const headers = new Headers()
+    headers.set('Content-Type', contentType)
+    if (cacheControl) {
+      headers.set('Cache-Control', cacheControl)
+    }
+    return new Response(res.body, { headers })
+  } catch (error) {
+    console.error(`Error serving asset ${pathname}:`, error)
+    return c.text(`Error loading ${pathname}`, 500)
+  }
+}
+
 // API 验证中间件 - 使用后台地址作为 API Key
 const apiAuth = async (c: any, next: any) => {
   const path = c.req.path
@@ -121,105 +141,22 @@ const admin = new Hono<{ Bindings: Bindings }>()
 app.use('*', apiAuth)
 
 // 首页路由
-app.get("/", async (c) => {
-  try {
-    const html = await c.env.ASSETS.get("index.html")
-    if (!html) {
-      return c.text("Template not found", 404)
-    }
-    return c.html(html)
-  } catch (error) {
-    console.error("Error loading index.html:", error)
-    return c.html(`
-<!DOCTYPE html>
-<html>
-<head><title>Custom Hosts</title></head>
-<body>
-<h1>Custom Hosts Service</h1>
-<p>Service is running. Visit /admin-x7k9m3q2 for management.</p>
-<p>Error loading assets: ${error instanceof Error ? error.message : String(error)}</p>
-</body>
-</html>
-    `)
-  }
-})
+app.get("/", (c) => serveAsset(c, "/index.html", "text/html; charset=utf-8"))
 
 // 静态资源路由
-app.get("/index.js", async (c) => {
-  try {
-    const js = await c.env.ASSETS.get("index.js")
-    if (!js) {
-      return c.text("JavaScript file not found", 404)
-    }
-    c.header('Content-Type', 'application/javascript')
-    c.header('Cache-Control', 'no-cache, must-revalidate')
-    c.header('Pragma', 'no-cache')
-    c.header('Expires', '0')
-    return c.text(js)
-  } catch (error) {
-    console.error("Error loading index.js:", error)
-    return c.text("Error loading JavaScript", 500)
-  }
-})
+app.get("/index.js", (c) =>
+  serveAsset(c, "/index.js", "application/javascript; charset=utf-8", "no-cache, must-revalidate")
+)
 
-app.get("/index.css", async (c) => {
-  try {
-    const css = await c.env.ASSETS.get("index.css")
-    if (!css) {
-      return c.text("CSS file not found", 404)
-    }
-    c.header('Content-Type', 'text/css')
-    c.header('Cache-Control', 'no-cache, must-revalidate')
-    c.header('Pragma', 'no-cache')
-    c.header('Expires', '0')
-    return c.text(css)
-  } catch (error) {
-    console.error("Error loading index.css:", error)
-    return c.text("Error loading CSS", 500)
-  }
-})
+app.get("/index.css", (c) =>
+  serveAsset(c, "/index.css", "text/css; charset=utf-8", "no-cache, must-revalidate")
+)
 
-app.get("/logo.svg", async (c) => {
-  try {
-    const svg = await c.env.ASSETS.get("logo.svg")
-    if (!svg) {
-      return c.text("Logo not found", 404)
-    }
-    c.header('Content-Type', 'image/svg+xml')
-    return c.text(svg)
-  } catch (error) {
-    console.error("Error loading logo.svg:", error)
-    return c.text("Error loading logo", 500)
-  }
-})
+app.get("/logo.svg", (c) => serveAsset(c, "/logo.svg", "image/svg+xml"))
 
-app.get("/og.svg", async (c) => {
-  try {
-    const svg = await c.env.ASSETS.get("og.svg")
-    if (!svg) {
-      return c.text("OG image not found", 404)
-    }
-    c.header('Content-Type', 'image/svg+xml')
-    return c.text(svg)
-  } catch (error) {
-    console.error("Error loading og.svg:", error)
-    return c.text("Error loading OG image", 500)
-  }
-})
+app.get("/og.svg", (c) => serveAsset(c, "/og.svg", "image/svg+xml"))
 
-app.get("/favicon.ico", async (c) => {
-  try {
-    const favicon = await c.env.ASSETS.get("favicon.ico")
-    if (!favicon) {
-      return c.text("Favicon not found", 404)
-    }
-    c.header('Content-Type', 'image/x-icon')
-    return c.text(favicon)
-  } catch (error) {
-    console.error("Error loading favicon.ico:", error)
-    return c.text("Error loading favicon", 500)
-  }
-})
+app.get("/favicon.ico", (c) => serveAsset(c, "/favicon.ico", "image/x-icon"))
 
 // 管理后台主页
 admin.get("/", async (c) => {
@@ -1449,6 +1386,15 @@ app.get("*", async (c) => {
   
   // 默认返回 404
   return c.text("Not Found", 404)
+})
+
+// 全局错误处理：把未捕获异常的真实信息返回给调用方，
+// 避免线上只看到 Cloudflare 的 1101 页面而无从定位。
+app.onError((err, c) => {
+  console.error('Unhandled error:', err)
+  const message = err instanceof Error ? err.message : String(err)
+  const stack = err instanceof Error ? err.stack : ''
+  return c.text(`ERROR: ${message}\n\n${stack}`, 500)
 })
 
 export default {
