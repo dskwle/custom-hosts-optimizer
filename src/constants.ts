@@ -180,6 +180,33 @@ export const SITE_GROUPS: SiteGroup[] = [
     ],
   },
   {
+    id: "cloudflare",
+    name: "Cloudflare",
+    description: "官方主站、开发者文档、博客、Workers、Pages",
+    domains: [
+      "cloudflare.com",
+      "www.cloudflare.com",
+      "developers.cloudflare.com",
+      "blog.cloudflare.com",
+      "workers.cloudflare.com",
+      "pages.dev",
+      // Cloudflare 控制面板入口。该域名长度随机、.mbf 无公开 NS 记录，
+      // 是 CF 有意采用的特殊用途地址，避免面板入口被批量猜中。
+      // 注意：地址可能随时间变化，失效后需替换为当前实际地址。
+      "dash.cloudflare.com",
+    ],
+  },
+  {
+    id: "intl",
+    name: "国外常用",
+    description: "开发者社区、Python、Node.js",
+    domains: [
+      "stackoverflow.com",
+      "www.python.org",
+      "nodejs.org",
+    ],
+  },
+  {
     id: "anime",
     name: "动漫影视",
     description: "番剧站、影视数据库、追番记录",
