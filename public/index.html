@@ -113,10 +113,6 @@
 
     <div class="speedtest-options">
       <label class="speedtest-opt">
-        <input type="checkbox" id="stFilterGroups" checked>
-        仅测已应用 hosts 的站点
-      </label>
-      <label class="speedtest-opt">
         测速轮数
         <select id="stRounds">
           <option value="1">1 轮</option>
@@ -147,10 +143,10 @@
           <tr>
             <th>域名</th>
             <th>分组</th>
-            <th>延迟</th>
-            <th>DNS</th>
-            <th>TCP</th>
-            <th>TLS</th>
+            <th>最快</th>
+            <th>中位</th>
+            <th>抖动</th>
+            <th>成功率</th>
             <th>状态</th>
           </tr>
         </thead>
@@ -161,8 +157,9 @@
     </div>
 
     <p class="speedtest-footnote">
-      说明：浏览器不允许指定 IP 连接，因此本测速反映的是「按当前 DNS 解析结果连接」的真实耗时。
-      若已应用本页生成的 hosts，即为应用后的实际效果。
+      说明：浏览器不允许指定 IP 连接，也无法跨域读取 DNS/TCP/TLS 各阶段耗时
+      （需目标服务器返回 <code>Timing-Allow-Origin</code>），因此这里给出的是
+      「按当前 DNS 解析连接」的总往返耗时。若已应用本页生成的 hosts，即为应用后的实际效果。
     </p>
   </div>
 

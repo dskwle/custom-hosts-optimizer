@@ -1400,7 +1400,8 @@ console.log('状态监控已启用，所有操作将被记录')
 
 const speedtestState = { running: false, abort: false, results: [] }
 
-// 单次探测：优先用 no-cors 请求，取 PerformanceResourceTiming 的阶段耗时
+// 单次探测：no-cors 请求测总往返耗时。
+// 跨域请求拿不到 DNS/TCP/TLS 分阶段数据（需 Timing-Allow-Origin），故只测总耗时。
 async function probeOnce(domain, timeoutMs = 6000) {
   const url = `https://${domain}/?_st=${Date.now()}`
   const controller = new AbortController()
@@ -1414,43 +1415,44 @@ async function probeOnce(domain, timeoutMs = 6000) {
       signal: controller.signal,
       redirect: 'follow',
     })
-    const total = performance.now() - t0
-
-    // 从资源计时里取各阶段细节（拿不到就只报总耗时）
-    const entries = performance.getEntriesByName(url)
-    const e = entries[entries.length - 1]
-    const detail = {
-      total: Math.round(total),
-      dns: e && e.domainLookupEnd > e.domainLookupStart
-        ? Math.round(e.domainLookupEnd - e.domainLookupStart) : null,
-      tcp: e && e.connectEnd > e.connectStart
-        ? Math.round(e.connectEnd - e.connectStart) : null,
-      tls: e && e.secureConnectionStart > 0
-        ? Math.round(e.connectEnd - e.secureConnectionStart) : null,
-    }
-    performance.clearResourceTimings()
-    return { ok: true, ...detail }
+    return { ok: true, total: Math.round(performance.now() - t0) }
   } catch (err) {
-    // 超时或连接被重置都算不通
     return { ok: false, total: Math.round(performance.now() - t0), error: err.name }
   } finally {
     clearTimeout(timer)
   }
 }
 
-// 多轮取最小值（最小值更能反映链路质量，平均值会被抖动拉高）
+// 多轮采样：成功样本用于计算最快/中位/抖动，全部失败则判为不通
 async function probeDomain(domain, rounds) {
-  let best = null
+  const samples = []
+  let failCount = 0
+
   for (let i = 0; i < rounds; i++) {
     if (speedtestState.abort) break
     const r = await probeOnce(domain)
-    if (!best || (r.ok && (!best.ok || r.total < best.total))) {
-      best = r
-    }
-    if (!r.ok && i === 0) break
-    await new Promise((res) => setTimeout(res, 150))
+    if (r.ok) samples.push(r.total)
+    else if (r.error !== 'AbortError') failCount++
+    if (i < rounds - 1) await new Promise((res) => setTimeout(res, 120))
   }
-  return best || { ok: false, total: -1 }
+
+  if (samples.length === 0) {
+    return { ok: false, best: null, median: null, jitter: null, successRate: 0 }
+  }
+
+  samples.sort((a, b) => a - b)
+  const best = samples[0]
+  const median = samples[Math.floor(samples.length / 2)]
+  // 抖动 = 最大与最小之差，反映链路稳定性
+  const jitter = samples.length > 1 ? samples[samples.length - 1] - best : 0
+
+  return {
+    ok: true,
+    best,
+    median,
+    jitter,
+    successRate: Math.round((samples.length / (samples.length + failCount)) * 100),
+  }
 }
 
 // 并发池：控制同时在跑的探测数量，避免浏览器连接数上限导致互相排队
@@ -1474,17 +1476,16 @@ function renderSpeedtestRow(item) {
   const tbody = document.getElementById('speedtestBody')
   if (!tbody) return
   const r = item.result
-  const lat = r.ok ? `${r.total} ms` : '—'
-  const cls = r.ok ? (r.total < 300 ? 'st-good' : r.total < 800 ? 'st-mid' : 'st-bad') : 'st-dead'
+  const latCls = (v) => (v == null ? 'st-dead' : v < 300 ? 'st-good' : v < 800 ? 'st-mid' : 'st-bad')
   const tr = document.createElement('tr')
   tr.innerHTML = `
     <td>${item.domain}</td>
     <td>${item.group || '-'}</td>
-    <td class="${cls}">${lat}</td>
-    <td>${r.dns != null ? r.dns + ' ms' : '-'}</td>
-    <td>${r.tcp != null ? r.tcp + ' ms' : '-'}</td>
-    <td>${r.tls != null ? r.tls + ' ms' : '-'}</td>
-    <td>${r.ok ? '可联通' : '不通'}</td>
+    <td class="${latCls(r.best)}">${r.best != null ? r.best + ' ms' : '—'}</td>
+    <td>${r.median != null ? r.median + ' ms' : '—'}</td>
+    <td>${r.jitter != null ? '±' + r.jitter + ' ms' : '—'}</td>
+    <td>${r.successRate}%</td>
+    <td class="${r.ok ? 'st-good' : 'st-dead'}">${r.ok ? '可联通' : '不通'}</td>
   `
   tbody.appendChild(tr)
 }
@@ -1507,7 +1508,6 @@ async function startSpeedtest() {
 
   const rounds = Number(document.getElementById('stRounds').value) || 2
   const concurrency = Number(document.getElementById('stConcurrency').value) || 6
-  const onlyApplied = document.getElementById('stFilterGroups').checked
 
   let targets = []
   try {
@@ -1566,7 +1566,7 @@ async function startSpeedtest() {
   const finished = speedtestState.results
   const okList = finished.filter((x) => x.result.ok)
   const failList = finished.filter((x) => !x.result.ok)
-  const latencies = okList.map((x) => x.result.total).sort((a, b) => a - b)
+  const latencies = okList.map((x) => x.result.best).sort((a, b) => a - b)
 
   document.getElementById('stOk').textContent = String(okList.length)
   document.getElementById('stFail').textContent = String(failList.length)
