@@ -26,3 +26,10 @@ preview_id = "d6916108024f4976adcaa61966e14f6e"
 # 定时任务配置 - 每小时更新一次 hosts
 [triggers]
 crons = ["0 */1 * * *"]
+
+[vars]
+# cron 分片刷新时回调自身的地址（必须与线上域名一致）
+WORKER_URL = "https://host.drun.kdns.fr"
+# 内部分片刷新的调用凭据。该端点只能触发数据刷新，不返回业务数据。
+# 如需更严格的控制，改用 `wrangler secret put INTERNAL_TOKEN` 覆盖此值。
+INTERNAL_TOKEN = "df189c2eef791050a44e561e115a8f8f"

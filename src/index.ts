@@ -15,7 +15,7 @@ import {
   storeData,
   type HostEntry,
 } from "./services/hosts"
-import { SITE_GROUPS, resolveGroupDomains } from "./constants"
+import { ALL_DOMAINS, SITE_GROUPS, resolveGroupDomains } from "./constants"
 import { handleSchedule } from "./scheduled"
 import { Bindings } from "./types"
 
@@ -864,6 +864,32 @@ app.get("/hosts", async (c) => {
     console.error("Error in /hosts:", error)
     return c.text(`# Error generating hosts file: ${error instanceof Error ? error.message : String(error)}`, 500)
   }
+})
+
+// 内部分片刷新端点：由 cron 串行调用，每片只处理少量域名，
+// 保证单个请求的 subrequest 数量不超出 Cloudflare 免费版上限（50）。
+app.post("/internal/refresh", async (c) => {
+  const token = c.req.header("x-internal-token") || ""
+  if (!c.env.INTERNAL_TOKEN || token !== c.env.INTERNAL_TOKEN) {
+    return c.json({ error: "forbidden" }, 403)
+  }
+
+  const offset = Math.max(Number(c.req.query("offset") || "0") || 0, 0)
+  const rawLimit = Number(c.req.query("limit") || "8") || 8
+  const limit = Math.min(Math.max(rawLimit, 1), 10)
+
+  const domains = ALL_DOMAINS.slice(offset, offset + limit)
+  const resolved = await fetchLatestHostsData(domains)
+  await storeData(c.env, resolved)
+
+  return c.json({
+    ok: true,
+    offset,
+    limit,
+    requested: domains.length,
+    resolved: resolved.length,
+    withLatency: resolved.filter((r) => r.latency !== null).length,
+  })
 })
 
 // 自定义域名管理 API

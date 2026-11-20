@@ -6,6 +6,9 @@ export interface Bindings {
   API_KEY: string
   // 静态资源绑定：Cloudflare 暴露为 Fetcher，只有 fetch()，没有 get()
   ASSETS: Fetcher
+  // cron 分片刷新时用于回调自身
+  WORKER_URL?: string
+  INTERNAL_TOKEN?: string
   ENABLE_OPTIMIZATION?: string
   ADMIN_USERNAME?: string
   ADMIN_PASSWORD?: string

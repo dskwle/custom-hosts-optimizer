@@ -1,7 +1,15 @@
+import { connect } from "cloudflare:sockets"
 import { ALL_DOMAINS, DNS_PROVIDERS, HOSTS_TEMPLATE } from "../constants"
 import { Bindings } from "../types"
 
 export type HostEntry = [string, string]
+
+// 解析结果：IP + 域名 + TCP 握手延迟（ms）。latency 为 null 表示连不通，仅保留解析结果兜底。
+export interface ResolvedHost {
+  ip: string
+  domain: string
+  latency: number | null
+}
 
 interface DomainData {
   ip: string
@@ -127,47 +135,103 @@ export async function fetchIPFromMultipleDNS(domain: string): Promise<string | n
   return null
 }
 
+// TCP 握手延迟探测：对目标 IP 的 443 端口发起连接，测量握手耗时。
+// 注意：1 次 TCP 连接算 1 个 subrequest，调用方需控制并发总量（免费版每请求 50 个）。
+export async function measureLatency(
+  ip: string,
+  port: number = 443,
+  timeoutMs: number = 2500
+): Promise<number | null> {
+  const start = Date.now()
+  let socket: any = null
+  try {
+    socket = connect({ hostname: ip, port })
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("tcp timeout")), timeoutMs)
+      ),
+    ])
+    return Date.now() - start
+  } catch {
+    return null
+  } finally {
+    try {
+      socket?.close()
+    } catch {
+      /* 已关闭，忽略 */
+    }
+  }
+}
+
+// 解析单个域名并选出延迟最低的 IP。
+// 只查前两家 DoH（第三家爬网页太慢），每家可能给出不同 IP，全部参与测速。
+// subrequest 成本：≤2 次 DNS + ≤2 次 TCP。
+export async function resolveBestIP(domain: string): Promise<ResolvedHost | null> {
+  const ips = new Set<string>()
+
+  for (const provider of DNS_PROVIDERS.slice(0, 2)) {
+    const ip = await fetchIPFromDNS(domain, provider.name)
+    if (ip) ips.add(ip)
+  }
+
+  const candidates = [...ips]
+  if (candidates.length === 0) return null
+
+  if (candidates.length === 1) {
+    return { ip: candidates[0], domain, latency: await measureLatency(candidates[0]) }
+  }
+
+  const probed = await Promise.all(
+    candidates.map(async (ip) => ({ ip, latency: await measureLatency(ip) }))
+  )
+  const alive = probed.filter(
+    (p): p is { ip: string; latency: number } => p.latency !== null
+  )
+
+  if (alive.length === 0) {
+    // 全部连不通时保留解析结果，避免整条记录消失
+    return { ip: candidates[0], domain, latency: null }
+  }
+
+  alive.sort((a, b) => a.latency - b.latency)
+  return { ip: alive[0].ip, domain, latency: alive[0].latency }
+}
+
 // 批量获取最新 hosts 数据
-export async function fetchLatestHostsData(): Promise<HostEntry[]> {
-  const entries: HostEntry[] = []
-  // 域名数量已增至 130+，批次 10、批间隔 0.8s，单轮抓取控制在 40s 内
-  const batchSize = 10
+export async function fetchLatestHostsData(
+  domains: string[] = ALL_DOMAINS
+): Promise<ResolvedHost[]> {
+  const results: ResolvedHost[] = []
+  // 每个域名最多 4 个 subrequest（2 DNS + 2 TCP），批次 4 → 单批约 16 个，留足余量
+  const batchSize = 4
 
-  console.log(`Starting batch processing for ${ALL_DOMAINS.length} domains`)
+  console.log(`Starting fetch for ${domains.length} domains (batch ${batchSize})`)
 
-  for (let i = 0; i < ALL_DOMAINS.length; i += batchSize) {
-    console.log(
-      `Processing batch ${i / batchSize + 1}/${Math.ceil(
-        ALL_DOMAINS.length / batchSize
-      )}`
-    )
+  for (let i = 0; i < domains.length; i += batchSize) {
+    const batch = domains.slice(i, i + batchSize)
+    const settled = await Promise.all(batch.map((domain) => resolveBestIP(domain)))
 
-    const batch = ALL_DOMAINS.slice(i, i + batchSize)
-    const batchResults = await Promise.all(
-      batch.map(async (domain) => {
-        const ip = await fetchIPFromMultipleDNS(domain)
-        console.log(`Domain: ${domain}, IP: ${ip}`)
-        return ip ? ([ip, domain] as HostEntry) : null
-      })
-    )
+    for (const item of settled) {
+      if (item) {
+        results.push(item)
+        console.log(`Domain: ${item.domain}, IP: ${item.ip}, latency: ${item.latency ?? "n/a"}ms`)
+      }
+    }
 
-    entries.push(
-      ...batchResults.filter((result): result is HostEntry => result !== null)
-    )
-
-    if (i + batchSize < ALL_DOMAINS.length) {
-      await new Promise((resolve) => setTimeout(resolve, 800))
+    if (i + batchSize < domains.length) {
+      await new Promise((resolve) => setTimeout(resolve, 300))
     }
   }
 
-  console.log(`Total entries found: ${entries.length}`)
-  return entries
+  console.log(`Total resolved: ${results.length}/${domains.length}`)
+  return results
 }
 
 // 存储数据
 export async function storeData(
   env: Bindings,
-  data: HostEntry[]
+  data: ResolvedHost[]
 ): Promise<void> {
   await updateHostsData(env, data)
 }
@@ -188,9 +252,9 @@ export async function getHostsData(env: Bindings, forceRefresh: boolean = false)
     // 只有在强制刷新或数据无效时才获取新数据
     if (forceRefresh || !isDataValid) {
       console.log(`${forceRefresh ? 'Force refresh requested' : 'Cache expired or invalid'}, fetching new data...`)
-      const newEntries = await fetchLatestHostsData()
-      await storeData(env, newEntries)
-      return newEntries
+      const resolved = await fetchLatestHostsData()
+      await storeData(env, resolved)
+      return resolved.map((r) => [r.ip, r.domain] as HostEntry)
     }
 
     // 从缓存获取数据
@@ -209,9 +273,9 @@ export async function getHostsData(env: Bindings, forceRefresh: boolean = false)
     console.error("Error getting hosts data:", error)
     // 降级处理：如果出错，尝试获取新数据
     try {
-      const newEntries = await fetchLatestHostsData()
-      await storeData(env, newEntries)
-      return newEntries
+      const resolved = await fetchLatestHostsData()
+      await storeData(env, resolved)
+      return resolved.map((r) => [r.ip, r.domain] as HostEntry)
     } catch (fallbackError) {
       console.error("Fallback also failed:", fallbackError)
       return []
@@ -222,7 +286,7 @@ export async function getHostsData(env: Bindings, forceRefresh: boolean = false)
 // 更新 hosts 数据
 export async function updateHostsData(
   env: Bindings,
-  newEntries?: HostEntry[]
+  newEntries?: ResolvedHost[]
 ): Promise<void> {
   try {
     const currentTime = new Date().toISOString()
@@ -245,7 +309,7 @@ export async function updateHostsData(
       }
     } else {
       // 更新域名数据
-      for (const [ip, domain] of newEntries) {
+      for (const { ip, domain, latency } of newEntries) {
         const oldData = kvData.domain_data[domain]
         const hasChanged = !oldData || oldData.ip !== ip
 
@@ -253,9 +317,9 @@ export async function updateHostsData(
           ip,
           lastUpdated: hasChanged ? currentTime : oldData?.lastUpdated || currentTime,
           lastChecked: currentTime,
-          responseTime: Date.now() - new Date(currentTime).getTime(),
+          responseTime: latency ?? undefined,
           provider: 'multiple-dns',
-          isOptimized: true,
+          isOptimized: latency !== null,
           resolvedAt: currentTime
         }
       }
