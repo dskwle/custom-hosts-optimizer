@@ -91,28 +91,56 @@ export interface ProbeCandidate {
   tlsError?: string
 }
 
+/**
+ * DoH 服务商列表。
+ *
+ * 分两类：
+ *   国内（AliDNS / DNSPod）—— 默认启用，实测稳定（33ms / 162ms）
+ *   国际（Cloudflare / Google）—— 默认禁用
+ *
+ * 为什么默认禁用国际源：这台设备长期在国内网络下运行，
+ * 1.1.1.1 与 dns.google 完全不可达（连接直接超时）。
+ * 保留它们只会让每次探测白等 3 秒，且日志里堆满红色错误，
+ * 反而掩盖真正的问题。
+ *
+ * 但也不删——如果哪天换了网络环境（或临时挂代理），
+ * 通过 ENABLE_INTL_DOH=true 环境变量即可启用，
+ * 无需改代码。多源交叉验证仍是排查 DNS 污染的有力手段。
+ */
 const DOH_PROVIDERS = [
   {
-    name: "Cloudflare",
-    url: (d: string) => `https://1.1.1.1/dns-query?name=${d}&type=A`,
-    headers: { accept: "application/dns-json" },
-  },
-  {
-    name: "Google",
-    url: (d: string) => `https://dns.google/resolve?name=${d}&type=A`,
-    headers: { accept: "application/dns-json" },
-  },
-  {
     name: "AliDNS",
+    region: "cn" as const,
     url: (d: string) => `https://dns.alidns.com/resolve?name=${d}&type=A`,
     headers: { accept: "application/dns-json" },
   },
   {
     name: "DNSPod",
+    region: "cn" as const,
     url: (d: string) => `https://doh.pub/dns-query?name=${d}&type=A`,
     headers: { accept: "application/dns-json" },
   },
+  {
+    name: "Cloudflare",
+    region: "intl" as const,
+    url: (d: string) => `https://1.1.1.1/dns-query?name=${d}&type=A`,
+    headers: { accept: "application/dns-json" },
+  },
+  {
+    name: "Google",
+    region: "intl" as const,
+    url: (d: string) => `https://dns.google/resolve?name=${d}&type=A`,
+    headers: { accept: "application/dns-json" },
+  },
 ]
+
+/** 是否启用国际 DoH（默认关闭，可用 ENABLE_INTL_DOH=true 开启） */
+export const INTL_DOH_ENABLED = process.env.ENABLE_INTL_DOH === "true"
+
+/** 当前实际参与查询的服务商 */
+const ACTIVE_PROVIDERS = DOH_PROVIDERS.filter(
+  (p) => p.region === "cn" || INTL_DOH_ENABLED
+)
 
 /**
  * DoH 熔断器。
@@ -148,6 +176,9 @@ function getBreaker(name: string): BreakerState {
 /** 查询熔断器状态，供接口/前端展示 */
 export function getBreakerStatus(): {
   name: string
+  region: "cn" | "intl"
+  /** 是否参与当前查询 */
+  enabled: boolean
   open: boolean
   consecutiveFailures: number
   retryAfterSec: number
@@ -156,8 +187,11 @@ export function getBreakerStatus(): {
   const now = Date.now()
   return DOH_PROVIDERS.map((p) => {
     const s = getBreaker(p.name)
+    const enabled = p.region === "cn" || INTL_DOH_ENABLED
     return {
       name: p.name,
+      region: p.region,
+      enabled,
       open: s.openUntil > now,
       consecutiveFailures: s.consecutiveFailures,
       retryAfterSec: s.openUntil > now ? Math.ceil((s.openUntil - now) / 1000) : 0,
@@ -207,7 +241,7 @@ async function queryDoh(
 
     // 安全阀：若其它 provider 当前全部处于熔断，则本家不熔断。
     // 否则可能因偶发波动把所有源都熔断，导致整个探测无 DNS 可用。
-    const othersAllOpen = DOH_PROVIDERS.filter((p) => p.name !== provider.name).every(
+    const othersAllOpen = ACTIVE_PROVIDERS.filter((p) => p.name !== provider.name).every(
       (p) => {
         const s = getBreaker(p.name)
         return s.openUntil > Date.now()
@@ -624,7 +658,7 @@ export async function probeDomain(
   }
 
   const [dohResults, sysDns] = await Promise.all([
-    Promise.all(DOH_PROVIDERS.map((p) => queryDoh(domain, p))),
+    Promise.all(ACTIVE_PROVIDERS.map((p) => queryDoh(domain, p))),
     querySystemDns(domain),
   ])
 

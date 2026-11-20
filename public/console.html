@@ -484,14 +484,15 @@ function renderProviders(providers, systemIps, inconsistent, systemDiffers, extr
     note = `<p class="sub" style="margin-top:10px;color:#0f6e56">各家 DoH 与本机解析一致，解析正常。</p>`
   }
 
-  // 若存在长时间不可达的源，明确说明原因，避免被误认为程序出错
-  const unreachable = providers.filter(
+  // 若存在不可用的源，明确说明原因，避免被误认为程序出错
+  const unavailable = providers.filter(
     (p) => p.error && (p.error.includes("熔断") || p.error.includes("超时"))
   )
-  const hintHtml = unreachable.length
+  const hintHtml = unavailable.length
     ? `<p class="sub" style="margin-top:8px;color:#854f0b">
-        ${unreachable.map((p) => p.name).join('、')} 在当前网络下不可达（国内直连通常无法访问 1.1.1.1 与 dns.google）。
-        连续失败后会自动熔断并跳过，不再拖慢每次探测；国内两家（AliDNS、DNSPod）仍可正常解析。
+        ${unavailable.map((p) => p.name).join('、')} 在当前网络下不可达。
+        这类国际 DoH（1.1.1.1 / dns.google）在国内直连通常无法访问，
+        已默认关闭以避免拖慢探测；本地仍用 AliDNS 与 DNSPod 双源交叉验证。
       </p>`
     : ''
 
