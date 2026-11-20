@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>本地增强 · 真实延迟与稳定性监控</title>
+<style>
+  :root {
+    --bg: #faf9f7;
+    --panel: #ffffff;
+    --border: #e5e3dc;
+    --text: #2c2c2a;
+    --muted: #888780;
+    --accent: #185fa5;
+    --good: #0f6e56;
+    --mid: #854f0b;
+    --bad: #a32d2d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 60px; }
+  header { margin-bottom: 24px; }
+  h1 { font-size: 20px; font-weight: 500; margin: 0 0 6px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    background: #e6f1fb; color: var(--accent); font-size: 12px; margin-left: 8px;
+    vertical-align: middle;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; margin-bottom: 18px;
+  }
+  .card h2 { font-size: 15px; font-weight: 500; margin: 0 0 4px; }
+  .card .hint { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  input[type=text], select {
+    padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px;
+    font-size: 13px; background: #fff; color: var(--text);
+  }
+  input[type=text] { min-width: 240px; font-family: var(--font-mono, monospace); }
+  button {
+    padding: 7px 16px; border-radius: 7px; border: 1px solid var(--border);
+    background: #fff; color: var(--text); font-size: 13px; cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { background: #f5f4f0; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.primary:hover { opacity: 0.9; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .stats { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  .stat {
+    flex: 1; min-width: 100px; background: #f7f7f5; border: 1px solid var(--border);
+    border-radius: 9px; padding: 12px 10px; text-align: center;
+  }
+  .stat .n { display: block; font-size: 19px; font-weight: 500; }
+  .stat .l { display: block; font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .bars { margin-top: 16px; }
+  .bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 13px; }
+  .bar-row .name { width: 62px; color: var(--muted); flex-shrink: 0; }
+  .bar-track { flex: 1; height: 20px; background: #f0efeb; border-radius: 4px; overflow: hidden; display: flex; }
+  .bar-seg { height: 100%; }
+  .bar-row .val { width: 62px; text-align: right; font-variant-numeric: tabular-nums; }
+  .seg-dns { background: #b5d4f4; }
+  .seg-tcp { background: #378add; }
+  .seg-tls { background: #185fa5; }
+  .seg-ttfb { background: #0c447c; }
+  .legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+  table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 13px; }
+  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #f0efeb; }
+  th { color: var(--muted); font-weight: 400; font-size: 12px; background: #faf9f7; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .good { color: var(--good); }
+  .mid { color: var(--mid); }
+  .bad { color: var(--bad); }
+  .prog-wrap { margin-top: 14px; display: none; }
+  .prog-wrap.on { display: block; }
+  .prog-track { height: 8px; background: #f0efeb; border-radius: 4px; overflow: hidden; }
+  .prog-fill { height: 100%; background: var(--accent); width: 0%; transition: width .2s; }
+  .prog-text { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .chart-wrap { margin-top: 16px; position: relative; }
+  canvas { width: 100%; height: 240px; display: block; }
+  .empty { color: var(--muted); font-size: 13px; padding: 20px 0; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>本地增强功能<span class="badge">local-runtime</span></h1>
+    <p class="sub">这些能力依赖长时间运行与完整网络栈，Cloudflare Workers 上无法实现。数据保存在本地 <code>data/kv</code>。</p>
+  </header>
+
+  <div class="card">
+    <h2>真实延迟分解</h2>
+    <p class="hint">把一次 HTTPS 请求拆成 DNS / TCP / TLS / 首字节四段计时。能连上不等于能握手成功，TLS 段最容易被忽略。</p>
+    <div class="row">
+      <input type="text" id="timingDomain" value="api.github.com" placeholder="域名，例如 api.github.com">
+      <label class="row" style="gap:6px"><input type="checkbox" id="timingAll" style="width:auto"> 对比全部候选 IP</label>
+      <button class="primary" id="btnTiming">开始测量</button>
+      <span id="timingStatus" class="sub"></span>
+    </div>
+    <div id="timingResult"></div>
+  </div>
+
+  <div class="card">
+    <h2>批量刷新与进度</h2>
+    <p class="hint">本地没有 subrequest 限制，可一次刷新全部 137 个域名，实时显示进度。</p>
+    <div class="row">
+      <select id="refreshGroup">
+        <option value="">全部站点（137 个）</option>
+      </select>
+      <button class="primary" id="btnRefresh">开始刷新</button>
+      <span id="refreshStatus" class="sub"></span>
+    </div>
+    <div class="prog-wrap" id="refreshProg">
+      <div class="prog-track"><div class="prog-fill" id="refreshFill"></div></div>
+      <div class="prog-text" id="refreshText"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>长时间稳定性监控</h2>
+    <p class="hint">按固定间隔反复采样，记录每个域名的延迟变化。用于发现「什么时候开始变慢」这类间歇性问题。</p>
+    <div class="row">
+      <select id="monitorGroup">
+        <option value="npm">npm / 前端 CDN（6 个）</option>
+        <option value="github">GitHub（40 个）</option>
+        <option value="docker">Docker Hub（7 个）</option>
+        <option value="steam">Steam（11 个）</option>
+      </select>
+      <select id="monitorInterval">
+        <option value="30">30 秒</option>
+        <option value="60" selected>1 分钟</option>
+        <option value="300">5 分钟</option>
+      </select>
+      <button class="primary" id="btnMonitorStart">开始监控</button>
+      <button id="btnMonitorStop" disabled>停止</button>
+      <span id="monitorStatus" class="sub">未运行</span>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="trendChart"></canvas>
+    </div>
+    <div class="legend">
+      <span id="chartInfo" class="sub"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = ''
+let refreshTimer = null
+let chartTimer = null
+let chartData = {}
+
+const el = (id) => document.getElementById(id)
+
+function latencyClass(v) {
+  if (v == null) return 'bad'
+  if (v < 200) return 'good'
+  if (v < 500) return 'mid'
+  return 'bad'
+}
+
+/* ---------- 分组下拉初始化 ---------- */
+async function loadGroups() {
+  try {
+    const res = await fetch(`${API}/local/groups`)
+    const data = await res.json()
+    const sel = el('refreshGroup')
+    for (const g of data.groups) {
+      const opt = document.createElement('option')
+      opt.value = g.id
+      opt.textContent = `${g.name}（${g.count} 个）`
+      sel.appendChild(opt)
+    }
+  } catch (e) {
+    console.warn('加载分组失败', e)
+  }
+}
+
+/* ---------- 一、真实延迟分解 ---------- */
+function renderTimingBars(r) {
+  const segs = [
+    { k: 'dns', label: 'DNS', cls: 'seg-dns' },
+    { k: 'tcp', label: 'TCP', cls: 'seg-tcp' },
+    { k: 'tls', label: 'TLS', cls: 'seg-tls' },
+    { k: 'ttfb', label: 'TTFB', cls: 'seg-ttfb' },
+  ]
+  const total = segs.reduce((a, s) => a + (r[s.k + 'Ms'] || 0), 0) || 1
+  const bars = segs.map((s) => {
+    const v = r[s.k + 'Ms']
+    const pct = ((v || 0) / total) * 100
+    return `<div class="bar-row">
+      <span class="name">${s.label}</span>
+      <span class="bar-track"><span class="bar-seg ${s.cls}" style="width:${pct}%"></span></span>
+      <span class="val">${v != null ? v + 'ms' : '—'}</span>
+    </div>`
+  }).join('')
+
+  return `${bars}
+  <div class="legend">
+    <span><i class="seg-dns"></i>DNS 解析</span>
+    <span><i class="seg-tcp"></i>TCP 握手</span>
+    <span><i class="seg-tls"></i>TLS 握手</span>
+    <span><i class="seg-ttfb"></i>首字节</span>
+  </div>`
+}
+
+async function doTiming() {
+  const domain = el('timingDomain').value.trim()
+  if (!domain) return
+  const all = el('timingAll').checked
+  const btn = el('btnTiming')
+  const status = el('timingStatus')
+  const box = el('timingResult')
+
+  btn.disabled = true
+  status.textContent = all ? '正在对比候选 IP...' : '测量中...'
+  box.innerHTML = ''
+
+  try {
+    if (!all) {
+      const res = await fetch(`${API}/local/timing?domain=${encodeURIComponent(domain)}`)
+      const r = await res.json()
+      box.innerHTML = `
+        <div class="stats">
+          <div class="stat"><span class="n ${latencyClass(r.totalMs)}">${r.totalMs != null ? r.totalMs + 'ms' : '—'}</span><span class="l">总耗时</span></div>
+          <div class="stat"><span class="n">${r.ip || '—'}</span><span class="l">目标 IP</span></div>
+          <div class="stat"><span class="n">${r.httpStatus ?? '—'}</span><span class="l">HTTP 状态</span></div>
+        </div>
+        <div class="bars">${renderTimingBars(r)}</div>
+        ${r.error ? `<p class="sub bad" style="margin-top:12px">失败原因：${r.error}</p>` : ''}
+      `
+      status.textContent = r.ok ? '完成' : '未能完成请求'
+    } else {
+      const res = await fetch(`${API}/local/compare?domain=${encodeURIComponent(domain)}&rounds=3`)
+      const d = await res.json()
+      if (!d.details || d.details.length === 0) {
+        box.innerHTML = `<p class="empty">没有可用的候选 IP</p>`
+        status.textContent = '无候选'
+        btn.disabled = false
+        return
+      }
+      const rows = d.details.map((x) => `
+        <tr>
+          <td><code>${x.ip}</code>${x.ip === d.recommended ? ' <span class="badge">推荐</span>' : ''}</td>
+          <td class="num">${x.tcpMs != null ? x.tcpMs + 'ms' : '—'}</td>
+          <td class="num ${latencyClass(x.avgTotalMs)}">${x.avgTotalMs != null ? x.avgTotalMs + 'ms' : '—'}</td>
+          <td class="num">${x.bestTotalMs != null ? x.bestTotalMs + 'ms' : '—'}</td>
+          <td class="num ${x.okRate === 100 ? 'good' : x.okRate === 0 ? 'bad' : 'mid'}">${x.okRate}%</td>
+        </tr>`).join('')
+      box.innerHTML = `
+        <table>
+          <thead><tr><th>候选 IP</th><th>TCP</th><th>平均总耗时</th><th>最快</th><th>成功率</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <p class="sub" style="margin-top:10px">
+          共 ${d.candidateCount} 个候选，系统 DNS ${d.inconsistent ? '<strong class="bad">解析结果与多家 DoH 不一致（疑似污染）</strong>' : '解析一致'}。
+          成功率低于 100% 说明该 IP 能建 TCP 连接但 TLS 握手失败，不可用。
+        </p>
+      `
+      status.textContent = `完成，推荐 ${d.recommended}`
+    }
+  } catch (e) {
+    status.textContent = '请求失败：' + e.message
+  } finally {
+    btn.disabled = false
+  }
+}
+
+/* ---------- 二、批量刷新与进度 ---------- */
+async function doRefresh() {
+  const group = el('refreshGroup').value
+  const btn = el('btnRefresh')
+  const status = el('refreshStatus')
+  const prog = el('refreshProg')
+  const fill = el('refreshFill')
+  const text = el('refreshText')
+
+  btn.disabled = true
+  prog.classList.add('on')
+  fill.style.width = '0%'
+  text.textContent = '正在启动...'
+  status.textContent = ''
+
+  try {
+    const url = `${API}/local/refresh` + (group ? `?group=${group}` : '')
+    const res = await fetch(url, { method: 'POST' })
+    const start = await res.json()
+    const taskId = start.taskId
+    text.textContent = `任务 ${taskId}，共 ${start.total} 个域名`
+
+    if (refreshTimer) clearInterval(refreshTimer)
+    refreshTimer = setInterval(async () => {
+      try {
+        const r = await fetch(`${API}/local/tasks/${taskId}`)
+        const t = await r.json()
+        const pct = t.total ? Math.round((t.done / t.total) * 100) : 0
+        fill.style.width = pct + '%'
+        text.textContent = `${t.done}/${t.total}（${pct}%）· 失败 ${t.failed} · 当前 ${t.current || '—'}`
+
+        if (t.state === 'done' || t.state === 'failed') {
+          clearInterval(refreshTimer)
+          refreshTimer = null
+          btn.disabled = false
+          fill.style.width = '100%'
+          status.textContent = t.state === 'done' ? `完成：${t.message || ''}` : `失败：${t.error || ''}`
+          text.textContent = `完成 ${t.done}/${t.total}，失败 ${t.failed}`
+        }
+      } catch (e) {
+        clearInterval(refreshTimer)
+        refreshTimer = null
+        btn.disabled = false
+        status.textContent = '轮询失败：' + e.message
+      }
+    }, 700)
+  } catch (e) {
+    btn.disabled = false
+    status.textContent = '启动失败：' + e.message
+  }
+}
+
+/* ---------- 三、监控与趋势图 ---------- */
+async function startMonitor() {
+  const group = el('monitorGroup').value
+  const interval = el('monitorInterval').value
+  try {
+    const res = await fetch(`${API}/local/monitor/start?group=${group}&interval=${interval}`, { method: 'POST' })
+    const d = await res.json()
+    el('btnMonitorStart').disabled = true
+    el('btnMonitorStop').disabled = false
+    el('monitorStatus').textContent = d.alreadyRunning ? '已在运行' : `已启动，每 ${interval}s 采样`
+    startChartPolling()
+  } catch (e) {
+    el('monitorStatus').textContent = '启动失败：' + e.message
+  }
+}
+
+async function stopMonitor() {
+  try {
+    await fetch(`${API}/local/monitor/stop`, { method: 'POST' })
+    el('btnMonitorStart').disabled = false
+    el('btnMonitorStop').disabled = true
+    el('monitorStatus').textContent = '已停止（历史数据保留）'
+  } catch (e) {
+    el('monitorStatus').textContent = '停止失败：' + e.message
+  }
+}
+
+function startChartPolling() {
+  if (chartTimer) clearInterval(chartTimer)
+  const poll = async () => {
+    const group = el('monitorGroup').value
+    try {
+      const res = await fetch(`${API}/local/series?group=${group}&limit=120`)
+      const d = await res.json()
+      chartData = d.series || {}
+      drawChart()
+    } catch (e) { /* 忽略单次失败 */ }
+  }
+  poll()
+  chartTimer = setInterval(poll, 5000)
+}
+
+const SERIES_COLORS = ['#185fa5', '#0f6e56', '#ba7517', '#a32d2d', '#534ab7', '#d85a30']
+
+function drawChart() {
+  const canvas = el('trendChart')
+  const dpr = window.devicePixelRatio || 1
+  const rect = canvas.getBoundingClientRect()
+  canvas.width = rect.width * dpr
+  canvas.height = rect.height * dpr
+  const ctx = canvas.getContext('2d')
+  ctx.scale(dpr, dpr)
+
+  const W = rect.width
+  const H = rect.height
+  const pad = { l: 46, r: 12, t: 14, b: 24 }
+  ctx.clearRect(0, 0, W, H)
+
+  const domains = Object.keys(chartData).filter((d) => chartData[d].length > 0)
+  if (domains.length === 0) {
+    ctx.fillStyle = '#888780'
+    ctx.font = '13px -apple-system, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.fillText('暂无数据，启动监控后每轮采样会在此绘制曲线', W / 2, H / 2)
+    el('chartInfo').textContent = ''
+    return
+  }
+
+  // 计算坐标范围
+  let maxV = 0
+  let minT = Infinity
+  let maxT = 0
+  for (const d of domains) {
+    for (const p of chartData[d]) {
+      if (p.v != null && p.v > maxV) maxV = p.v
+      if (p.ts < minT) minT = p.ts
+      if (p.ts > maxT) maxT = p.ts
+    }
+  }
+  if (maxV === 0) maxV = 100
+  maxV = Math.ceil(maxV / 100) * 100
+  if (maxT === minT) maxT = minT + 1000
+
+  const x = (t) => pad.l + ((t - minT) / (maxT - minT)) * (W - pad.l - pad.r)
+  const y = (v) => H - pad.b - (v / maxV) * (H - pad.t - pad.b)
+
+  // 网格与 Y 轴
+  ctx.strokeStyle = '#f0efeb'
+  ctx.fillStyle = '#888780'
+  ctx.font = '11px -apple-system, sans-serif'
+  ctx.textAlign = 'right'
+  ctx.lineWidth = 1
+  for (let i = 0; i <= 4; i++) {
+    const v = (maxV / 4) * i
+    const yy = y(v)
+    ctx.beginPath()
+    ctx.moveTo(pad.l, yy)
+    ctx.lineTo(W - pad.r, yy)
+    ctx.stroke()
+    ctx.fillText(Math.round(v) + 'ms', pad.l - 6, yy + 4)
+  }
+
+  // 时间轴
+  ctx.textAlign = 'center'
+  const steps = 4
+  for (let i = 0; i <= steps; i++) {
+    const t = minT + ((maxT - minT) / steps) * i
+    const d = new Date(t)
+    const label = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+    ctx.fillText(label, x(t), H - 6)
+  }
+
+  // 曲线
+  domains.forEach((d, idx) => {
+    const color = SERIES_COLORS[idx % SERIES_COLORS.length]
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.5
+    ctx.beginPath()
+    let started = false
+    for (const p of chartData[d]) {
+      if (p.v == null) continue
+      const px = x(p.ts)
+      const py = y(p.v)
+      if (!started) { ctx.moveTo(px, py); started = true }
+      else ctx.lineTo(px, py)
+    }
+    ctx.stroke()
+  })
+
+  el('chartInfo').innerHTML = domains
+    .map((d, i) => `<span style="margin-right:14px"><i style="background:${SERIES_COLORS[i % SERIES_COLORS.length]}"></i>${d}<span style="color:#888780"> ${chartData[d].length} 点</span></span>`)
+    .join('')
+}
+
+/* ---------- 事件绑定 ---------- */
+el('btnTiming').addEventListener('click', doTiming)
+el('btnRefresh').addEventListener('click', doRefresh)
+el('btnMonitorStart').addEventListener('click', startMonitor)
+el('btnMonitorStop').addEventListener('click', stopMonitor)
+el('monitorGroup').addEventListener('change', () => { startChartPolling() })
+window.addEventListener('resize', () => drawChart())
+
+loadGroups()
+
+// 检查监控是否已在运行（刷新页面后恢复状态）
+fetch(`${API}/local/monitor/status`).then((r) => r.json()).then((s) => {
+  if (s.running) {
+    el('btnMonitorStart').disabled = true
+    el('btnMonitorStop').disabled = false
+    el('monitorStatus').textContent = `运行中，每 ${s.intervalMs / 1000}s 采样`
+    startChartPolling()
+  }
+}).catch(() => {})
+</script>
+</body>
+</html>

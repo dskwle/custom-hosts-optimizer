@@ -15,6 +15,8 @@ import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { FileKV } from "./kv.js"
 import { probeDomain } from "./probe.js"
+import { resolveAndMeasure, measureTiming, measureTcpOnly } from "./timing.js"
+import { taskManager, monitor, type TaskItemResult } from "./tasks.js"
 // src/index.ts 的默认导出是 { fetch, scheduled } 对象（Workers 入口约定），
 // 不是 Hono 实例，因此不能 route() 挂载，只能直接调用它的 fetch。
 import worker from "../src/index.js"
@@ -91,74 +93,250 @@ const root = new Hono()
 root.post("/local/refresh", async (c) => {
   const groupParam = c.req.query("group")
   const domains = resolveGroupDomains(groupParam)
-  const startedAt = Date.now()
-
-  console.log(`[local/refresh] probing ${domains.length} domains...`)
-
-  // 本地的关键优势：没有 subrequest 限制，可以高并发跑完整探测。
-  // 并发 16 是实测出来的平衡点，再高会被系统文件句柄或远处 DNS 限流拖慢。
   const CONCURRENCY = Number(c.req.query("concurrency") || 16)
-  const results = []
-  let index = 0
-  let done = 0
+  // wait=true 时同步等待结果（便于脚本调用），否则立刻返回 taskId 供轮询
+  const wait = c.req.query("wait") === "true"
 
-  const workers = Array.from({ length: Math.min(CONCURRENCY, domains.length) }, async () => {
-    while (true) {
-      const i = index++
-      if (i >= domains.length) return
-      const r = await probeDomain(domains[i])
-      results.push(r)
-      done++
-      if (done % 20 === 0) {
-        console.log(`[local/refresh] ${done}/${domains.length}`)
+  const task = taskManager.create("refresh", domains.length)
+
+  const run = async () => {
+    const startedAt = Date.now()
+    console.log(`[local/refresh] ${task.taskId} probing ${domains.length} domains`)
+
+    const results: TaskItemResult[] = []
+    let index = 0
+
+    const workers = Array.from(
+      { length: Math.min(CONCURRENCY, domains.length) },
+      async () => {
+        while (true) {
+          const i = index++
+          if (i >= domains.length) return
+          const domain = domains[i]
+          taskManager.startItem(task.taskId, domain)
+          try {
+            const r = await probeDomain(domain)
+            const item: TaskItemResult = {
+              domain,
+              ok: r.latency !== null,
+              bestIp: r.bestIp,
+              latency: r.latency,
+              source: "local",
+            }
+            results.push(item)
+            taskManager.finishItem(task.taskId, item)
+          } catch (err) {
+            taskManager.finishItem(task.taskId, {
+              domain,
+              ok: false,
+              bestIp: null,
+              latency: null,
+              source: "local",
+            })
+          }
+        }
+      }
+    )
+    await Promise.all(workers)
+
+    // 写入 KV，结构与 Cloudflare 版保持一致
+    const now = new Date().toISOString()
+    const existing = ((await kv.get("domain_data", { type: "json" })) as any) || {
+      domain_data: {},
+      updateCount: 0,
+      version: "1.0.0",
+    }
+
+    for (const r of results) {
+      if (!r.bestIp) continue
+      existing.domain_data[r.domain] = {
+        ip: r.bestIp,
+        lastUpdated: now,
+        lastChecked: now,
+        responseTime: r.latency ?? undefined,
+        provider: "local-multi-doh",
+        isOptimized: r.latency !== null,
+        resolvedAt: now,
       }
     }
-  })
-  await Promise.all(workers)
+    existing.lastUpdated = now
+    existing.updateCount = (existing.updateCount || 0) + 1
+    await kv.put("domain_data", JSON.stringify(existing))
 
-  // 写入 KV，结构与 Cloudflare 版保持一致，接口输出可直接复用
-  const now = new Date().toISOString()
-  const existing = ((await kv.get("domain_data", { type: "json" })) as any) || {
-    domain_data: {},
-    updateCount: 0,
-    version: "1.0.0",
-  }
+    const withLatency = results.filter((r) => r.latency !== null).length
+    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1)
+    console.log(`[local/refresh] done in ${elapsed}s, ${withLatency}/${results.length} with latency`)
 
-  for (const r of results) {
-    if (!r.bestIp) continue
-    existing.domain_data[r.domain] = {
-      ip: r.bestIp,
-      lastUpdated: now,
-      lastChecked: now,
-      responseTime: r.latency ?? undefined,
-      provider: "local-multi-doh",
-      isOptimized: r.latency !== null,
-      resolvedAt: now,
+    taskManager.complete(
+      task.taskId,
+      `${withLatency}/${results.length} 有延迟，耗时 ${elapsed}s`
+    )
+
+    return {
+      ok: true,
+      elapsedSeconds: Number(elapsed),
+      probed: results.length,
+      stored: results.filter((r) => r.bestIp).length,
+      withLatency,
     }
   }
-  existing.lastUpdated = now
-  existing.updateCount = (existing.updateCount || 0) + 1
-  await kv.put("domain_data", JSON.stringify(existing))
 
-  const withLatency = results.filter((r) => r.latency !== null).length
-  const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1)
-  console.log(`[local/refresh] done in ${elapsed}s, ${withLatency}/${results.length} with latency`)
+  if (wait) {
+    const summary = await run()
+    return c.json({ taskId: task.taskId, ...summary })
+  }
 
+  void run().catch((err) => {
+    console.error("[local/refresh] failed", err)
+    taskManager.fail(task.taskId, String(err))
+  })
+
+  // 立即返回，前端拿 taskId 轮询 /local/tasks/:id
   return c.json({
     ok: true,
-    elapsedSeconds: Number(elapsed),
-    probed: results.length,
-    stored: results.filter((r) => r.bestIp).length,
-    withLatency,
-    inconsistent: results.filter((r) => r.inconsistent).map((r) => r.domain),
+    accepted: true,
+    taskId: task.taskId,
+    total: domains.length,
+    poll: `/local/tasks/${task.taskId}`,
   })
 })
+
+/** 任务进度查询 */
+root.get("/local/tasks", (c) => c.json({ tasks: taskManager.list() }))
+
+root.get("/local/tasks/:id", (c) => {
+  const task = taskManager.get(c.req.param("id"))
+  if (!task) return c.json({ error: "task not found" }, 404)
+  return c.json(task)
+})
+
 
 root.get("/local/probe", async (c) => {
   const domain = c.req.query("domain")
   if (!domain) return c.json({ error: "domain required" }, 400)
   const r = await probeDomain(domain)
   return c.json(r)
+})
+
+/**
+ * 真实延迟：把 HTTPS 请求拆成 dns / tcp / tls / ttfb 四段分别计时。
+ * 不传 ip 时先解析再测；传了 ip 就测该 IP（用于验证某个 hosts 条目实际效果）。
+ */
+root.get("/local/timing", async (c) => {
+  const domain = c.req.query("domain")
+  const ip = c.req.query("ip") || undefined
+  if (!domain) return c.json({ error: "domain required" }, 400)
+  const r = await resolveAndMeasure(domain, ip)
+  return c.json(r)
+})
+
+/**
+ * 候选 IP 全量分层对比：先解析出所有候选，对每个做 TCP 初筛，
+ * 再对最快的几个做完整 tls/ttfb 计时。
+ * 这是本地版独有的能力——Cloudflare 版受 subrequest 限制做不到。
+ */
+root.get("/local/compare", async (c) => {
+  const domain = c.req.query("domain")
+  if (!domain) return c.json({ error: "domain required" }, 400)
+  const roundRaw = Number(c.req.query("rounds") || 3)
+  const rounds = Math.min(Math.max(roundRaw, 1), 5)
+
+  const probe = await probeDomain(domain)
+  const candidates = probe.candidates.filter((x) => x.latency !== null).slice(0, 5)
+
+  const details = await Promise.all(
+    candidates.map(async (cand) => {
+      const samples: Awaited<ReturnType<typeof resolveAndMeasure>>[] = []
+      for (let i = 0; i < rounds; i++) {
+        samples.push(await resolveAndMeasure(domain, cand.ip))
+      }
+      const okSamples = samples.filter((s) => s.ok && s.totalMs !== null)
+      const avg = okSamples.length
+        ? Math.round(
+            okSamples.reduce((a, b) => a + (b.totalMs ?? 0), 0) / okSamples.length
+          )
+        : null
+      const best = okSamples.length
+        ? Math.min(...okSamples.map((s) => s.totalMs ?? Infinity))
+        : null
+      return {
+        ip: cand.ip,
+        tcpMs: cand.latency,
+        avgTotalMs: avg,
+        bestTotalMs: best,
+        okRate: Math.round((okSamples.length / rounds) * 100),
+        last: samples[samples.length - 1],
+      }
+    })
+  )
+
+  details.sort((a, b) => {
+    if (a.avgTotalMs === null && b.avgTotalMs === null) return 0
+    if (a.avgTotalMs === null) return 1
+    if (b.avgTotalMs === null) return -1
+    return a.avgTotalMs - b.avgTotalMs
+  })
+
+  return c.json({
+    domain,
+    rounds,
+    candidateCount: probe.candidates.length,
+    systemIps: probe.systemIps,
+    inconsistent: probe.inconsistent,
+    recommended: details[0]?.ip ?? null,
+    details,
+  })
+})
+
+/** 长时间监控：启动后按间隔反复采样，结果进入时序，可查趋势 */
+root.post("/local/monitor/start", (c) => {
+  const intervalSec = Number(c.req.query("interval") || 300)
+  const groupParam = c.req.query("group")
+  const domains = resolveGroupDomains(groupParam)
+
+  monitor.configure({
+    domainSource: () => domains,
+    sampler: async (domain) => {
+      const r = await probeDomain(domain)
+      return {
+        domain,
+        ok: r.latency !== null,
+        bestIp: r.bestIp,
+        latency: r.latency,
+        source: "probe" as const,
+      }
+    },
+    intervalMs: Math.max(intervalSec, 30) * 1000,
+    concurrency: Number(c.req.query("concurrency") || 8),
+  })
+
+  const started = monitor.start()
+  return c.json({
+    ok: true,
+    started,
+    alreadyRunning: !started,
+    domains: domains.length,
+    intervalMs: Math.max(intervalSec, 30) * 1000,
+  })
+})
+
+root.post("/local/monitor/stop", (c) => c.json({ ok: true, stopped: monitor.stop() }))
+
+root.get("/local/monitor/status", (c) => c.json(monitor.status()))
+
+/** 拉取时序数据，前端画趋势折线 */
+root.get("/local/series", (c) => {
+  const domainParam = c.req.query("domains")
+  const limit = Number(c.req.query("limit") || 200)
+  const domains = domainParam
+    ? domainParam.split(",").map((s) => s.trim()).filter(Boolean)
+    : resolveGroupDomains(c.req.query("group")).slice(0, 10)
+  return c.json({ series: taskManager.getSeries(domains, limit) })
+})
+
+root.post("/local/series/clear", (c) => {
+  taskManager.clearSeries()
+  return c.json({ ok: true })
 })
 
 root.get("/local/groups", (c) =>
@@ -176,6 +354,16 @@ root.get("/local/groups", (c) =>
 root.get("/local/health", (c) =>
   c.json({ ok: true, runtime: "node", pid: process.pid, port: PORT })
 )
+
+// 本地增强功能页面（真实延迟、进度、监控），仅本分支提供
+root.get("/local", async (c) => {
+  try {
+    const html = await readFile(path.join(PUBLIC_DIR, "local.html"), "utf8")
+    return c.html(html)
+  } catch {
+    return c.text("local.html not found", 404)
+  }
+})
 
 // Workers 的 ExecutionContext 在 Node 里没有对应物。
 // src/ 只用到了 waitUntil（后台任务），这里用 fire-and-forget 模拟：
