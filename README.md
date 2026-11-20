@@ -1,387 +1,393 @@
 <div align="center">
-  <h1>优选自定义host · 本地运行时</h1>
-  <p>自定义域名访问加速，智能 IP 优选。当前分支为<b>本地运行版</b>，不依赖 Cloudflare Workers。</p>
+  <h1>优选自定义 host · 本地运行时</h1>
+  <p>自定义域名访问加速：绕开 DNS 污染，直连可用 IP。在本地 Node 环境运行，不依赖 Cloudflare Workers。</p>
 
   <p>
-    <a href="#项目声明">项目声明</a> •
+    <a href="#为什么有这个分支">为什么有这个分支</a> •
+    <a href="#核心能力">核心能力</a> •
     <a href="#快速开始">快速开始</a> •
-    <a href="#特性">特性</a> •
-    <a href="#使用方法">使用方法</a> •
-    <a href="#自定义域名">自定义域名</a> •
-    <a href="#部署指南">部署指南</a> •
-    <a href="#故障排除">故障排除</a>
+    <a href="#web-控制台">Web 控制台</a> •
+    <a href="#http-接口">HTTP 接口</a> •
+    <a href="#配置">配置</a> •
+    <a href="#故障排查">故障排查</a>
   </p>
 </div>
 
-> **本分支（local-runtime）说明**
->
-> 与主干 `main` 的差异：本分支在本地 Node 环境运行，摆脱 Workers 的两条限制
-> （每请求 50 个 subrequest、cron 执行时长上限），并新增完整探测、SNI 归因、
-> 稳定性监控、服务端缓存等能力。
->
-> 启动：`npm run local`（默认 <http://127.0.0.1:8788>）
->
-> 本分支已移除的、仅 CF 版需要的内容：内联管理后台、`index.html/js/css`
-> 静态页面、`ASSETS` 绑定、cron 分片刷新与 `scheduled` 事件。
-> `npm run deploy` / `npm run dev` 已改为直接报错，避免误部署覆盖线上。
->
-> 下方“部署指南”等内容对应主干版本，仅作参考。
-
-## 项目声明
-
-本项目基于以下开源项目进行AI智能魔改优化：
-
-- 🔗 **[GitHub520](https://github.com/521xueweihan/GitHub520)** - GitHub访问加速项目
-- 🔗 **[github-hosts](https://github.com/TinsFox/github-hosts)** - GitHub hosts文件生成工具
-
-### ✨ AI魔改特色
-
-- 🤖 **AI驱动优化**：运用人工智能技术进行代码重构和功能增强
-- 🚀 **架构升级**：从传统脚本升级为现代化 Cloudflare Workers 架构
-- 🎯 **智能IP优选**：AI算法优化的IP选择策略，提升访问速度
-- 🔧 **自动化部署**：完整的CI/CD流程，支持一键部署
-- 🌐 **Web管理界面**：现代化的可视化管理后台
-- 📡 **RESTful API**：完整的API接口，支持程序化管理
-
-> 感谢原项目作者的贡献，本项目在其基础上通过AI技术进行了全面优化和功能扩展。
-
-## 特性
-
-### 🚀 核心功能
-- **智能IP优选**：AI算法自动检测最佳响应时间，选择最快IP
-- **全球CDN加速**：基于 Cloudflare Workers 部署，享受全球边缘网络
-- **自动更新机制**：每小时自动更新DNS记录，保持最新状态
-- **自定义域名**：支持添加和管理任意域名的IP优选
-
-### 🛠️ 技术特性
-- **多DNS支持**：集成 Cloudflare DNS、Google DNS 等多个解析服务
-- **KV存储**：使用 Cloudflare KV 进行数据持久化存储
-- **RESTful API**：完整的API接口，支持程序化管理
-- **Web管理界面**：现代化的可视化管理后台
-
-### 🔧 部署特性
-- **一键部署**：支持 Cloudflare Workers 一键部署
-- **GitHub Actions**：完整的CI/CD自动化部署流程
-- **安全控制**：简化的权限控制系统，保护管理接口
-
-## 快速开始
-
-### 🚀 一键部署（推荐）
-
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Yan-nian/custom-host)
-
-1. 点击上方按钮
-2. 授权 GitHub 访问
-3. 选择 Cloudflare 账户
-4. 等待自动部署完成
-
-### 🔄 GitHub Actions 自动部署
-
-Fork 仓库后享受自动化部署，只需简单配置：
-
-#### 1️⃣ Fork 仓库
-点击仓库右上角的 "Fork" 按钮
-
-#### 2️⃣ 获取 Cloudflare 凭据
-- 登录 [Cloudflare Dashboard](https://dash.cloudflare.com)
-- 获取 **Global API Key** 和 **账户邮箱**
-- 创建 **KV 命名空间**（名称：`custom-hosts`）
-
-#### 3️⃣ 配置 GitHub Secrets
-在 Fork 的仓库中设置以下 Secrets：
-
-| Secret 名称 | 说明 |
-|------------|------|
-| `CLOUDFLARE_EMAIL` | Cloudflare 账户邮箱 |
-| `CLOUDFLARE_API_KEY` | Global API Key |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 账户 ID |
-| `KV_NAMESPACE_ID` | KV 命名空间 ID |
-
-#### 4️⃣ 触发部署
-推送任何更改即可自动部署：
-```bash
-git commit --allow-empty -m "触发自动部署"
-git push origin main
-```
-
-> 💡 **详细配置指南**：如需详细的配置步骤，请查看 [部署指南](#部署指南) 章节
-
-### 🛠️ 手动部署
-
-如果需要自定义配置或本地开发：
-
-```bash
-# 克隆仓库
-git clone https://github.com/Yan-nian/custom-host.git
-cd custom-host
-
-# 安装依赖
-pnpm install
-
-# 登录 Cloudflare
-npx wrangler login
-
-# 部署到 Cloudflare Workers
-pnpm run deploy
-```
-
-## 使用方法
-
-### 🌐 Web 界面访问
-
-部署成功后，访问您的 Worker URL：
-```
-https://your-worker-name.your-account.workers.dev
-```
-
-**主要功能：**
-- 📄 查看和下载 hosts 文件
-- 🎯 自定义域名管理
-- 📊 统计仪表板
-- 📖 API 文档
-
-### 📋 SwitchHosts 集成
-
-1. 下载 [SwitchHosts](https://github.com/oldj/SwitchHosts)
-2. 添加远程规则：
-   - **方案名**：Custom Hosts
-   - **类型**：远程
-   - **URL**：`https://your-worker-url.workers.dev/hosts`
-   - **自动更新**：1 小时
-
-### 🔗 直接使用 hosts 文件
-
-```bash
-# 下载 hosts 文件
-curl https://your-worker-url.workers.dev/hosts > hosts
-
-# 在 Linux/macOS 中应用
-sudo cp hosts /etc/hosts
-
-# 在 Windows 中应用（管理员权限）
-copy hosts C:\Windows\System32\drivers\etc\hosts
-```
-
-## 自定义域名管理
-
-### 🛠️ Web 管理后台
-
-访问管理后台进行可视化操作：
-```
-https://your-worker-url.workers.dev/admin-x7k9m3q2
-```
-
-**主要功能：**
-- 📊 **统计仪表板** - 查看域名数量和优选状态
-- ➕ **添加域名** - 支持批量添加自定义域名
-- ⚡ **一键优选** - 自动为域名选择最优IP
-- 🗑️ **管理操作** - 删除、清空等管理功能
-
-### 🚀 API 接口
-
-使用 RESTful API 进行程序化管理：
-
-```bash
-# 设置 API Key（默认：admin-x7k9m3q2）
-API_KEY="admin-x7k9m3q2"
-BASE_URL="https://your-worker-url.workers.dev"
-
-# 添加自定义域名
-curl -X POST "$BASE_URL/api/custom-domains?key=$API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"domain": "example.com", "description": "示例域名"}'
-
-# 优选域名IP
-curl -X POST "$BASE_URL/api/optimize/example.com?key=$API_KEY"
-
-# 获取优选后的hosts文件
-curl "$BASE_URL/hosts?optimize=true&custom=true"
-
-# 查看所有自定义域名
-curl "$BASE_URL/api/custom-domains?key=$API_KEY"
-```
-
-## 💡 应用场景
-
-### 🏢 企业内网优化
-为企业内部服务域名选择最优IP，提升内网访问速度：
-```bash
-# 添加企业内部域名
-curl -X POST "$BASE_URL/api/custom-domains?key=$API_KEY" \
-  -d '{"domain": "internal.company.com", "description": "企业内部服务"}'
-```
-
-### 🌐 CDN节点优选
-为CDN域名选择最快的边缘节点，优化内容分发：
-```bash
-# 优选CDN域名
-curl -X POST "$BASE_URL/api/optimize/cdn.example.com?key=$API_KEY"
-```
-
-### 🎮 游戏加速
-为游戏服务器域名选择低延迟IP，提升游戏体验：
-```bash
-# 添加游戏服务器域名
-curl -X POST "$BASE_URL/api/custom-domains?key=$API_KEY" \
-  -d '{"domain": "game.server.com", "description": "游戏服务器"}'
-```
-
-### 🔧 开发环境
-为开发和测试环境选择稳定的IP连接：
-```bash
-# 批量添加开发域名
-for domain in api.dev.com cdn.dev.com; do
-  curl -X POST "$BASE_URL/api/custom-domains?key=$API_KEY" \
-    -d "{\"domain\": \"$domain\", \"description\": \"开发环境\"}"
-done
-```
-
-## 部署指南
-
-### 🔐 自定义管理后台地址（推荐）
-
-默认管理后台：`/admin-x7k9m3q2`，**强烈建议修改为自定义路径**
-
-**安全格式要求：**
-- `admin-[8-16位字母数字]` （如：`admin-abc12345`）
-- `[3-8位字母]-admin-[6-12位字母数字]` （如：`my-admin-secret123`）
-- `secure-[8-16位字母数字]` （如：`secure-xyz98765`）
-- `mgmt-[8-16位字母数字]` （如：`mgmt-manager001`）
-
-**修改步骤：**
-1. Fork 仓库
-2. 编辑 `src/index.ts`，搜索并替换 `admin-x7k9m3q2`
-3. 同时修改 `adminPathAsApiKey` 变量
-4. 提交并推送代码触发自动部署
-
-### ⚙️ 详细配置指南
-
-<details>
-<summary>点击展开详细的 GitHub Actions 配置步骤</summary>
-
-#### 获取 Cloudflare API 凭据
-
-**方式一：Global API Key（推荐）**
-1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com)
-2. 头像 → "My Profile" → "API Tokens"
-3. "Global API Key" → "View" → 输入密码
-4. 复制 API Key 和账户邮箱
-
-**方式二：API Token（高级）**
-1. "API Tokens" → "Create Token"
-2. 使用 "Edit Cloudflare Workers" 模板
-3. 权限：`Account:Cloudflare Workers:Edit`, `Zone:Zone Settings:Read`, `Zone:Zone:Read`
-4. 复制生成的 Token
-
-#### 创建 KV 命名空间
-1. Cloudflare Dashboard → "Workers & Pages" → "KV"
-2. "Create a namespace" → 命名为 `custom-hosts`
-3. 复制命名空间 ID
-
-#### 配置 GitHub Secrets
-在 Fork 的仓库中添加以下 Secrets：
-
-**Global API Key 方式：**
-- `CLOUDFLARE_EMAIL`: Cloudflare 账户邮箱
-- `CLOUDFLARE_API_KEY`: Global API Key
-- `CLOUDFLARE_ACCOUNT_ID`: 账户 ID
-- `KV_NAMESPACE_ID`: KV 命名空间 ID
-
-**API Token 方式：**
-- `CLOUDFLARE_API_TOKEN`: API Token
-- `CLOUDFLARE_ACCOUNT_ID`: 账户 ID
-- `KV_NAMESPACE_ID`: KV 命名空间 ID
-
-</details>
-
-## 📊 技术特性
-
-### 🧠 智能算法
-- **并发IP测试**：同时测试多个IP地址，选择响应最快的
-- **智能缓存策略**：GitHub域名缓存1小时，自定义域名长期缓存
-- **自动更新机制**：每小时自动更新DNS记录，保持最新状态
-
-### 🔒 安全特性
-- **权限控制**：管理后台地址即API Key，简化配置
-- **路径验证**：严格的管理后台路径格式验证
-- **环境隔离**：支持开发和生产环境分离
-
-### ⚡ 性能优化
-- **全球CDN**：基于Cloudflare Workers的全球边缘计算
-- **KV存储**：高性能的键值存储，支持全球同步
-- **并发处理**：支持高并发的IP优选请求
-
-## 🔧 故障排除
-
-### 🚨 常见问题
-
-#### 部署认证失败
-**问题**：GitHub Actions 提示 "Unable to authenticate request"
-**解决**：
-- 检查 GitHub Secrets 是否正确配置
-- 确认 API Key 没有多余空格
-- 验证 Cloudflare 账户权限
-
-#### KV 命名空间错误
-**问题**：提示 "KV namespace not found"
-**解决**：
-- 确认已创建 KV 命名空间
-- 检查 `KV_NAMESPACE_ID` Secret 配置
-- 验证命名空间 ID 是否正确
-
-#### API 调用 403 错误
-**问题**：API 调用返回权限错误
-**解决**：
-- 使用正确的 API Key（默认：`admin-x7k9m3q2`）
-- 检查管理后台路径是否正确
-- 确认 API Key 格式符合要求
-
-#### 自定义域名无法添加
-**问题**：域名添加失败
-**解决**：
-- 确保域名格式正确（如：`example.com`）
-- 检查网络连接状态
-- 验证域名是否可解析
-
-### 🔍 调试方法
-
-```bash
-# 检查 wrangler 版本
-npx wrangler --version
-
-# 测试认证状态
-npx wrangler whoami
-
-# 查看实时日志
-npx wrangler tail
-
-# 本地开发调试
-npx wrangler dev
-```
-
-### 📞 获取帮助
-
-- 📖 查看 [Issues](https://github.com/Yan-nian/custom-host/issues)
-- 🐛 报告问题或建议
-- 💬 参与社区讨论
-
-## 🤝 贡献指南
-
-欢迎贡献代码和提出建议！
-
-1. Fork 本仓库
-2. 创建特性分支：`git checkout -b feature/amazing-feature`
-3. 提交更改：`git commit -m 'Add amazing feature'`
-4. 推送分支：`git push origin feature/amazing-feature`
-5. 提交 Pull Request
-
-## 📄 开源许可
-
-本项目采用 [MIT 许可证](LICENSE) 开源。
+> 这是 `local-runtime` 分支的文档。主干 `main` 是 Cloudflare Workers 版本，两者架构不同，配置与接口不通用。
 
 ---
 
-<div align="center">
-  <p>⭐ 如果这个项目对您有帮助，请给个 Star 支持一下！</p>
-  <p>🔧 基于 AI 技术优化，持续改进中...</p>
-</div>
+## 为什么有这个分支
+
+Cloudflare Workers 有两条硬限制，直接决定了能做什么：
+
+| 限制 | 后果 |
+|---|---|
+| 每请求最多 50 个 subrequest | 151 个域名要拆成 19 个分片，跨多轮才测得完 |
+| cron 执行时长上限 | 分片跑不完时后半段静默丢弃，线上曾长期只有 110/151 条 |
+
+本地运行没有这些约束，因此可以做完整探测。此外本地能拿到 Workers 拿不到的信息：
+
+- **TLS 握手耗时**：Workers 的 `connect()` 只到 TCP 层
+- **分段计时**：DNS / TCP / TLS / TTFB 四段分别计量
+- **长时间采样**：分钟级持续记录延迟变化，观察劣化趋势
+
+---
+
+## 核心能力
+
+| 能力 | 说明 |
+|---|---|
+| **多源 DNS 交叉验证** | AliDNS + DNSPod 双源解析，比对结果发现地域性差异 |
+| **候选 IP 全量测速** | 同一 IP 只测一次；IPv4 与 IPv6 合并后统一优选 |
+| **TLS 硬性校验** | TCP 通了但 TLS 握不上的一律排除，避免写进 hosts 后彻底不可用 |
+| **SNI 阻断归因** | 双 SNI 对照判定，区分「改 hosts 有效」与「必须走代理」 |
+| **真实延迟分解** | DNS / TCP / TLS / 首字节四段独立计时 |
+| **稳定性监控** | 按间隔反复采样，绘制多域名趋势曲线 |
+| **服务端缓存** | 按 `IP + 域名` 缓存测量结果，全量刷新从 46s 降到 21s |
+| **网络变化感知** | 出口 IP 变化时自动清空缓存，避免沿用失效数据 |
+| **广告规则拼接** | 可选追加 AWAvenue-Ads-Rule 黑名单，带开关 |
+| **无鉴权** | 本地控制台不设任何权限校验 |
+
+---
+
+## 环境要求
+
+| 项 | 要求 |
+|---|---|
+| Node.js | **≥ 20**（开发时用 22.x） |
+| 操作系统 | macOS / Linux / Windows |
+| 磁盘 | 约 10 MB（依赖 + 数据） |
+
+无需数据库、无需 Docker、无需 Cloudflare 账号。
+
+运行时依赖只有两个：`hono`、`@hono/node-server`，其余走 Node 标准库（`node:net`、`node:tls`、`node:dns`）。
+
+---
+
+## 快速开始
+
+```bash
+npm install
+npm run local
+```
+
+打开 <http://127.0.0.1:8788>，点击「开始刷新」。
+
+命令行方式：
+
+```bash
+# 首次生成数据（151 个域名，约 40 秒）
+curl -X POST http://127.0.0.1:8788/local/refresh
+
+# 之后直接取 hosts
+curl http://127.0.0.1:8788/hosts
+```
+
+> **首次必须刷新一次。** 数据来自本地探测而非回源抓取，KV 为空时 `/hosts` 只返回提示，不会自动生成。
+
+### 可用脚本
+
+| 命令 | 作用 |
+|---|---|
+| `npm run local` | 构建 + 启动 |
+| `npm run local:dev` | 构建 + 启动，文件变化自动重启 |
+| `npm run local:build` | 只构建，产物在 `dist-server/` |
+
+`npm run deploy` 与 `npm run dev` 已改为直接报错退出，防止误部署覆盖线上。
+
+---
+
+## Web 控制台
+
+首页即控制台（`/`），五个标签页。
+
+### Hosts
+
+按分组查看 / 复制 / 下载 hosts 内容，显示有效记录数与数据更新时间。
+
+分组下拉可只导出部分站点：
+
+```bash
+# 只要 GitHub 的优选条目，不含广告规则
+curl "http://127.0.0.1:8788/hosts?group=github&ads=false"
+```
+
+注意 `?group=` 只过滤优选区，广告规则（若已启用）仍会追加在末尾。需要纯净的单组输出时加上 `&ads=false`。
+
+### 延迟诊断
+
+- **单域名模式**：四段耗时分解 + SNI 阻断判定
+- **对比全部候选**：列出所有候选 IP 的 TCP / TLS / 成功率，标出被排除的地址及原因
+
+### 批量刷新
+
+- 分组刷新、并发可选（8 / 16 / 24）
+- 实时进度条与失败计数
+- 结果表**失败项置顶**，点击任意行展开完整详情（候选 IP、各 DoH 返回、SNI 结论）
+- 广告规则开关与缓存管理
+
+### 稳定性监控
+
+选定分组与采样间隔（30s / 1min / 5min），持续记录延迟并绘制趋势曲线，用于发现「什么时候开始变慢」。
+
+### 自定义域名
+
+批量粘贴添加自有域名，它们会一并出现在 hosts 输出中。
+
+---
+
+## 工作方式
+
+单个域名的探测流程：
+
+```
+DNS 解析（AliDNS + DNSPod，A + AAAA）
+   ↓ 合并去重（同一 IP 只测一次）
+缓存命中？ ── 是 ──→ 直接复用（TTL 2 小时）
+   ↓ 否
+TCP 443 握手 —— 失败则淘汰
+   ↓ 成功
+TLS 握手（真实 SNI）—— 失败则排除，不写入 hosts
+   ↓ 成功
+按 TCP 延迟排序，取最优
+   ↓
+SNI 阻断归因（仅诊断时）
+```
+
+### 三层过滤
+
+1. **TCP 可达**：连不上直接淘汰
+2. **TLS 可握手**：TCP 通但握手被重置的，一律排除
+3. **SNI 未阻断**：判定为 SNI 阻断的域名自动加入排除清单，后续刷新跳过
+
+第 2 层是必须的。实测遇到过 TCP 96ms（比最优 IP 还快）但 TLS 阶段 `ECONNRESET` 的地址——只看 TCP 延迟会选中它，写进 hosts 后该域名反而打不开。
+
+### 关于 SNI 阻断
+
+判定方式是**双 SNI 对照**：对同一 IP 用真实域名握手一次，再用无关域名做对照。
+
+| 真实 SNI | 对照 SNI | 判定 | 对 hosts 的意义 |
+|---|---|---|---|
+| 成功 | — | `ok` | 有效 |
+| 失败 | 成功 | `sni-blocked` | **无效，必须走代理** |
+| 失败 | 失败（TCP 通） | `unknown` | 无法归因，结果不可采信 |
+| — | — | `tcp-blocked` | IP 层封锁 |
+
+之所以要对照，是因为 TLS 失败原因很多（证书不匹配、限流、协议版本），单次失败无法归因。
+
+---
+
+## HTTP 接口
+
+### 数据输出
+
+| 接口 | 说明 |
+|---|---|
+| `GET /hosts` | hosts 文本。`?group=` 过滤分组，`?ads=false` 不含广告规则 |
+| `GET /hosts.json` | 同上的 JSON 结构，含分组归类 |
+
+数据时间戳取自实际刷新时间，重复请求不会变化，可用于 diff 判断数据是否真的更新。
+
+### 刷新与探测
+
+| 接口 | 说明 |
+|---|---|
+| `POST /local/refresh` | 异步刷新，返回 `taskId`。`?wait=true` 同步等待 |
+| `GET /local/tasks/:id` | 任务进度 |
+| `GET /local/probe?domain=x` | 单域名完整探测 |
+| `GET /local/timing?domain=x` | 四段延迟分解（可带 `?ip=`） |
+| `GET /local/compare?domain=x&rounds=3` | 候选 IP 多轮对比 |
+| `GET /local/sni?domain=x` | 仅做 SNI 阻断判定 |
+
+刷新参数：
+
+| 参数 | 作用 |
+|---|---|
+| `group=github,npm` | 只刷指定分组 |
+| `concurrency=8` | 并发数，默认 8 |
+| `noCache=true` | 忽略缓存强制重测 |
+| `includeBlocked=true` | 连已判定的阻断域名一起测 |
+
+### 状态与管理
+
+| 接口 | 说明 |
+|---|---|
+| `GET /local/groups` | 分组与域名数 |
+| `GET /local/cache` · `POST /local/cache/clear` | IP 缓存状态 / 清空 |
+| `GET /local/blocked` · `DELETE /local/blocked/:domain` | 阻断清单 / 解除 |
+| `POST /local/blocked/recheck` | 重新检测全部阻断域名 |
+| `GET /local/ads` · `POST /local/ads` | 广告规则状态 / 开关 |
+| `POST /local/ads/refresh` | 重新抓取广告规则 |
+| `GET /local/doh` · `POST /local/doh/reset` | DoH 可达性 / 重置熔断 |
+| `GET /local/network` | 当前出口 IP 与变化判断 |
+| `POST /local/monitor/start` · `stop` · `GET status` | 监控控制 |
+| `GET /local/series?group=x` | 趋势数据 |
+| `GET /local/health` | 存活检查 |
+
+### 自定义域名
+
+`GET /api/custom-domains`、`POST /api/custom-domains`（单个或 `batch` 批量）、`DELETE /api/custom-domains/:domain`。
+
+---
+
+## 配置
+
+全部通过环境变量，均可省略：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `PORT` | `8788` | 监听端口 |
+| `HOST` | `127.0.0.1` | 监听地址。默认仅本机，外部访问改 `0.0.0.0` |
+| `ENABLE_IPV6` | 开启 | `false` 退回纯 IPv4，可省约 30% 刷新时间 |
+| `ENABLE_INTL_DOH` | 关闭 | `true` 启用 Cloudflare / Google DoH（国内不可达） |
+
+```bash
+PORT=9000 ENABLE_IPV6=false npm run local
+```
+
+### 网络依赖
+
+**必需**：
+
+| 目标 | 用途 | 实测延迟 |
+|---|---|---|
+| `dns.alidns.com` | DNS 主源 | 33 ms |
+| `doh.pub` | DNS 备源 | 162 ms |
+
+**可选**（失败不影响主流程）：
+
+| 目标 | 用途 | 失败表现 |
+|---|---|---|
+| `gcore.jsdelivr.net` | 广告规则 | 保留上一份规则 |
+| `ipinfo.io` → `myip.ipip.net` | 网络变化检测 | 跳过判断，不清缓存 |
+
+---
+
+## 数据目录
+
+`data/` 首次运行自动创建，已加入 `.gitignore`：
+
+```
+data/
+├── kv/
+│   ├── domain_data.json      域名优选结果（核心）
+│   ├── ads_rules.json        广告规则缓存
+│   └── ads_config.json       广告开关
+├── ip-cache.json             IP 延迟缓存（TTL 2 小时）
+├── blocked-domains.json      SNI 阻断排除清单
+└── network-identity.json     出口 IP 基线
+```
+
+均为纯 JSON 文件，可直接查看或手工修正。删掉即可恢复初始状态。
+
+---
+
+## 域名分组
+
+151 个域名分 12 组，定义在 `src/constants.ts` 的 `SITE_GROUPS`：
+
+| 分组 | 数量 | 覆盖 |
+|---|---|---|
+| `github` | 35 | GitHub 主站、Raw、头像、Actions、Release |
+| `game` | 29 | Rockstar、Epic、Battle.net、EA、Ubisoft、Riot |
+| `dev` | 22 | PyPI、Maven、Go、Rust、Conda、VS Code |
+| `web` | 16 | 必应、微软账户、Edge、DeepL、验证码 |
+| `steam` | 11 | 商店、社区、CDN 静态资源 |
+| `docker` | 7 | 镜像拉取、认证、Layer 下载 |
+| `cloudflare` | 7 | 官方主站、开发者文档、Workers、Pages |
+| `npm` | 6 | npm registry、jsDelivr、unpkg、esm.sh |
+| `mod` | 6 | Nexusmods、CurseForge、Thunderstore |
+| `anime` | 5 | 番剧站、影视数据库 |
+| `adult` | 5 | — |
+| `intl` | 3 | Stack Overflow、Python、Node.js |
+
+新增站点前建议先用 `/local/probe` 确认无 SNI 阻断——阻断的域名加进去也不会生效。
+
+---
+
+## 性能参考
+
+本机实测（联通，151 个域名）：
+
+| 场景 | 耗时 |
+|---|---|
+| 全量刷新，无缓存 | 46 秒 |
+| 全量刷新，缓存已满 | 21 秒 |
+| 单组刷新（6 个域名），命中缓存 | 0.8 秒 |
+| 单域名探测 | 1~2 秒 |
+
+缓存命中率约 88%，未命中的多是 anycast 域名——它们每轮返回的 IP 会变。
+
+---
+
+## 已知限制
+
+**IPv6 依赖网络环境。** 部分网络会「有地址但不出网」。此时 IPv6 候选因超时被自动淘汰，不影响 IPv4 使用，只是多等一次超时。
+
+**缓存覆盖不到延迟劣化。** 出口 IP 不变时缓存继续生效，但同一 IP 在 24 秒内延迟就可能波动 12~30%（晚高峰、路由调整、CDN 重调度都不改出口 IP）。TTL 2 小时是权衡结果。
+
+**SNI 阻断会变化。** 判定结果随网络策略调整，建议定期用「重新检测全部」复核。实测曾出现 12 个里有 4 个其实已恢复。
+
+**域名列表需手工维护。** 写入 `src/constants.ts`。
+
+**`dash.cloudflare.com` 这类地址会变。** Cloudflare 控制面板入口是随机生成的，失效后需替换为当前地址。
+
+---
+
+## 故障排查
+
+**`/hosts` 返回「尚未生成数据」**
+
+KV 为空，执行一次刷新：
+
+```bash
+curl -X POST http://127.0.0.1:8788/local/refresh
+```
+
+**刷新很慢**
+
+- 首次无缓存属正常（约 40~46 秒）
+- 若长期很慢，检查 `ENABLE_IPV6` 是否开着而网络实际不通 IPv6
+- 并发过高会因连接数限制产生伪失败，建议保持 8
+
+**某个域名一直失败**
+
+```bash
+curl "http://127.0.0.1:8788/local/probe?domain=example.com"
+```
+
+看 `sni.verdict`：
+
+- `sni-blocked` / `tcp-blocked` → 改 hosts 无效，需代理
+- `unknown` → 检测条件不可靠（对照组也失败），稍后重测
+
+**缓存似乎没生效**
+
+```bash
+curl http://127.0.0.1:8788/local/cache
+curl http://127.0.0.1:8788/local/network   # 看是否因换网被清空
+```
+
+**DoH 一直超时**
+
+国际 DoH 在国内不可达属正常，默认已关闭。需要时：
+
+```bash
+ENABLE_INTL_DOH=true npm run local
+```
+
+---
+
+## 项目来源
+
+本项目在以下开源项目基础上改造：
+
+- [GitHub520](https://github.com/521xueweihan/GitHub520) — GitHub 访问加速
+- [github-hosts](https://github.com/TinsFox/github-hosts) — hosts 文件生成
+
+广告拦截规则来自 [AWAvenue-Ads-Rule](https://github.com/TG-Twilight/AWAvenue-Ads-Rule)。
+
+## 开源许可
+
+[MIT](./LICENSE)
