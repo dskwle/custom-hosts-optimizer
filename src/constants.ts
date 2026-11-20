@@ -185,9 +185,18 @@ export const SITE_GROUPS: SiteGroup[] = [
     description: "番剧站、影视数据库、追番记录",
     domains: [
       "animes.garden",
+      "mikanime.tv",
       "tmdb.org",
       "themoviedb.org",
       "anilist.co",
+    ],
+  },
+  {
+    id: "adult",
+    name: "其他站点",
+    description: "成人站点",
+    domains: [
+      "youjizz.com",
     ],
   },
   {
