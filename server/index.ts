@@ -99,7 +99,9 @@ const root = new Hono()
 
 root.post("/local/refresh", async (c) => {
   const groupParam = c.req.query("group")
-  const CONCURRENCY = Number(c.req.query("concurrency") || 16)
+  // 默认并发 8：实测 16 时部分 IP 会因连接数压力瞬时失败（伪阴性），
+  // 8 在速度与稳定性之间更平衡。
+  const CONCURRENCY = Number(c.req.query("concurrency") || 8)
   // wait=true 时同步等待结果（便于脚本调用），否则立刻返回 taskId 供轮询
   const wait = c.req.query("wait") === "true"
   // includeBlocked=true 时连已被判定为 SNI 阻断的域名一起重测，用于复核

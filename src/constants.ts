@@ -197,6 +197,10 @@ export const SITE_GROUPS: SiteGroup[] = [
     description: "成人站点",
     domains: [
       "youjizz.com",
+      "cosplaytele.com",
+      "theporndude.com",
+      "18av.mm-cg.com",
+      "javbooks.com",
     ],
   },
   {

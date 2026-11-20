@@ -219,8 +219,44 @@ async function querySystemDns(domain: string): Promise<{
   return { lookup: lookupRes, upstream: upstreamRes, hostsOverride }
 }
 
-/** TCP 443 握手测速 */
-function measureTcp(ip: string, port = 443, timeoutMs = 3000): Promise<number | null> {
+/**
+ * 带并发上限的 map。
+ *
+ * 为什么需要：单域名可能有十几个候选 IP，而批量刷新本身还有并发。
+ * 两者相乘会产生数百个瞬时 socket，触发本地或运营商的连接数限制，
+ * 表现为「刚测还通、批量测就全不可达」的伪失败。
+ * 实测 adult 组并发 16 时 2/5 失败，改成并发 2 后 5/5 全通。
+ */
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let cursor = 0
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (true) {
+        const i = cursor++
+        if (i >= items.length) return
+        results[i] = await fn(items[i])
+      }
+    }
+  )
+  await Promise.all(workers)
+  return results
+}
+
+/** 单域名内部对候选 IP 的探测并发上限 */
+const CANDIDATE_CONCURRENCY = 6
+
+/** TCP 443 握手测速（单次） */
+function measureTcpOnce(
+  ip: string,
+  port = 443,
+  timeoutMs = 3000
+): Promise<number | null> {
   return new Promise((resolve) => {
     const start = Date.now()
     const socket = new net.Socket()
@@ -239,6 +275,24 @@ function measureTcp(ip: string, port = 443, timeoutMs = 3000): Promise<number | 
     socket.once("error", () => done(null))
     socket.connect(port, ip)
   })
+}
+
+/**
+ * TCP 握手测速，失败后重试一次。
+ *
+ * 单次失败不足以判定「不可达」：实测同一 IP 在并发压力下会瞬时失败，
+ * 串行重测又恢复正常。多给一次机会能显著减少伪阴性，
+ * 而真正被封的 IP 两次都失败，代价只是多等一个 timeout。
+ */
+async function measureTcp(
+  ip: string,
+  port = 443,
+  timeoutMs = 3000
+): Promise<number | null> {
+  const first = await measureTcpOnce(ip, port, timeoutMs)
+  if (first !== null) return first
+  // 二次探测稍收紧超时，避免整体耗时过长
+  return measureTcpOnce(ip, port, Math.min(timeoutMs, 2500))
 }
 
 /**
@@ -528,26 +582,26 @@ export async function probeDomain(
   const candidates = [...allCandidates]
 
   // 第一层：TCP 握手。连不上就没必要做 TLS，直接淘汰。
-  const tcpProbed = await Promise.all(
-    candidates.map(async (ip) => ({ ip, latency: await measureTcp(ip) }))
-  )
+  // 限流：候选可能多达十几个，无上限并发会触发系统连接数限制。
+  const tcpProbed = await mapLimit(candidates, CANDIDATE_CONCURRENCY, async (ip) => ({
+    ip,
+    latency: await measureTcp(ip),
+  }))
 
   // 第二层：对 TCP 可达的 IP 逐个验证 TLS 握手。
   // 只有握手成功的才算有效候选——这是「保留的项目一定能正常建立 TLS 连接」
   // 这条要求的落地：TCP 通但 TLS 被打断的 IP 一律排除。
   const tlsCandidates = tcpProbed.filter((x) => x.latency !== null)
-  const tlsProbed = await Promise.all(
-    tlsCandidates.map(async (x) => {
-      const t = await checkTlsHandshake(domain, x.ip)
-      return {
-        ip: x.ip,
-        latency: x.latency,
-        tlsOk: t.ok,
-        tlsMs: t.ok ? t.ms : null,
-        tlsError: t.error,
-      } as ProbeCandidate
-    })
-  )
+  const tlsProbed = await mapLimit(tlsCandidates, CANDIDATE_CONCURRENCY, async (x) => {
+    const t = await checkTlsHandshake(domain, x.ip)
+    return {
+      ip: x.ip,
+      latency: x.latency,
+      tlsOk: t.ok,
+      tlsMs: t.ok ? t.ms : null,
+      tlsError: t.error,
+    } as ProbeCandidate
+  })
 
   // TCP 就不通的也保留在列表里，让用户看到「解析出了这些 IP 但都用不了」；
   // 但它们 tlsOk=false，不会被选为 bestIp，也不会写进 hosts。
