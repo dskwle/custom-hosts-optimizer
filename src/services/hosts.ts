@@ -130,8 +130,8 @@ export async function fetchIPFromMultipleDNS(domain: string): Promise<string | n
 // 批量获取最新 hosts 数据
 export async function fetchLatestHostsData(): Promise<HostEntry[]> {
   const entries: HostEntry[] = []
-  // 域名数量增长到 80+，批次从 5 提到 8、批间隔从 2s 降到 1s，避免 cron 超时
-  const batchSize = 8
+  // 域名数量已增至 130+，批次 10、批间隔 0.8s，单轮抓取控制在 40s 内
+  const batchSize = 10
 
   console.log(`Starting batch processing for ${ALL_DOMAINS.length} domains`)
 
@@ -156,7 +156,7 @@ export async function fetchLatestHostsData(): Promise<HostEntry[]> {
     )
 
     if (i + batchSize < ALL_DOMAINS.length) {
-      await new Promise((resolve) => setTimeout(resolve, 1000))
+      await new Promise((resolve) => setTimeout(resolve, 800))
     }
   }
 

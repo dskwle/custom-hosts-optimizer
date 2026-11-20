@@ -42,7 +42,7 @@ export const GITHUB_URLS = [
 ]
 
 export const HOSTS_TEMPLATE = `# custom-hosts 自动生成
-# 覆盖：GitHub / npm CDN / Docker Hub / Steam / 游戏平台 / 开发者资源
+# 覆盖：GitHub / npm / Docker / Steam / 游戏平台 / 游戏模组 / 网页工具 / 开发者资源
 # 原理：绕开 DNS 污染，直连可用 IP
 
 {content}
@@ -129,6 +129,58 @@ export const SITE_GROUPS: SiteGroup[] = [
       "ubisoft.com",
       "www.riotgames.com",
       "valorant.com",
+      "gog.com",
+      "www.gog.com",
+      "api.gog.com",
+      "images.gog.com",
+      "epicgames.com",
+      "api.epicgames.dev",
+      "www.minecraft.net",
+      "api.minecraftservices.com",
+      "launchermeta.mojang.com",
+      "piston-data.mojang.com",
+      "libraries.minecraft.net",
+      "resources.download.minecraft.net",
+      "bungie.net",
+      "www.bungie.net",
+      "api.warframe.com",
+      "content.warframe.com",
+      "osu.ppy.sh",
+    ],
+  },
+  {
+    id: "mod",
+    name: "游戏模组",
+    description: "Nexusmods、CurseForge、Thunderstore",
+    domains: [
+      "www.nexusmods.com",
+      "staticdelivery.nexusmods.com",
+      "www.curseforge.com",
+      "media.forgecdn.net",
+      "edge.forgecdn.net",
+      "thunderstore.io",
+    ],
+  },
+  {
+    id: "web",
+    name: "网页工具",
+    description: "必应、微软账户、Edge、DeepL、验证码、数据站",
+    domains: [
+      "www.bing.com",
+      "login.live.com",
+      "microsoftedge.microsoft.com",
+      "api.deepl.com",
+      "hcaptcha.com",
+      "assets.hcaptcha.com",
+      "challenges.cloudflare.com",
+      "steamdb.info",
+      "op.gg",
+      "tracker.gg",
+      "pcgamingwiki.com",
+      "howlongtobeat.com",
+      "sourceforge.net",
+      "pan.baidu.com",
+      "api.bilibili.com",
     ],
   },
   {
