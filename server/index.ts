@@ -115,15 +115,45 @@ root.post("/local/refresh", async (c) => {
           const domain = domains[i]
           taskManager.startItem(task.taskId, domain)
           try {
-            const r = await probeDomain(domain)
+            // 批量也做 SNI 检测：前端点开某个域名时要能看到与单次检测一致的完整信息
+            const r = await probeDomain(domain, { checkSni: true })
+
+            // 失败原因：优先取 SNI 结论，否则汇总 TLS 失败原因
+            let error: string | undefined
+            if (!r.bestIp) {
+              if (r.sni) {
+                error = r.sni.explanation
+              } else if (r.uniqueIpCount > 0) {
+                const reasons = [
+                  ...new Set(
+                    r.candidates.map((x) => x.tlsError).filter(Boolean)
+                  ),
+                ]
+                error = `${r.uniqueIpCount} 个 IP 均无法完成 TLS 握手（${reasons.join(" / ") || "未知"}）`
+              } else {
+                error = "所有 DNS 源均未返回 A 记录"
+              }
+            }
+
             const item: TaskItemResult = {
               domain,
-              ok: r.bestIp !== null,   // bestIp 非空 == TLS 握手成功，才可写进 hosts
+              ok: r.bestIp !== null,
               bestIp: r.bestIp,
               latency: r.latency,
               tlsOk: r.tlsOkCount > 0,
               candidateCount: r.uniqueIpCount,
               tlsOkCount: r.tlsOkCount,
+              tlsMs: r.tlsMs,
+              error,
+              detail: {
+                providers: r.providers,
+                candidates: r.candidates,
+                systemIps: r.systemIps,
+                inconsistent: r.inconsistent,
+                systemDiffers: r.systemDiffers,
+                totalResolvedEntries: r.totalResolvedEntries,
+                sni: r.sni,
+              },
               source: "local",
             }
             results.push(item)
@@ -134,6 +164,7 @@ root.post("/local/refresh", async (c) => {
               ok: false,
               bestIp: null,
               latency: null,
+              error: `探测过程异常：${(err as Error).message}`,
               source: "local",
             })
           }

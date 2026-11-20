@@ -33,9 +33,35 @@ export interface TaskItemResult {
   latency: number | null
   /** TLS 握手是否成功。false 表示该域名本次没有可用 IP */
   tlsOk?: boolean
-  /** 候选 IP 数 / TLS 成功数，便于看出筛选比例 */
+  /** 候选 IP 总数 / TLS 成功数，便于看出筛选比例 */
   candidateCount?: number
   tlsOkCount?: number
+  /** 最优 IP 的 TLS 握手耗时 */
+  tlsMs?: number | null
+  /** 失败原因汇总，用于在列表上直接说明为什么不可用 */
+  error?: string
+  /** 完整探测结果：各 DoH 明细、全部候选、SNI 判定。
+   *  批量刷新把每个域名的详情都带回来，前端点开即可看到与单次检测一致的信息 */
+  detail?: {
+    providers: { name: string; ips: string[]; ms: number | null; error?: string }[]
+    candidates: {
+      ip: string
+      latency: number | null
+      tlsOk: boolean
+      tlsMs: number | null
+      tlsError?: string
+    }[]
+    systemIps: string[]
+    inconsistent: boolean
+    systemDiffers: boolean
+    totalResolvedEntries: number
+    sni?: {
+      verdict: string
+      explanation: string
+      withSni: { ok: boolean; ms: number | null; error?: string }
+      withoutSni: { ok: boolean; ms: number | null; error?: string }
+    } | null
+  }
   source: "local" | "probe"
 }
 
@@ -46,7 +72,9 @@ export interface SamplePoint {
   values: Record<string, number | null>
 }
 
-const MAX_RECENT = 30
+// 保留全部结果供前端查看。137 个域名的详情约几 MB，
+// 单个任务持有这么多内存可以接受；上限设为 500 防止异常情况无限增长。
+const MAX_RECENT = 500
 
 class TaskManager extends EventEmitter {
   private tasks = new Map<string, TaskProgress>()

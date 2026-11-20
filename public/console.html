@@ -145,6 +145,18 @@
     font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 99;
   }
   .toast.on { opacity: 1; }
+
+  /* 批量刷新结果表：可展开行 */
+  tr.expandable:hover { background: #faf9f7; }
+  tr.expandable td:first-child { color: var(--muted); font-size: 11px; }
+  tr.detail-row > td {
+    background: #fbfaf8;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  tr.detail-row table { margin-top: 8px; }
+  tr.detail-row .prov-list { margin-top: 8px; }
+  tr.detail-row .verdict { margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -219,8 +231,8 @@
       </div>
     </div>
     <div class="card">
-      <h2>最近结果</h2>
-      <p class="hint">刷新过程中实时追加，最多显示 30 条。</p>
+      <h2>全部结果</h2>
+      <p class="hint">失败项自动置顶，点击任意行展开完整详情（候选 IP、各 DNS 服务商返回、SNI 判定）。</p>
       <div id="refreshRecent"><p class="empty">尚未开始</p></div>
     </div>
   </div>
@@ -276,6 +288,8 @@ const el = (id) => document.getElementById(id)
 let chartTimer = null
 let refreshTimer = null
 let chartData = {}
+// 记录当前展开详情的域名，轮询重绘后按域名恢复展开状态
+const expandedDomains = new Set()
 
 function toast(msg) {
   const t = el('toast')
@@ -579,20 +593,118 @@ async function doTiming() {
 }
 
 /* ---------- 三、批量刷新 ---------- */
+// 排序规则：失败优先（便于发现问题），其次按延迟从高到低（慢的更值得关注）
+function sortFailuresFirst(list) {
+  return list.slice().sort((a, b) => {
+    if (a.ok !== b.ok) return a.ok ? 1 : -1
+    if (!a.ok) return a.domain.localeCompare(b.domain)
+    const la = a.latency ?? Infinity
+    const lb = b.latency ?? Infinity
+    return lb - la
+  })
+}
+
+// 展开某一行时显示的详情，内容与单次检测保持一致
+function renderDetailRow(r) {
+  const d = r.detail
+  if (!d) {
+    return `<div class="verdict warn" style="margin:0">
+      <h4>无详细数据</h4>
+      <div>${r.error || '该域名未返回探测详情'}</div>
+    </div>`
+  }
+
+  const candRows = (d.candidates || []).map((x) => `<tr>
+    <td><code>${x.ip}</code></td>
+    <td class="num">${x.latency != null ? x.latency + 'ms' : '不通'}</td>
+    <td class="num ${x.tlsOk ? 'good' : 'bad'}">${x.tlsOk ? (x.tlsMs != null ? x.tlsMs + 'ms' : '✓') : '✗ ' + (x.tlsError || '失败')}</td>
+  </tr>`).join('')
+
+  const provRows = (d.providers || []).map((p) => {
+    const txt = p.ips && p.ips.length
+      ? p.ips.join('  ')
+      : `<span class="bad">${p.error || '无结果'}</span>`
+    return `<div class="prov-row">
+      <span class="prov-name">${p.name}</span>
+      <span class="prov-ips">${txt}</span>
+      <span class="prov-ms">${p.ms != null ? p.ms + 'ms' : '—'}</span>
+    </div>`
+  }).join('')
+
+  const sniHtml = d.sni ? renderSni(d.sni) : ''
+
+  return `<div style="padding:4px 0 12px">
+    ${candRows ? `<p class="sub" style="margin:0 0 4px">候选 IP（${d.candidates.length} 个，TLS 成功 ${d.candidates.filter((x) => x.tlsOk).length} 个）</p>
+      <table><thead><tr><th>IP</th><th>TCP</th><th>TLS</th></tr></thead><tbody>${candRows}</tbody></table>` : ''}
+    <div class="prov-list">
+      <p class="sub" style="margin:8px 0 4px">各 DNS 服务商分别返回</p>
+      ${provRows}
+    </div>
+    ${sniHtml}
+  </div>`
+}
+
 function renderRecent(recent) {
   if (!recent || !recent.length) {
     el('refreshRecent').innerHTML = '<p class="empty">尚无结果</p>'
     return
   }
-  const rows = recent.slice().reverse().map((r) => `<tr>
-    <td>${r.domain}</td>
-    <td><code>${r.bestIp || '—'}</code></td>
-    <td class="num ${latencyClass(r.latency)}">${r.latency != null ? r.latency + 'ms' : '—'}</td>
-    <td class="${r.ok ? 'good' : 'bad'}">${r.ok ? '正常' : '失败'}</td>
-  </tr>`).join('')
-  el('refreshRecent').innerHTML = `<table>
-    <thead><tr><th>域名</th><th>IP</th><th>延迟</th><th>状态</th></tr></thead>
-    <tbody>${rows}</tbody></table>`
+
+  const sorted = sortFailuresFirst(recent)
+  const failCount = sorted.filter((r) => !r.ok).length
+
+  // 每个域名一行，点击展开详情
+  el('refreshRecent').innerHTML = `
+    <p class="sub" style="margin:0 0 10px">
+      共 ${sorted.length} 个域名，其中 <strong class="${failCount ? 'bad' : 'good'}">${failCount} 个失败</strong>（已置顶）。
+      点击任意行可展开完整详情。
+    </p>
+    <table>
+      <thead><tr><th style="width:26px"></th><th>域名</th><th>最优 IP</th><th>TCP</th><th>TLS</th><th>候选/成功</th><th>状态</th></tr></thead>
+      <tbody>
+        ${sorted.map((r, i) => `
+          <tr class="expandable" data-idx="${i}" style="cursor:pointer">
+            <td class="good">${r.ok ? '' : '▸'}</td>
+            <td>${r.domain}</td>
+            <td><code>${r.bestIp || '—'}</code></td>
+            <td class="num ${latencyClass(r.latency)}">${r.latency != null ? r.latency + 'ms' : '—'}</td>
+            <td class="num ${r.tlsOk ? 'good' : 'bad'}">${r.tlsOk ? (r.tlsMs != null ? r.tlsMs + 'ms' : '✓') : '✗'}</td>
+            <td class="num">${r.candidateCount ?? '—'}/${r.tlsOkCount ?? '—'}</td>
+            <td class="${r.ok ? 'good' : 'bad'}">${r.ok ? '正常' : '失败'}</td>
+          </tr>
+          <tr class="detail-row" data-detail="${i}" style="display:none">
+            <td colspan="7">${renderDetailRow(r)}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>`
+
+  // 绑定展开/收起。轮询会整表重绘，用 expandedDomains 记住哪些开着，
+  // 重绘后按域名恢复，避免用户展开的详情被刷掉。
+  el('refreshRecent').querySelectorAll('tr.expandable').forEach((tr) => {
+    tr.addEventListener('click', () => {
+      const idx = tr.dataset.idx
+      const detail = el('refreshRecent').querySelector(`tr[data-detail="${idx}"]`)
+      if (!detail) return
+      const open = detail.style.display !== 'none'
+      detail.style.display = open ? 'none' : 'table-row'
+      tr.querySelector('td').textContent = open ? (sorted[idx].ok ? '' : '▸') : '▾'
+
+      const domain = sorted[idx].domain
+      if (open) expandedDomains.delete(domain)
+      else expandedDomains.add(domain)
+    })
+  })
+
+  // 恢复上次展开的行
+  for (const domain of expandedDomains) {
+    const idx = sorted.findIndex((r) => r.domain === domain)
+    if (idx < 0) continue
+    const detail = el('refreshRecent').querySelector(`tr[data-detail="${idx}"]`)
+    const tr = el('refreshRecent').querySelector(`tr[data-idx="${idx}"]`)
+    if (detail) detail.style.display = 'table-row'
+    if (tr) tr.querySelector('td').textContent = '▾'
+  }
 }
 
 async function doRefresh() {
@@ -632,7 +744,7 @@ async function doRefresh() {
         btn.disabled = false
         el('refreshStatus').textContent = '轮询失败：' + e.message
       }
-    }, 700)
+    }, 1200)
   } catch (e) {
     btn.disabled = false
     el('refreshStatus').textContent = '启动失败：' + e.message
