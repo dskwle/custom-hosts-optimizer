@@ -18,10 +18,14 @@ export interface DohProviderResult {
   name: string
   /** 该家解析出的 IPv4 列表 */
   ips: string[]
+  /** 该家解析出的 IPv6 列表 */
+  ips6?: string[]
   /** 查询耗时（ms），失败时为 null */
   ms: number | null
   /** 失败原因；成功时为 undefined */
   error?: string
+  /** IPv6 查询的失败原因（若启用 IPv6） */
+  error6?: string
 }
 
 /** SNI 阻断判定：区分「IP 不通」与「TCP 通了但 TLS 被切断」 */
@@ -59,12 +63,20 @@ export interface ProbeResult {
   providers: DohProviderResult[]
   /** 本机实际使用的 IP（已合并 /etc/hosts，即 dns.lookup 的结果） */
   systemIps: string[]
+  /** 本机实际使用的 IPv6 地址 */
+  systemIps6?: string[]
   /** 绕过 hosts 的上游 DNS 结果（dns.resolve4），用于对照是否被 hosts 覆盖 */
   upstreamIps: string[]
+  /** 绕过 hosts 的上游 IPv6 结果 */
+  upstreamIps6?: string[]
   /** 该域名是否被 /etc/hosts 覆盖 */
   hostsOverride: boolean
-  /** 去重后的候选 IP 总数 */
+  /** 去重后的候选 IP 总数（含 IPv4 与 IPv6） */
   uniqueIpCount: number
+  /** 其中 IPv4 数量 */
+  v4Count?: number
+  /** 其中 IPv6 数量 */
+  v6Count?: number
   /** 各 DNS 源返回的原始条目数之和（含重复），用于说明去重效果 */
   totalResolvedEntries: number
   /** TLS 握手成功的候选数——只有这些才值得写进 hosts */
@@ -81,6 +93,8 @@ export interface ProbeResult {
 /** 单个候选 IP 的检测结果 */
 export interface ProbeCandidate {
   ip: string
+  /** 地址族：用于前端区分展示 */
+  family: IpFamily
   /** TCP 握手耗时；null 表示连不上 */
   latency: number | null
   /** TLS 握手是否成功。这是能否用于 hosts 的硬性条件 */
@@ -107,29 +121,50 @@ export interface ProbeCandidate {
  * 通过 ENABLE_INTL_DOH=true 环境变量即可启用，
  * 无需改代码。多源交叉验证仍是排查 DNS 污染的有力手段。
  */
+/** 是否启用 IPv6（默认开启；可用 ENABLE_IPV6=false 关闭） */
+export const IPV6_ENABLED = process.env.ENABLE_IPV6 !== "false"
+
+export type IpFamily = "v4" | "v6"
+
+/** 判断地址族。IPv4 是点分十进制，其余含冒号的视为 IPv6 */
+export function ipFamily(ip: string): IpFamily | null {
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return "v4"
+  // 宽松校验：至少两个冒号且只含十六进制字符与冒号（含 :: 压缩形式）
+  if (/^[0-9a-fA-F:]+$/.test(ip) && ip.includes(":")) return "v6"
+  return null
+}
+
+/** DNS 记录类型：1=A(IPv4)，28=AAAA(IPv6) */
+const DNS_TYPE_A = 1
+const DNS_TYPE_AAAA = 28
+
 const DOH_PROVIDERS = [
   {
     name: "AliDNS",
     region: "cn" as const,
-    url: (d: string) => `https://dns.alidns.com/resolve?name=${d}&type=A`,
+    url: (d: string, type: "A" | "AAAA" = "A") =>
+      `https://dns.alidns.com/resolve?name=${d}&type=${type}`,
     headers: { accept: "application/dns-json" },
   },
   {
     name: "DNSPod",
     region: "cn" as const,
-    url: (d: string) => `https://doh.pub/dns-query?name=${d}&type=A`,
+    url: (d: string, type: "A" | "AAAA" = "A") =>
+      `https://doh.pub/dns-query?name=${d}&type=${type}`,
     headers: { accept: "application/dns-json" },
   },
   {
     name: "Cloudflare",
     region: "intl" as const,
-    url: (d: string) => `https://1.1.1.1/dns-query?name=${d}&type=A`,
+    url: (d: string, type: "A" | "AAAA" = "A") =>
+      `https://1.1.1.1/dns-query?name=${d}&type=${type}`,
     headers: { accept: "application/dns-json" },
   },
   {
     name: "Google",
     region: "intl" as const,
-    url: (d: string) => `https://dns.google/resolve?name=${d}&type=A`,
+    url: (d: string, type: "A" | "AAAA" = "A") =>
+      `https://dns.google/resolve?name=${d}&type=${type}`,
     headers: { accept: "application/dns-json" },
   },
 ]
@@ -258,30 +293,65 @@ async function queryDoh(
   }
 
   try {
-    const res = await fetch(provider.url(domain), {
-      headers: provider.headers,
-      signal: controller.signal,
-    })
-    const ms = Date.now() - t0
+    /**
+     * 查单个记录类型。返回解析出的地址列表与失败原因。
+     * IPv6 查询失败不算 provider 故障（很多域名本就没有 AAAA），
+     * 因此不参与熔断计数。
+     */
+    const queryType = async (
+      type: "A" | "AAAA"
+    ): Promise<{ ips: string[]; ms: number | null; error?: string }> => {
+      const res = await fetch(provider.url(domain, type), {
+        headers: provider.headers,
+        signal: controller.signal,
+      })
+      const ms = Date.now() - t0
+      if (!res.ok) {
+        return { ips: [], ms, error: `HTTP ${res.status}` }
+      }
+      const data = (await res.json()) as { Answer?: DohAnswer[]; Status?: number }
+      const wantType = type === "A" ? DNS_TYPE_A : DNS_TYPE_AAAA
+      const ips = (data.Answer || [])
+        .filter((a) => a.type === wantType)
+        .map((a) => a.data)
+        .filter((ip) => ipFamily(ip) !== null)
+
+      if (ips.length === 0) {
+        const reason =
+          data.Status === 3
+            ? "NXDOMAIN（域名不存在）"
+            : type === "A"
+              ? "无 A 记录"
+              : "无 AAAA 记录"
+        return { ips: [], ms, error: reason }
+      }
+      return { ips, ms }
+    }
+
+    const [v4, v6] = await Promise.all([
+      queryType("A"),
+      IPV6_ENABLED ? queryType("AAAA") : Promise.resolve({ ips: [], ms: null, error: "未启用" }),
+    ])
 
     // HTTP 层通了就算这家可达，重置失败计数（即便返回 4xx/5xx）
     breaker.consecutiveFailures = 0
     breaker.openUntil = 0
 
-    if (!res.ok) {
-      return { name: provider.name, ips: [], ms, error: `HTTP ${res.status}` }
+    const out: DohProviderResult = {
+      name: provider.name,
+      ips: v4.ips,
+      ms: v4.ms,
     }
-    const data = (await res.json()) as { Answer?: DohAnswer[]; Status?: number }
-    const ips = (data.Answer || [])
-      .filter((a) => a.type === 1 && /^\d+\.\d+\.\d+\.\d+$/.test(a.data))
-      .map((a) => a.data)
+    if (IPV6_ENABLED) {
+      out.ips6 = v6.ips
+      if (v6.error) out.error6 = v6.error
+    }
 
-    if (ips.length === 0) {
-      // Status 3 表示域名不存在，0 但无 A 记录说明只有 AAAA 或 CNAME 链
-      const reason = data.Status === 3 ? "NXDOMAIN（域名不存在）" : "无 A 记录"
-      return { name: provider.name, ips: [], ms, error: reason }
+    // IPv4 与 IPv6 都无结果才算这家失败
+    if (v4.ips.length === 0 && (!out.ips6 || out.ips6.length === 0)) {
+      out.error = v4.error || v6.error || "无记录"
     }
-    return { name: provider.name, ips, ms }
+    return out
   } catch (err) {
     const msg =
       (err as Error).name === "AbortError"
@@ -312,43 +382,65 @@ async function queryDoh(
 async function querySystemDns(domain: string): Promise<{
   /** 本机实际使用（含 /etc/hosts 覆盖） */
   lookup: string[]
+  /** 本机实际使用的 IPv6 地址 */
+  lookup6: string[]
   /** 绕过 hosts 的上游 DNS 结果，用于对照 */
   upstream: string[]
+  /** 绕过 hosts 的上游 IPv6 结果 */
+  upstream6: string[]
   /** 该域名是否被 hosts 覆盖（lookup 与 upstream 不同且 lookup 有值） */
   hostsOverride: boolean
 }> {
-  const isV4 = (ip: string) => /^\d+\.\d+\.\d+\.\d+$/.test(ip)
-
-  const [lookupRes, upstreamRes] = await Promise.all([
+  const [lookupAll, upstreamV4, upstreamV6] = await Promise.all([
     // 走系统解析器，能读到 /etc/hosts
     (async () => {
       try {
-        const all = await dns.lookup(domain, { all: true })
-        return all.map((a) => a.address).filter(isV4)
+        return await dns.lookup(domain, { all: true })
       } catch {
-        return []
+        return [] as { address: string; family: number }[]
       }
     })(),
     // 绕过 hosts，直接问上游 DNS
     (async () => {
       try {
-        return (await dns.resolve4(domain)).filter(isV4)
+        return await dns.resolve4(domain)
       } catch {
-        return []
+        return [] as string[]
       }
     })(),
+    // 上游 AAAA：很多域名没有 IPv6，失败属正常
+    IPV6_ENABLED
+      ? (async () => {
+          try {
+            return await dns.resolve6(domain)
+          } catch {
+            return [] as string[]
+          }
+        })()
+      : Promise.resolve([] as string[]),
   ])
 
+  const lookupRes = lookupAll.filter((a) => ipFamily(a.address) === "v4").map((a) => a.address)
+  const lookup6 = lookupAll.filter((a) => ipFamily(a.address) === "v6").map((a) => a.address)
+  const upstreamRes = upstreamV4.filter((ip) => ipFamily(ip) === "v4")
+  const upstream6 = upstreamV6.filter((ip) => ipFamily(ip) === "v6")
+
+  // 只比 IPv4：hosts 通常只覆盖 IPv4，且 IPv6 记录常缺失会造成误判
   const lookupSet = new Set(lookupRes)
   const upstreamSet = new Set(upstreamRes)
-  // 两边都有值且不完全一致，说明 hosts 起了作用
   const hostsOverride =
     lookupRes.length > 0 &&
     upstreamRes.length > 0 &&
     (lookupRes.some((ip) => !upstreamSet.has(ip)) ||
       upstreamRes.some((ip) => !lookupSet.has(ip)))
 
-  return { lookup: lookupRes, upstream: upstreamRes, hostsOverride }
+  return {
+    lookup: lookupRes,
+    lookup6,
+    upstream: upstreamRes,
+    upstream6,
+    hostsOverride,
+  }
 }
 
 /**
@@ -666,7 +758,9 @@ export async function probeDomain(
   result.providers = dohResults
   // systemIps 现在是「本机实际会连的地址」（含 hosts 覆盖）
   result.systemIps = sysDns.lookup
+  result.systemIps6 = sysDns.lookup6
   result.upstreamIps = sysDns.upstream
+  result.upstreamIps6 = sysDns.upstream6
   result.hostsOverride = sysDns.hostsOverride
   const systemIps = sysDns.lookup
 
@@ -675,16 +769,19 @@ export async function probeDomain(
   // 若按来源逐个测速，同一个 IP 会被重复测量多次，纯属浪费。
   // 这里把「所有 DoH + 系统 DNS」合并到一个 Set，保证每个 IP 只进候选一次。
   const ipsFromDoh = new Set<string>()
+  const ips6FromDoh = new Set<string>()
   let rawCount = 0
   for (const r of dohResults) {
     rawCount += r.ips.length
     for (const ip of r.ips) ipsFromDoh.add(ip)
+    for (const ip of r.ips6 || []) ips6FromDoh.add(ip)
+    rawCount += (r.ips6 || []).length
   }
   rawCount += systemIps.length
 
   result.totalResolvedEntries = rawCount
 
-  // 各 DoH 之间的结果差异
+  // 各 DoH 之间的结果差异（只比 IPv4，避免 AAAA 缺失造成噪声）
   const nonEmpty = dohResults.filter((r) => r.ips.length > 0)
   if (nonEmpty.length > 1) {
     const first = [...nonEmpty[0].ips].sort().join(",")
@@ -703,11 +800,20 @@ export async function probeDomain(
     result.systemDiffers = systemIps.some((ip) => !dohSet.has(ip))
   }
 
-  const allCandidates = new Set<string>([...ipsFromDoh, ...systemIps])
+  const allCandidates = new Set<string>([
+    ...ipsFromDoh,
+    ...systemIps,
+    ...ips6FromDoh,
+    ...sysDns.lookup6,
+  ])
   result.uniqueIpCount = allCandidates.size
+  result.v4Count = [...allCandidates].filter((ip) => ipFamily(ip) === "v4").length
+  result.v6Count = [...allCandidates].filter((ip) => ipFamily(ip) === "v6").length
 
   if (allCandidates.size === 0) {
-    result.error = "所有 DNS 源均未返回 A 记录"
+    result.error = IPV6_ENABLED
+      ? "所有 DNS 源均未返回 A 或 AAAA 记录"
+      : "所有 DNS 源均未返回 A 记录"
     return result
   }
 
@@ -717,6 +823,7 @@ export async function probeDomain(
   // 限流：候选可能多达十几个，无上限并发会触发系统连接数限制。
   const tcpProbed = await mapLimit(candidates, CANDIDATE_CONCURRENCY, async (ip) => ({
     ip,
+    family: (ipFamily(ip) ?? "v4") as IpFamily,
     latency: await measureTcp(ip),
   }))
 
@@ -728,6 +835,7 @@ export async function probeDomain(
     const t = await checkTlsHandshake(domain, x.ip)
     return {
       ip: x.ip,
+      family: x.family,
       latency: x.latency,
       tlsOk: t.ok,
       tlsMs: t.ok ? t.ms : null,
@@ -741,6 +849,7 @@ export async function probeDomain(
     .filter((x) => x.latency === null)
     .map((x) => ({
       ip: x.ip,
+      family: x.family,
       latency: null,
       tlsOk: false,
       tlsMs: null,

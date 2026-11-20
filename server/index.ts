@@ -20,6 +20,7 @@ import {
   getBreakerStatus,
   resetBreakers,
   INTL_DOH_ENABLED,
+  IPV6_ENABLED,
 } from "./probe.js"
 import { resolveAndMeasure, measureTiming, measureTcpOnly } from "./timing.js"
 import { taskManager, monitor, type TaskItemResult } from "./tasks.js"
@@ -180,6 +181,7 @@ root.post("/local/refresh", async (c) => {
               domain,
               ok: r.bestIp !== null,
               bestIp: r.bestIp,
+              family: r.bestIp ? (r.candidates.find((x) => x.ip === r.bestIp)?.family ?? "v4") : undefined,
               latency: r.latency,
               tlsOk: r.tlsOkCount > 0,
               candidateCount: r.uniqueIpCount,
@@ -195,6 +197,8 @@ root.post("/local/refresh", async (c) => {
                 inconsistent: r.inconsistent,
                 systemDiffers: r.systemDiffers,
                 totalResolvedEntries: r.totalResolvedEntries,
+                v4Count: r.v4Count,
+                v6Count: r.v6Count,
                 sni: r.sni,
               },
               source: "local",
@@ -462,6 +466,9 @@ root.get("/local/compare", async (c) => {
     totalResolvedEntries: probe.totalResolvedEntries,
     dedupSaved: Math.max(probe.totalResolvedEntries - probe.uniqueIpCount, 0),
     systemIps: probe.systemIps,
+    systemIps6: probe.systemIps6,
+    v4Count: probe.v4Count,
+    v6Count: probe.v6Count,
     upstreamIps: probe.upstreamIps,
     hostsOverride: probe.hostsOverride,
     inconsistent: probe.inconsistent,
@@ -589,6 +596,7 @@ root.get("/local/doh", async (c) => {
     live: probes,
     disabledIntl: disabled,
     intlEnabled: INTL_DOH_ENABLED,
+    ipv6Enabled: IPV6_ENABLED,
   })
 })
 

@@ -65,12 +65,24 @@
   button:disabled { opacity: .5; cursor: default; }
   button.sm { padding: 4px 10px; font-size: 12px; }
 
-  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 18px; flex-wrap: wrap; }
-  .tab {
-    padding: 8px 14px; font-size: 13px; cursor: pointer; color: var(--muted);
-    border-bottom: 2px solid transparent; margin-bottom: -1px;
+  .tabs {
+    display: flex; gap: 4px; border-bottom: 1px solid var(--border);
+    margin-bottom: 18px; flex-wrap: wrap; row-gap: 0;
+    /* 让激活标签的下边框能盖住容器边框 */
+    position: relative;
   }
-  .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 500; }
+  .tab {
+    padding: 8px 14px 9px; font-size: 13px; cursor: pointer; color: var(--muted);
+    border-bottom: 2px solid transparent;
+    /* 不换行、不被压缩，避免窄屏下文字被截断 */
+    white-space: nowrap; flex: 0 0 auto;
+    line-height: 1.4;
+    /* 下划线用 inset box-shadow 绘制，不与容器边框叠在一起产生视觉错位 */
+  }
+  .tab.active {
+    color: var(--accent); font-weight: 500;
+    border-bottom-color: var(--accent);
+  }
 
   .stats { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0; }
   .stat {
@@ -434,20 +446,36 @@ function renderProviders(providers, systemIps, inconsistent, systemDiffers, extr
   // 统计每个 IP 被几家 DNS 返回，用来标注重叠情况
   const ipFreq = new Map()
   for (const p of providers) {
-    for (const ip of (p.ips || [])) {
+    for (const ip of [...(p.ips || []), ...(p.ips6 || [])]) {
       ipFreq.set(ip, (ipFreq.get(ip) || 0) + 1)
     }
   }
 
   const rows = providers.map((p) => {
     const has = p.ips && p.ips.length
+    const has6 = p.ips6 && p.ips6.length
     let txt
-    if (has) {
-      txt = p.ips.map((ip) => {
-        const n = ipFreq.get(ip) || 1
-        // 多家返回同一 IP 时标注次数，说明会被去重合并
-        return n > 1 ? `${ip}<span class="sub"> ×${n}</span>` : ip
-      }).join('  ')
+    if (has || has6) {
+      // IPv4 与 IPv6 分两行展示，避免混在一起难以分辨
+      const v4Part = has
+        ? p.ips.map((ip) => {
+            const n = ipFreq.get(ip) || 1
+            // 多家返回同一 IP 时标注次数，说明会被去重合并
+            return n > 1 ? `${ip}<span class="sub"> ×${n}</span>` : ip
+          }).join('  ')
+        : ''
+      const v6Part = has6
+        ? p.ips6.map((ip) => {
+            const n = ipFreq.get(ip) || 1
+            return n > 1 ? `${ip}<span class="sub"> ×${n}</span>` : ip
+          }).join('  ')
+        : ''
+      txt = [
+        v4Part ? `<span>${v4Part}</span>` : '',
+        v6Part ? `<span style="color:#534ab7">${v6Part}</span>
+                  <span class="sub" style="color:#534ab7;font-size:10px">IPv6</span>` : '',
+        !has && !has6 && p.error6 ? `<span class="sub">${p.error6}</span>` : '',
+      ].filter(Boolean).join('<br>')
     } else {
       // 熔断中/超时的源，用更明确的措辞而非笼统「失败」
       txt = `<span class="bad">${p.error || '无结果'}</span>`
@@ -588,7 +616,9 @@ async function doTiming() {
         return
       }
       const rows = d.details.map((x) => `<tr>
-        <td><code>${x.ip}</code>${x.ip === d.recommended ? ' <span class="badge">推荐</span>' : ''}</td>
+        <td><code>${x.ip}</code>
+            ${x.family === 'v6' ? '<span class="badge" style="background:#e8e4f5;color:#534ab7">IPv6</span>' : ''}
+            ${x.ip === d.recommended ? ' <span class="badge">推荐</span>' : ''}</td>
         <td class="num">${x.tcpMs != null ? x.tcpMs + 'ms' : '—'}</td>
         <td class="num ${x.tlsOk ? 'good' : 'bad'}">${x.tlsOk ? (x.tlsMs != null ? x.tlsMs + 'ms' : '✓') : '✗ 失败'}</td>
         <td class="num ${latencyClass(x.avgTotalMs)}">${x.avgTotalMs != null ? x.avgTotalMs + 'ms' : '—'}</td>
@@ -620,7 +650,10 @@ async function doTiming() {
           ${d.dedupSaved > 0
             ? `各 DNS 源共返回 ${d.totalResolvedEntries} 条记录，去重后 <strong>${d.candidateCount} 个唯一 IP</strong>（省去 ${d.dedupSaved} 次重复检测），其中 <strong>${d.tlsOkCount} 个 TLS 握手成功</strong>。`
             : `共 ${d.candidateCount} 个唯一 IP，其中 <strong>${d.tlsOkCount} 个 TLS 握手成功</strong>。`}
-          只有握手成功的地址会被写入 hosts。
+          ${d.v4Count != null || d.v6Count != null
+            ? `<br>候选构成：IPv4 ${d.v4Count ?? 0} 个 / IPv6 ${d.v6Count ?? 0} 个。`
+            : ''}
+          只有握手成功的地址会被写入 hosts，IPv4 与 IPv6 一同参与优选。
         </p>
         ${excludedHtml}
         ${renderProviders(d.providers, d.systemIps, d.inconsistent, d.systemDiffers, { upstreamIps: d.upstreamIps, hostsOverride: d.hostsOverride })}
@@ -708,7 +741,7 @@ function renderRecent(recent) {
           <tr class="expandable" data-idx="${i}" style="cursor:pointer">
             <td class="good">${r.ok ? '' : '▸'}</td>
             <td>${r.domain}</td>
-            <td><code>${r.bestIp || '—'}</code></td>
+            <td><code>${r.bestIp || '—'}</code>${r.family === 'v6' ? ' <span class="badge" style="background:#e8e4f5;color:#534ab7;font-size:10px">6</span>' : ''}</td>
             <td class="num ${latencyClass(r.latency)}">${r.latency != null ? r.latency + 'ms' : '—'}</td>
             <td class="num ${r.tlsOk ? 'good' : 'bad'}">${r.tlsOk ? (r.tlsMs != null ? r.tlsMs + 'ms' : '✓') : '✗'}</td>
             <td class="num">${r.candidateCount ?? '—'}/${r.tlsOkCount ?? '—'}</td>

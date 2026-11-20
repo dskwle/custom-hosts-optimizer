@@ -30,6 +30,8 @@ export interface TaskItemResult {
   domain: string
   ok: boolean
   bestIp: string | null
+  /** 最优 IP 的地址族 */
+  family?: "v4" | "v6"
   latency: number | null
   /** TLS 握手是否成功。false 表示该域名本次没有可用 IP */
   tlsOk?: boolean
@@ -46,11 +48,15 @@ export interface TaskItemResult {
     providers: { name: string; ips: string[]; ms: number | null; error?: string }[]
     candidates: {
       ip: string
+      family: "v4" | "v6"
       latency: number | null
       tlsOk: boolean
       tlsMs: number | null
       tlsError?: string
     }[]
+    /** IPv4 / IPv6 候选数量 */
+    v4Count?: number
+    v6Count?: number
     systemIps: string[]
     /** 绕过 hosts 的上游解析结果，用于对照 */
     upstreamIps?: string[]

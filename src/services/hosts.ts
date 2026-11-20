@@ -349,8 +349,14 @@ export async function updateHostsData(
 
 // 格式化 hosts 文件
 export function formatHostsFile(entries: HostEntry[]): string {
+  // 对齐宽度按实际最长地址动态计算。
+  // 固定 padEnd(30) 在 IPv4 下够用（最长 15 字符），
+  // 但 IPv6 完整形式可达 39 字符，会导致列错位。
+  const maxIpLen = entries.reduce((m, [ip]) => Math.max(m, ip.length), 0)
+  const pad = Math.max(maxIpLen + 2, 28)
+
   const content = entries
-    .map(([ip, domain]) => `${ip.padEnd(30)}${domain}`)
+    .map(([ip, domain]) => `${ip.padEnd(pad)}${domain}`)
     .join("\n")
 
   const updateTime = new Date().toLocaleString("en-US", {
