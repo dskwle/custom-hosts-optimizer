@@ -15,8 +15,15 @@ import path from "node:path"
 
 const FILE = path.resolve(process.cwd(), "data/ip-cache.json")
 
-/** 缓存有效期：IP 延迟在半小时内变化不大，过期后重测 */
-export const CACHE_TTL_MS = 30 * 60 * 1000
+/**
+ * 缓存有效期 2 小时。
+ *
+ * 取 2 小时而非更短，是因为实测同一 IP 在几十秒内就会有 12~30% 波动，
+ * 把 TTL 压到几分钟并不能让数据更准，只会增加探测成本。
+ * 真正需要立刻失效的场景是「换了网络」，那个由 netcheck 单独处理，
+ * 不必靠缩短 TTL 来实现。
+ */
+export const CACHE_TTL_MS = 2 * 60 * 60 * 1000
 
 export interface CachedEntry {
   /** TCP 握手耗时；null 表示当时不可达 */

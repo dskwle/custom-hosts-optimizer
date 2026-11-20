@@ -809,7 +809,13 @@ async function doRefresh() {
     const start = await (await fetch(`${API}/local/refresh?${params}`, { method: 'POST' })).json()
 
     const skippedCount = (start.skippedBlocked || []).length
-    if (skippedCount > 0) {
+    const net = start.network
+    if (net && net.changed) {
+      el('refreshStatus').innerHTML =
+        `<span style="color:#854f0b">${net.note}，缓存已清空</span>` +
+        (skippedCount ? `，跳过 ${skippedCount} 个阻断域名` : '')
+      toast('检测到网络变化，已清空缓存')
+    } else if (skippedCount > 0) {
       el('refreshStatus').textContent = `已跳过 ${skippedCount} 个 SNI 阻断域名`
     }
 

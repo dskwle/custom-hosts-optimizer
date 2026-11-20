@@ -25,6 +25,7 @@ import {
 import { resolveAndMeasure, measureTiming, measureTcpOnly } from "./timing.js"
 import { taskManager, monitor, type TaskItemResult } from "./tasks.js"
 import { cacheStats, clearCache } from "./ipcache.js"
+import { checkNetworkChange } from "./netcheck.js"
 import {
   filterBlocked,
   markBlocked,
@@ -115,7 +116,17 @@ root.post("/local/refresh", async (c) => {
   // includeBlocked=true 时连已被判定为 SNI 阻断的域名一起重测，用于复核
   const includeBlocked = c.req.query("includeBlocked") === "true"
   // noCache=true 强制全部重测，用于验证缓存是否失效
-  const noCache = c.req.query("noCache") === "true"
+  let noCache = c.req.query("noCache") === "true"
+
+  // 刷新前检测网络环境：出口 IP 变了说明换了网络（换 WiFi / 热点 / VPN），
+  // 此时上一轮测得的延迟全部不可信，直接清空缓存。
+  // 放在刷新入口而不是后台轮询，避免绝大多数时间空转。
+  const netCheck = await checkNetworkChange()
+  if (netCheck.changed && !noCache) {
+    console.log(`[netcheck] ${netCheck.note}，清空 IP 缓存`)
+    await clearCache()
+    noCache = true
+  }
 
   const requested = resolveGroupDomains(groupParam)
 
@@ -290,7 +301,7 @@ root.post("/local/refresh", async (c) => {
 
   if (wait) {
     const summary = await run()
-    return c.json({ taskId: task.taskId, ...summary })
+    return c.json({ taskId: task.taskId, network: netCheck, ...summary })
   }
 
   void run().catch((err) => {
@@ -305,6 +316,7 @@ root.post("/local/refresh", async (c) => {
     taskId: task.taskId,
     total: domains.length,
     skippedBlocked: skipped,
+    network: netCheck,
     poll: `/local/tasks/${task.taskId}`,
   })
 })
@@ -616,6 +628,12 @@ root.get("/local/cache", async (c) => {
     ...stats,
     ttlMinutes: Math.round(stats.ttlMs / 60000),
   })
+})
+
+/** 当前网络身份：出口 IP 与上次记录，用于排查缓存为何被清 */
+root.get("/local/network", async (c) => {
+  const r = await checkNetworkChange()
+  return c.json(r)
 })
 
 root.post("/local/cache/clear", async (c) => {
