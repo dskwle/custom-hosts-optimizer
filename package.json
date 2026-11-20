@@ -21,7 +21,8 @@
   },
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy --minify"
+    "build": "node scripts/inject-kv.mjs",
+    "deploy": "node scripts/inject-kv.mjs && wrangler deploy --minify"
   },
   "dependencies": {
     "hono": "^4.6.7"

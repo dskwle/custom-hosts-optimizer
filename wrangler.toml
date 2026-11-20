@@ -4,14 +4,22 @@ compatibility_date = "2024-10-28"
 compatibility_flags = ["nodejs_compat"]
 assets = { directory = "public" }
 
-# KV 数据库绑定 - 安全配置说明：
-# 方式1：GitHub Secrets（推荐） - 在仓库 Secrets 中设置 KV_NAMESPACE_ID
-# 方式2：本地环境变量 - 在 .dev.vars 文件中设置 KV_NAMESPACE_ID=your-id
-# 方式3：直接替换（仅私有仓库） - 将 YOUR_KV_NAMESPACE_ID 替换为实际 ID
+# KV 绑定（binding 名 custom_hosts 对应代码中的 env.custom_hosts）
+#
+# id 必须是真实存在的 32 位命名空间 ID。wrangler 不会解析环境变量、也不会自动替换占位符，
+# 保留占位符会导致部署失败：
+#   KV namespace 'YOUR_KV_NAMESPACE_ID' is not valid. [code: 10042]
+#
+# 提供 ID 的两种方式（二选一）：
+#   1) 直接把下面两处 YOUR_KV_NAMESPACE_ID 替换成真实 ID（最省事，推荐）
+#   2) 保留占位符，让 scripts/inject-kv.mjs 在构建时从 KV_NAMESPACE_ID 环境变量注入
+#
+# 获取 ID：npx wrangler kv namespace list
+# 或 Dashboard -> Workers & Pages -> KV -> 选中命名空间 -> 右侧 Namespace ID
 [[kv_namespaces]]
 binding = "custom_hosts"
-id = "YOUR_KV_NAMESPACE_ID"  # 保持不变，由 wrangler 或 GitHub Actions 自动处理
-preview_id = "YOUR_KV_NAMESPACE_ID"  # 预览环境 KV ID
+id = "YOUR_KV_NAMESPACE_ID"
+preview_id = "YOUR_KV_NAMESPACE_ID"
 
 # 定时任务配置 - 每小时更新一次 hosts
 [triggers]
