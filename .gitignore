@@ -19,8 +19,9 @@ node_modules/
 .env
 .env.production
 
-# Cloudflare Workers 相关敏感文件
-wrangler.toml
+# Cloudflare Workers 敏感文件
+# 注意：wrangler.toml 是部署配置的唯一来源，必须纳入版本控制，
+# Cloudflare Workers Builds 直接读取仓库里的这份文件，因此不在此忽略。
 .dev.vars
 
 # 备份和临时文件
