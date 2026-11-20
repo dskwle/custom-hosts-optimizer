@@ -180,6 +180,17 @@ export const SITE_GROUPS: SiteGroup[] = [
     ],
   },
   {
+    id: "anime",
+    name: "动漫影视",
+    description: "番剧站、影视数据库、追番记录",
+    domains: [
+      "animes.garden",
+      "tmdb.org",
+      "themoviedb.org",
+      "anilist.co",
+    ],
+  },
+  {
     id: "dev",
     name: "开发者资源",
     description: "PyPI、Maven、Go、Rust、Conda、VS Code",
