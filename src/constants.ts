@@ -41,13 +41,123 @@ export const GITHUB_URLS = [
   "private-user-images.githubusercontent.com",
 ]
 
-export const HOSTS_TEMPLATE = `# github hosts
-# 加速 GitHub 访问
+export const HOSTS_TEMPLATE = `# custom-hosts 自动生成
+# 覆盖：GitHub / npm CDN / Docker Hub / Steam / 开发者资源
+# 原理：绕开 DNS 污染，直连可用 IP
 
 {content}
 
 # 数据更新时间：{updateTime}
 `
+
+export interface SiteGroup {
+  id: string
+  name: string
+  description: string
+  domains: string[]
+}
+
+// 站点分组。新增站点只需往对应组的 domains 里加域名，
+// 判定标准：DNS 解析被污染/劣化，但真实 IP 本身可连通。
+// 若站点是 TLS SNI 阻断（如 Google、YouTube），加 hosts 无效，不要放进来。
+export const SITE_GROUPS: SiteGroup[] = [
+  {
+    id: "github",
+    name: "GitHub",
+    description: "代码托管、Raw 文件、头像、Actions、Release 下载",
+    domains: GITHUB_URLS,
+  },
+  {
+    id: "npm",
+    name: "npm / 前端 CDN",
+    description: "npm registry、jsDelivr、unpkg、esm.sh",
+    domains: [
+      "registry.npmjs.org",
+      "registry.yarnpkg.com",
+      "cdn.jsdelivr.net",
+      "fastly.jsdelivr.net",
+      "unpkg.com",
+      "esm.sh",
+    ],
+  },
+  {
+    id: "docker",
+    name: "Docker Hub",
+    description: "镜像拉取、认证、Layer 下载",
+    domains: [
+      "registry-1.docker.io",
+      "auth.docker.io",
+      "index.docker.io",
+      "hub.docker.com",
+      "registry.docker.io",
+      "production.cloudflare.docker.com",
+      "download.docker.com",
+    ],
+  },
+  {
+    id: "steam",
+    name: "Steam",
+    description: "商店、社区、CDN 静态资源",
+    domains: [
+      "store.steampowered.com",
+      "api.steampowered.com",
+      "steamcommunity.com",
+      "store.steamstatic.com",
+      "cdn.akamai.steamstatic.com",
+      "cdn.cloudflare.steamstatic.com",
+      "community.cloudflare.steamstatic.com",
+      "avatars.steamstatic.com",
+      "steamcdn-a.akamaihd.net",
+      "steamcommunity-a.akamaihd.net",
+      "media.steampowered.com",
+    ],
+  },
+  {
+    id: "dev",
+    name: "开发者资源",
+    description: "PyPI、Maven、Go、Rust、Conda、VS Code",
+    domains: [
+      "pypi.org",
+      "files.pythonhosted.org",
+      "repo1.maven.org",
+      "repo.maven.apache.org",
+      "proxy.golang.org",
+      "sum.golang.org",
+      "crates.io",
+      "static.crates.io",
+      "index.crates.io",
+      "rubygems.org",
+      "repo.anaconda.com",
+      "conda.anaconda.org",
+      "update.code.visualstudio.com",
+      "marketplace.visualstudio.com",
+      "{{BUCKET_zhbcnz4v}}.blob.core.windows.net",
+      "dl-cdn.alpinelinux.org",
+      "go.dev",
+      "golang.org",
+    ],
+  },
+]
+
+// 所有分组的域名合集（去重）
+export const ALL_DOMAINS: string[] = [...new Set(SITE_GROUPS.flatMap((g) => g.domains))]
+
+// 按 ?group=github,npm 解析出要输出的域名清单；无参数或全部非法时返回全量
+export function resolveGroupDomains(param?: string | null): string[] {
+  if (!param) return ALL_DOMAINS
+  const ids = param
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+
+  const picked = new Set<string>()
+  for (const id of ids) {
+    const group = SITE_GROUPS.find((g) => g.id === id)
+    if (group) group.domains.forEach((d) => picked.add(d))
+  }
+
+  return picked.size > 0 ? [...picked] : ALL_DOMAINS
+}
 
 export const GITHUB_API_BASE = "https://api.github.com"
 

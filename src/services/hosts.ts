@@ -1,4 +1,4 @@
-import { DNS_PROVIDERS, GITHUB_URLS, HOSTS_TEMPLATE } from "../constants"
+import { ALL_DOMAINS, DNS_PROVIDERS, HOSTS_TEMPLATE } from "../constants"
 import { Bindings } from "../types"
 
 export type HostEntry = [string, string]
@@ -130,18 +130,19 @@ export async function fetchIPFromMultipleDNS(domain: string): Promise<string | n
 // 批量获取最新 hosts 数据
 export async function fetchLatestHostsData(): Promise<HostEntry[]> {
   const entries: HostEntry[] = []
-  const batchSize = 5
+  // 域名数量增长到 80+，批次从 5 提到 8、批间隔从 2s 降到 1s，避免 cron 超时
+  const batchSize = 8
 
-  console.log(`Starting batch processing for ${GITHUB_URLS.length} domains`)
+  console.log(`Starting batch processing for ${ALL_DOMAINS.length} domains`)
 
-  for (let i = 0; i < GITHUB_URLS.length; i += batchSize) {
+  for (let i = 0; i < ALL_DOMAINS.length; i += batchSize) {
     console.log(
       `Processing batch ${i / batchSize + 1}/${Math.ceil(
-        GITHUB_URLS.length / batchSize
+        ALL_DOMAINS.length / batchSize
       )}`
     )
 
-    const batch = GITHUB_URLS.slice(i, i + batchSize)
+    const batch = ALL_DOMAINS.slice(i, i + batchSize)
     const batchResults = await Promise.all(
       batch.map(async (domain) => {
         const ip = await fetchIPFromMultipleDNS(domain)
@@ -154,8 +155,8 @@ export async function fetchLatestHostsData(): Promise<HostEntry[]> {
       ...batchResults.filter((result): result is HostEntry => result !== null)
     )
 
-    if (i + batchSize < GITHUB_URLS.length) {
-      await new Promise((resolve) => setTimeout(resolve, 2000))
+    if (i + batchSize < ALL_DOMAINS.length) {
+      await new Promise((resolve) => setTimeout(resolve, 1000))
     }
   }
 
@@ -194,7 +195,7 @@ export async function getHostsData(env: Bindings, forceRefresh: boolean = false)
 
     // 从缓存获取数据
     const entries: HostEntry[] = []
-    for (const domain of GITHUB_URLS) {
+    for (const domain of ALL_DOMAINS) {
       const domainData = kvData!.domain_data[domain]
       if (domainData) {
         entries.push([domainData.ip, domain])

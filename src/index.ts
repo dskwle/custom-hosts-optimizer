@@ -15,6 +15,7 @@ import {
   storeData,
   type HostEntry,
 } from "./services/hosts"
+import { SITE_GROUPS, resolveGroupDomains } from "./constants"
 import { handleSchedule } from "./scheduled"
 import { Bindings } from "./types"
 
@@ -742,20 +743,42 @@ app.get("/hosts.json", async (c) => {
   try {
     // 检查是否强制刷新缓存
     const forceRefresh = c.req.query('refresh') === 'true'
+    // 站点分组过滤：?group=github,npm，不传则输出全部
+    const groupParam = c.req.query('group')
     
-    console.log(`JSON request - refresh: ${forceRefresh}`)
+    console.log(`JSON request - refresh: ${forceRefresh}, group: ${groupParam || 'all'}`)
     
     const allData = await getCompleteHostsData(c.env, forceRefresh)
     
-    // 分离 GitHub 域名和自定义域名
-    const githubData = []
-    const customData = []
+    // 系统域名按分组过滤，用户自定义域名始终保留
+    const allowedDomains = new Set(resolveGroupDomains(groupParam))
+    const customList = await getCustomDomains(c.env)
+    const customSet = new Set(customList.map((d) => d.domain))
     
-    for (const [ip, domain] of allData) {
-      if (domain.includes('github') || domain.includes('githubusercontent')) {
-        githubData.push([ip, domain])
+    const domainToGroup = new Map<string, string>()
+    for (const group of SITE_GROUPS) {
+      for (const domain of group.domains) {
+        domainToGroup.set(domain, group.id)
+      }
+    }
+    
+    const entries = allData.filter(
+      ([, domain]) => allowedDomains.has(domain) || customSet.has(domain)
+    )
+    
+    // 按分组归类输出
+    const byGroup: Record<string, Array<[string, string]>> = {}
+    for (const group of SITE_GROUPS) {
+      byGroup[group.id] = []
+    }
+    const customData: Array<[string, string]> = []
+    
+    for (const entry of entries) {
+      const groupId = domainToGroup.get(entry[1])
+      if (groupId && byGroup[groupId]) {
+        byGroup[groupId].push(entry)
       } else {
-        customData.push([ip, domain])
+        customData.push(entry)
       }
     }
 
@@ -764,9 +787,14 @@ app.get("/hosts.json", async (c) => {
     c.header('X-Cache-Status', forceRefresh ? 'MISS' : 'HIT')
 
     return c.json({
-      entries: allData,
-      total: allData.length,
-      github: githubData,
+      entries,
+      total: entries.length,
+      groups: SITE_GROUPS.filter((g) => byGroup[g.id].length > 0).map((g) => ({
+        id: g.id,
+        name: g.name,
+        count: byGroup[g.id].length,
+      })),
+      github: byGroup['github'] ?? [],
       custom: customData,
       includeCustom: true,
       timestamp: new Date().toISOString(),
@@ -792,12 +820,13 @@ app.get("/hosts", async (c) => {
     const forceRefresh = c.req.query('refresh') === 'true'
     const optimizeParam = c.req.query('optimize')
     const customParam = c.req.query('custom')
+    const groupParam = c.req.query('group')
     
     // 默认启用所有功能
     const enableOptimization = optimizeParam !== 'false'
     const includeCustomDomains = customParam !== 'false'
     
-    console.log(`Hosts request - refresh: ${forceRefresh}, optimize: ${enableOptimization}, custom: ${includeCustomDomains}`)
+    console.log(`Hosts request - refresh: ${forceRefresh}, optimize: ${enableOptimization}, custom: ${includeCustomDomains}, group: ${groupParam || 'all'}`)
     
     let allData: HostEntry[]
     
@@ -806,9 +835,20 @@ app.get("/hosts", async (c) => {
       allData = await getCompleteHostsData(c.env, forceRefresh)
       console.log(`合并后总数据 (包含自定义域名): ${allData.length} 条`)
     } else {
-      // 仅 GitHub 域名数据
+      // 仅系统域名数据
       allData = await getHostsData(c.env, forceRefresh)
-      console.log(`GitHub 数据: ${allData.length} 条`)
+      console.log(`系统域名数据: ${allData.length} 条`)
+    }
+    
+    // 站点分组过滤：传了 group 才过滤，自定义域名始终保留
+    if (groupParam) {
+      const allowedDomains = new Set(resolveGroupDomains(groupParam))
+      const customList = await getCustomDomains(c.env)
+      const customSet = new Set(customList.map((d) => d.domain))
+      allData = allData.filter(
+        ([, domain]) => allowedDomains.has(domain) || customSet.has(domain)
+      )
+      console.log(`按分组 [${groupParam}] 过滤后: ${allData.length} 条`)
     }
     
     const hostsContent = formatHostsFile(allData)
