@@ -27,6 +27,7 @@ import {
 import { resolveAndMeasure } from "./timing.js"
 import { rankTimingDetails } from "./rank.js"
 import { clearFailure, recordFailure, listFailures, clearAllFailures } from "./failures.js"
+import { getBlockedDomains } from "./blocked.js"
 import { startRetrier, retrierStats, runRetryRound } from "./retrier.js"
 import { taskManager, monitor, type TaskItemResult } from "./tasks.js"
 import { cacheStats, clearCache } from "./ipcache.js"
@@ -188,8 +189,10 @@ root.post("/local/refresh", async (c) => {
     console.log(`[local/refresh] 跳过 ${filtered.length - domains.length} 个已屏蔽域名`)
   }
 
-  // 已在排除清单里的域名集合：复核这些域名时不该污染「未判死」的失败计数
-  const alreadyBlocked = new Set(skipped.map((d) => d.toLowerCase()))
+  // 已在排除清单里的域名集合：复核这些域名时不该污染「未判死」的失败计数。
+  // 不能从 skipped 推：includeBlocked=true 时 skipped 恒为空（那正是复核场景），
+  // 必须直接读清单本身。
+  const alreadyBlocked = await getBlockedDomains()
 
   const task = taskManager.create("refresh", domains.length)
 
