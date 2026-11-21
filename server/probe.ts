@@ -14,6 +14,7 @@ import net from "node:net"
 import tls from "node:tls"
 import { getCachedMany, setCached, cacheKey } from "./ipcache.js"
 import { measureQuality, type QualityResult } from "./probe-quality.js"
+import { judgeSni } from "./sni-judge.js"
 
 /** 单家 DNS 服务商的查询结果 */
 export interface DohProviderResult {
@@ -661,11 +662,12 @@ export async function checkSniBlock(
   const tcpMs =
     knownTcpMs !== undefined ? knownTcpMs : await measureTcp(ip, 443, 4000)
   if (tcpMs === null) {
+    const judge = judgeSni({ tcpOk: false, withSniOk: false, controlOk: false })
     return {
-      verdict: "tcp-blocked",
+      verdict: judge.verdict,
       withSni: { ok: false, ms: null, error: "TCP 不可达" },
       withoutSni: { ok: false, ms: null, error: "TCP 不可达" },
-      explanation: `无法与 ${ip}:443 建立 TCP 连接，属于 IP 层封锁或该 IP 已失效，与 SNI 无关。`,
+      explanation: `无法与 ${ip}:443 建立 TCP 连接。${judge.note}`,
     }
   }
 
@@ -717,7 +719,17 @@ export async function checkSniBlock(
   const control =
     controlResults.find((r) => r.ok) ?? controlResults[controlResults.length - 1]
 
-  if (control.ok) {
+  // 结论交给纯函数判定：超时不算阻断（可能只是网络慢），
+  // 只有「链表被主动切断 + 对照成功」才算真正的 SNI 阻断。
+  const judge = judgeSni({
+    tcpOk: true,
+    withSniOk: false,
+    withSniError: withSni.error,
+    controlOk: control.ok,
+    controlError: control.error,
+  })
+
+  if (judge.verdict === "sni-blocked") {
     return {
       verdict: "sni-blocked",
       withSni,
@@ -734,10 +746,8 @@ export async function checkSniBlock(
     withSni,
     withoutSni: control,
     explanation:
-      `TCP 可连接（${tcpMs}ms），但真实 SNI 握手失败（${withSni.error}），` +
-      `且对照 SNI 也无法完成握手（${control.error}）。` +
-      `对照失败说明当前网络对外连接不稳定，本次结果不可采信，建议稍后重测；` +
-      `若持续如此，可能是该 IP 上的服务异常或限流。`,
+      `TCP 可连接（${tcpMs}ms），真实 SNI 握手失败（${withSni.error}）。` +
+      judge.note,
   }
 }
 

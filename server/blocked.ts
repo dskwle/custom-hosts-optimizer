@@ -10,6 +10,11 @@
  *
  * 只排除 sni-blocked，不排除 tcp-blocked：
  * 后者是 IP 层封锁，换到别的 IP 可能就好了，仍值得定期重测。
+ *
+ * 另一条硬规则：**握手指向超时的不入清单**。
+ * 超时可能只是网络慢/丢包/本机连接数压力，与域名匹配无关；
+ * 一旦误封，该域名后续每轮刷新都会被跳过，永久失去优化机会。
+ * 判定逻辑见 server/sni-judge.ts，两边保持一致。
  */
 import { promises as fs } from "node:fs"
 import path from "node:path"
