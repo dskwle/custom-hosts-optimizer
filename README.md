@@ -79,7 +79,7 @@ npm run local
 命令行方式：
 
 ```bash
-# 首次生成数据（208 个域名，约 55 秒）
+# 首次生成数据（211 个域名，约 55 秒）
 curl -X POST http://127.0.0.1:8788/local/refresh
 
 # 之后直接取 hosts
@@ -370,7 +370,7 @@ data/
 
 ## 域名分组
 
-208 个域名分 14 组，定义在 `src/constants.ts` 的 `SITE_GROUPS`：
+211 个域名分 14 组，定义在 `src/constants.ts` 的 `SITE_GROUPS`：
 
 | 分组 | 数量 | 覆盖 |
 |---|---|---|
@@ -387,7 +387,7 @@ data/
 | `mod` | 6 | Nexusmods、CurseForge、Thunderstore |
 | `anime` | 8 | 番剧站、影视数据库、资源站 |
 | `adult` | 6 | 成人站 |
-| `intl` | 3 | Stack Overflow、Python、Node.js |
+| `intl` | 6 | Stack Overflow、Python、Node.js、KataBump 面板 |
 
 新增站点前建议先用 `/local/probe` 确认无 SNI 阻断——阻断的域名加进去也不会生效。
 

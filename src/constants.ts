@@ -267,11 +267,14 @@ export const SITE_GROUPS: SiteGroup[] = [
   {
     id: "intl",
     name: "国外常用",
-    description: "开发者社区、Python、Node.js",
+    description: "开发者社区、Python、Node.js、KataBump 面板",
     domains: [
       "stackoverflow.com",
       "www.python.org",
       "nodejs.org",
+      "katabump.com",
+      "www.katabump.com",
+      "dashboard.katabump.com",
     ],
   },
   {
