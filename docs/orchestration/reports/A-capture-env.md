@@ -227,3 +227,104 @@ $ bash -n scripts/orch/capture-smoke.sh   → 语法 OK
 
 1. **CJK 字体**：按你的意见**先不换镜像**，记 backlog（页面中文可能显示方块，抓包请求列表不受影响）。
 2. **noVNC 反代**：按你的意见**先直连 `:6080`**，F3 再评估，记 backlog（文档 §4 已备 nginx + Basic Auth 片段）。
+
+---
+
+# v3：CDP 改 host 网络（回应第 2 轮 CHANGES_REQUESTED）
+
+- **状态**：REPORTED（第 3 轮）
+- **变更**：`chromium` 改 `network_mode: host` 并删掉整段 `ports`；`novnc` 增加 `127.0.0.1:6000` 的 X11 发布；
+  CDP 端口 9222 → **9223**；`server/routes/capture-env.ts` 默认地址同步；`docs/deploy-capture.md` 拓扑/端口/排障同步；
+  `scripts/orch/capture-smoke.sh` 增加"CDP 必须只监听 loopback"断言。
+
+## P0 根因与修复
+
+带界面的 Chrome **忽略 `--remote-debugging-address`**，强制只监听容器内 `127.0.0.1`
+（容器内 `/proc/net/tcp` = `0100007F:2406`）。而 `ports: "127.0.0.1:9222:9222"` 的流量由 docker-proxy
+从**容器 IP** 发起，永远连不到容器 loopback —— 所以宿主 `curl` 返回 `000`。
+
+修法（按你的方案）：
+
+| 项 | 改动 |
+|---|---|
+| `chromium.network_mode` | 新增 `host`（与 `app`、`refresher` 一致） |
+| `chromium.ports` | **整段删除**（host 网络下无意义，也避免误发布） |
+| `chromium.environment.DISPLAY` | `novnc:0.0` → `127.0.0.1:0`（X 也从宿主 loopback 进） |
+| CDP 端口 | `9222` → `9223`（`CAPTURE_CDP_PORT` 可覆盖），保留 `--remote-allow-origins=*` |
+| `--remote-debugging-address=0.0.0.0` | **删除**（该模式下无效，留着误导） |
+| 等 X 就绪 | `until nc -z -w1 127.0.0.1 6000`（host 网络下 `novnc` 这个主机名已不可解析） |
+| `novnc.ports` | 增加 `127.0.0.1:${CAPTURE_X11_PORT:-6000}:6000` |
+| 顶层 `networks` | 删除（没有 service 再需要 `capture` 网络） |
+
+渲染确认（`docker compose --profile capture config`）：
+
+```yaml
+chromium:
+  network_mode: host
+  entrypoint: []
+  environment: { DISPLAY: 127.0.0.1:0 }
+  command:
+    - /bin/sh
+    - -c
+    - until nc -z -w1 127.0.0.1 6000; do sleep 1; done; exec /usr/lib/chromium/chromium
+      --remote-debugging-port=9223 --remote-allow-origins=* --no-sandbox --disable-dev-shm-usage
+      --user-data-dir=/tmp/chrome --no-first-run --no-default-browser-check --disable-gpu
+      --window-size=1600,968 --start-maximized about:blank
+  # 无 ports 段
+
+novnc:
+  ports:
+    - target: 8080  published: "6080"
+    - target: 6000  published: "6000"  host_ip: 127.0.0.1
+```
+
+## P1：冒烟脚本三条断言
+
+`scripts/orch/capture-smoke.sh` 现在断言：
+
+1. `http://127.0.0.1:6080/vnc.html` → 200
+2. `http://127.0.0.1:9223/json/version` → 含 `"Chrome/"`，且**不含 `Headless`**
+3. 容器内 `/proc/net/tcp` 里 9223（hex `2407`）的 local_address 必须是 `0100007F`；
+   `00000000`（0.0.0.0）直接判失败，防止以后有人把 CDP 暴露到局域网
+
+第 3 条的解析逻辑已用样本验证（本机无容器，只能验解析）：
+
+```
+hex=2407
+listen=0100007F:2407  → addr=0100007F   （通过）
+样本 00000000:2407     → addr=00000000   （判失败）
+```
+
+## 验收自测（v3）
+
+```bash
+$ ./scripts/check.sh
+== TypeScript ==
+== Build (local runtime) ==
+  dist-server/index.mjs  111.6kb
+== Console inline JS syntax ==
+script[0] 语法 OK（1328 行）
+== Unit tests ==
+（暂无测试文件，跳过）
+
+全部通过
+
+$ docker compose config --services            → app / refresher
+$ docker compose --profile capture config -q  → exit 0
+$ bash -n scripts/orch/capture-smoke.sh       → 语法 OK
+```
+
+真机复验（NAS）：
+
+```bash
+./scripts/orch/capture-smoke.sh --keep
+# 期望：✓ noVNC 网页 200 / · CDP "Browser": "Chrome/124..." / ✓ 不是 headless 模式
+#       ✓ CDP 只监听容器 loopback（0100007F:2407）
+curl -s http://127.0.0.1:9223/json/version   # 宿主侧应直接有 JSON（不再是 000）
+```
+
+## 其他
+
+- 报告里"已同步 agent-B / agent-D"那句按你的说明保留事实即可：B 未启动、D 的端口分歧我已当面对齐（默认 6080）。
+- 未改 `server/index.ts`（挂载由你做），也未改 `app`/`refresher` 任何字段。
+- 仍待记录的 backlog：CJK 字体（不换镜像）、noVNC 反代（F3 再评估）。

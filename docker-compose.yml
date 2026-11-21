@@ -88,8 +88,15 @@ services:
   # 拓扑（与 docs/deploy-capture.md 一致）：
   #
   #   novnc 容器 = Xvfb + x11vnc + noVNC，持有 :0 显示
-  #        ▲ X11 (DISPLAY=novnc:0.0，走 capture 内网，不发布 6000 端口)
-  #   chromium 容器 = 只跑浏览器，CDP :9222 只绑宿主 loopback
+  #        ▲ X11：宿主 127.0.0.1:6000（只发布到 loopback）
+  #   chromium 容器 = 只跑浏览器（host 网络），CDP 127.0.0.1:9223
+  #
+  # 为什么 chromium 必须用 host 网络（踩过的坑，别改回去）：
+  # 带界面的 Chrome 会**忽略 --remote-debugging-address**，强制只监听容器内的
+  # 127.0.0.1（/proc/net/tcp 里是 0100007F:2407）。docker-proxy 做端口映射时是从
+  # 容器 IP 连过去的，连不到容器 loopback —— 所以 "127.0.0.1:9222:9222" 这种映射
+  # 永远打不通。改成 host 网络后，Chrome 监听的 127.0.0.1 就是宿主 loopback，
+  # app 直接可达，同时仍然不暴露到局域网（也就完全不需要 ports 了）。
   #
   # 为什么不把 Xvfb/x11vnc 放进 chromium 容器：theasp/novnc 这个镜像本身的定位就是
   # “给其它容器提供浏览器可访问的 X 显示”（官方示例就是 IDE 容器连 novnc:0.0），
@@ -112,11 +119,12 @@ services:
       RUN_FLUXBOX: "yes"
       TZ: Asia/Shanghai
     ports:
-      # 对外只暴露 noVNC 网页。该镜像自带 HTTP Basic Auth 之外的任何鉴权都没有，
-      # 局域网以外访问必须由前面一层反向代理加认证（见 docs/deploy-capture.md）。
+      # noVNC 网页：局域网可见。该镜像没有任何登录校验，
+      # 局域网以外访问必须由前面一层反向代理加认证（见 docs/deploy-capture.md §4）。
       - "${CAPTURE_NOVNC_PORT:-6080}:8080"
-    networks:
-      - capture
+      # X11：只发布到宿主 loopback，给 host 网络的 chromium 用。
+      # 写成 "6000:6000" 会把 X 显示暴露给局域网里任何人 —— 等于谁都能接管浏览器。
+      - "127.0.0.1:${CAPTURE_X11_PORT:-6000}:6000"
     logging:
       driver: json-file
       options:
@@ -130,6 +138,9 @@ services:
     image: ${CAPTURE_CHROMIUM_IMAGE:-zenika/alpine-chrome:124}
     container_name: custom-hosts-chromium
     restart: unless-stopped
+    # 与 app、refresher 一致：共享宿主网络栈，见上面的说明。
+    # host 网络下不能写 ports / networks，compose 会直接报错。
+    network_mode: host
     # Chromium 常驻 300–500MB，峰值（大页面 + 视频）可能到 800MB；
     # 给 1GB 上限 + 同额度 swap，超过就被 OOM 杀掉而不是拖垮 NAS。
     mem_limit: 1g
@@ -139,17 +150,9 @@ services:
     depends_on:
       - novnc
     environment:
-      # X 显示在 novnc 容器里，走 compose 内网的 6000 端口（X11 TCP）
-      DISPLAY: "novnc:0.0"
+      # X 显示在 novnc 容器里，经宿主 loopback 的 6000 端口进来
+      DISPLAY: "127.0.0.1:0"
       TZ: Asia/Shanghai
-    ports:
-      # 关键：只绑宿主机 loopback。
-      # app 容器用 host 网络，直接访问 http://127.0.0.1:9222 即可；
-      # 局域网、公网、其它机器都连不到 CDP —— 拿到 CDP 等于拿到浏览器全部能力，
-      # 绝不能写成 "9222:9222" 或 "0.0.0.0:9222:9222"。
-      - "127.0.0.1:${CAPTURE_CDP_PORT:-9222}:9222"
-    networks:
-      - capture
     # 镜像自带的 entrypoint 是 ["chromium-browser", "--headless"]，只写 command
     # 会变成在后面「追加」参数，--headless 永远在 —— 那样 /json/version 返回的是
     # HeadlessChrome，noVNC 里也不会有任何画面。必须清空 entrypoint 自己 exec。
@@ -158,10 +161,9 @@ services:
       - "/bin/sh"
       - "-c"
       - >-
-        until nc -z -w1 novnc 6000; do sleep 1; done;
+        until nc -z -w1 127.0.0.1 ${CAPTURE_X11_PORT:-6000}; do sleep 1; done;
         exec /usr/lib/chromium/chromium
-        --remote-debugging-port=9222
-        --remote-debugging-address=0.0.0.0
+        --remote-debugging-port=${CAPTURE_CDP_PORT:-9223}
         --remote-allow-origins=*
         --no-sandbox
         --disable-dev-shm-usage
@@ -178,8 +180,3 @@ services:
         max-size: "10m"
         max-file: "2"
 
-networks:
-  # 抓包专用内网：只承载 X11 与 CDP，不接 app（app 用 host 网络）
-  capture:
-    name: custom-hosts-capture
-    driver: bridge

@@ -30,8 +30,14 @@ export interface CaptureEnv {
   error?: string
 }
 
-/** 默认 CDP 地址：chromium 容器把 9222 只绑在宿主 loopback 上（见 docker-compose.yml） */
-export const DEFAULT_CDP_URL = "http://127.0.0.1:9222"
+/**
+ * 默认 CDP 地址。
+ *
+ * 端口用 9223 而不是 9222：chromium 走 host 网络（带界面的 Chrome 忽略
+ * --remote-debugging-address，只能监听 127.0.0.1，端口映射打不通），
+ * 而 9222 在 NAS 上容易和别的调试实例/约定撞车，所以错开一位。
+ */
+export const DEFAULT_CDP_URL = "http://127.0.0.1:9223"
 
 /** 优先读环境变量，方便 NAS 上换端口而不用改代码 */
 export function resolveCdpUrl(): string {
@@ -104,7 +110,7 @@ async function probeCdp(baseUrl: string): Promise<CaptureEnv> {
 }
 
 /**
- * @param getCdpUrl 每次请求时调用，返回 CDP 基础地址（如 http://127.0.0.1:9222）。
+ * @param getCdpUrl 每次请求时调用，返回 CDP 基础地址（如 http://127.0.0.1:9223）。
  *                  做成函数而非字符串，是为了支持运行期改端口/改地址而不必重启。
  */
 export function createCaptureEnvRoutes(getCdpUrl: () => string): Hono {

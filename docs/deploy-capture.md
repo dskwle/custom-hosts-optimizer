@@ -12,14 +12,14 @@
 ## 1. 架构与端口
 
 ```
-宿主机
-├─ app 容器（host 网络，:8788）──── 127.0.0.1:9222 ──┐
-│                                                   │ (端口映射，只绑 loopback)
-└─ capture 网络（bridge，custom-hosts-capture）       │
-   ├─ chromium ── CDP :9222 ◀────────────────────────┘
-   │      │ DISPLAY=novnc:0.0（X11 TCP :6000，仅内网）
-   │   novnc ─ Xvfb :0 + x11vnc + noVNC :8080
-   └─ 宿主机 :6080 ── noVNC 网页（局域网可见）
+宿主机（app / refresher / chromium 都在宿主网络栈里）
+├─ app 容器 :8788 ────────────────┐
+├─ chromium（host 网络）── CDP 127.0.0.1:9223 ◀─┘
+│      └── DISPLAY=127.0.0.1:0（X11，经宿主 loopback :6000）
+└─ novnc 容器（bridge）
+       ├─ Xvfb :0 + x11vnc + noVNC :8080
+       ├─ 宿主 127.0.0.1:6000 ── X11（只发布到 loopback，给 chromium 用）
+       └─ 宿主 0.0.0.0:6080   ── noVNC 网页（局域网可见）
 ```
 
 **X 显示在 `novnc` 容器里，`chromium` 容器只是连上去的浏览器客户端。**
@@ -28,16 +28,18 @@
 
 | 端口 | 谁监听 | 绑定方式 | 用途 | 谁能访问 |
 |---|---|---|---|---|
-| `9222` | chromium | `127.0.0.1:9222`（可改 `CAPTURE_CDP_PORT`） | CDP | **只有宿主机本地**，局域网/公网不可达 |
+| `9223` | chromium | 容器内 `127.0.0.1:9223`（可改 `CAPTURE_CDP_PORT`） | CDP | **只有宿主机本地**（host 网络 + Chrome 强制 loopback） |
 | `8080` → `6080` | novnc | `0.0.0.0:6080`（可改 `CAPTURE_NOVNC_PORT`） | noVNC 网页 | 局域网可见，**无内置鉴权**，见 §4 |
-| `6000` | novnc | 不发布 | X11（给 chromium 用） | 仅 `capture` 内网 |
+| `6000` | novnc | `127.0.0.1:6000`（可改 `CAPTURE_X11_PORT`） | X11，给 chromium 用 | **只有宿主机本地** |
 | `5900` | — | 不存在 | — | 本方案不用裸 VNC 端口 |
 
-> **CDP 为什么绑 `127.0.0.1` 而不是 compose 内网 IP**
-> `app` 用的是 `network_mode: host`（为了宿主机 IPv6 出口），它进不了 bridge 网络，
-> 所以用"宿主 loopback + 端口映射"这条确定性最好的路径：`app` 访问 `http://127.0.0.1:9222`，
-> 而 loopback 之外的任何来源都连不上。**绝对不要改成 `"9222:9222"` 或 `"0.0.0.0:9222:9222"`**——
-> 拿到 CDP 等于拿到这个浏览器的全部能力（读页面、执行 JS、读 cookie）。
+> **为什么 chromium 必须用 `network_mode: host`（踩过的坑，别改回去）**
+> 带界面的 Chrome 会**忽略 `--remote-debugging-address`**，强制只监听容器内的 `127.0.0.1`
+> （容器内 `/proc/net/tcp` 是 `0100007F:2407`）。而 `ports: "127.0.0.1:9223:9223"` 的流量是
+> docker-proxy 从**容器 IP** 发起的，连不到容器 loopback —— 所以那种写法永远打不通，`curl` 返回 000。
+> 让 chromium 和 app 共享宿主网络栈后，Chrome 监听的 loopback 就是宿主 loopback，
+> `app` 直接访问 `http://127.0.0.1:9223` 即可；同时因为只在 loopback 上，局域网照样连不到。
+> `--headless` 模式下 `--remote-debugging-address` 才是有效的，但 headless 就没画面了，不是我们要的。
 
 ---
 
@@ -55,11 +57,11 @@ docker compose --profile capture stop chromium
 
 # 全部停掉并释放内存（novnc 一起停）
 docker compose --profile capture stop
-docker compose --profile capture down        # 连容器一起删
+docker compose --profile capture rm -f chromium novnc   # 删容器（不要用 down：会连 app 一起停）
 
 # 查看状态
 docker compose --profile capture ps
-curl -s http://127.0.0.1:9222/json/version   # 有输出 = CDP 活着
+curl -s http://127.0.0.1:9223/json/version   # 有输出 = CDP 活着
 curl -s -u admin:$ADMIN_PASSWORD http://127.0.0.1:8788/local/capture/env
 ```
 
@@ -108,7 +110,7 @@ command:
   - "-c"
   - >-
     until nc -z -w1 novnc 6000; do sleep 1; done;
-    exec /usr/lib/chromium/chromium --remote-debugging-port=9222 ...
+    exec /usr/lib/chromium/chromium --remote-debugging-port=9223 ...
 ```
 
 两处关键：`entrypoint: []` 清掉镜像自带的 `--headless`；`until nc -z novnc 6000` 等 X 就绪
@@ -221,11 +223,12 @@ cron 示例（群晖/威联通的任务计划里加一条）：
 | `/local/capture/env` 返回 `{cdp:false,error:"connect ECONNREFUSED..."}` | `docker compose --profile capture ps` | 没带 profile 启动，或 chromium 正在重启；`up -d` 后重试 |
 | 同上，`error` 是 `CDP 探测超时` | `docker logs custom-hosts-chromium \| tail -30` | 容器内 Chromium 卡死/在等 X；重启 chromium |
 | noVNC 页面能打开但黑屏 | `docker logs custom-hosts-novnc` | X 未起来；`docker compose --profile capture restart novnc` |
+| 宿主 `curl 127.0.0.1:9223/json/version` 返回 `000`，但容器在跑 | `docker inspect custom-hosts-chromium --format '{{.HostConfig.NetworkMode}}'` | 必须是 `host`。带界面的 Chrome 只监听容器内 loopback（`/proc/net/tcp` 里的 `0100007F:2407` 是正常现象），非 host 网络下端口映射连不到它——不要试图用 `ports` 修，改回 `network_mode: host` |
 | noVNC 打开是黑屏/空桌面，且 `/json/version` 返回 `HeadlessChrome/...` | `docker inspect custom-hosts-chromium --format '{{json .Config.Entrypoint}}'` | entrypoint 又带上了 `--headless`；见 §2「必须清空 entrypoint」，跑 `./scripts/orch/capture-smoke.sh` 复验 |
 | 浏览器里没有窗口 | `docker logs custom-hosts-chromium` 里找 `cannot open display` | chromium 比 novnc 先起来导致；`restart chromium` |
 | 页面中文变方块 | — | 精简 chromium 镜像不带 CJK 字体，抓包（请求列表）不受影响；需要看中文就换带字体的镜像 |
 | 内存持续 > 900MB | `docker stats custom-hosts-chromium` | 关掉不用的标签页；或调小 `IDLE_MINUTES` |
-| 9222 端口被占用 | `lsof -iTCP:9222 -sTCP:LISTEN` | 换端口：`CAPTURE_CDP_PORT=9223`，同时给 `app` 设 `CAPTURE_CDP_URL=http://127.0.0.1:9223` |
+| 9223 端口被占用 | `lsof -iTCP:9223 -sTCP:LISTEN` | 换端口：`CAPTURE_CDP_PORT=9333`，同时给 `app` 设 `CAPTURE_CDP_URL=http://127.0.0.1:9333` |
 
 ---
 
@@ -234,7 +237,7 @@ cron 示例（群晖/威联通的任务计划里加一条）：
 这两个 service 与 `capture` 网络都是**纯新增**，删掉即可，不涉及任何数据迁移：
 
 ```bash
-docker compose --profile capture down          # 先清理容器
+docker compose --profile capture rm -f chromium novnc   # 先清理 capture 容器（别用 down，会停 app）
 # 然后回退 commit，或在 .env 里保持默认（不带 profile 就完全不启动）
 git revert --no-edit <本次 commit>
 ```
