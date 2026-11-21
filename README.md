@@ -47,6 +47,7 @@ Cloudflare Workers 有两条硬限制，直接决定了能做什么：
 | **服务端缓存** | 按 `IP + 域名` 缓存测量结果，全量刷新从 46s 降到 21s |
 | **网络变化感知** | 出口 IP 变化时自动清空缓存，避免沿用失效数据 |
 | **广告规则拼接** | 可选追加 AWAvenue-Ads-Rule 黑名单，带开关；上游只写了单族的条目自动补齐 v4/v6 |
+| **Microsoft 全家桶** | 账号登录、Office 365、Outlook、Teams、Windows Update、Store、Azure、VS、Xbox 共 28 个域名 |
 | **自定义屏蔽** | 批量粘贴域名，同时写 `0.0.0.0` 与 `::`，IPv4/IPv6 一起堵死 |
 | **无鉴权** | 本地控制台不设任何权限校验 |
 
@@ -78,7 +79,7 @@ npm run local
 命令行方式：
 
 ```bash
-# 首次生成数据（151 个域名，约 40 秒）
+# 首次生成数据（179 个域名，约 50 秒）
 curl -X POST http://127.0.0.1:8788/local/refresh
 
 # 之后直接取 hosts
@@ -362,7 +363,7 @@ data/
 
 ## 域名分组
 
-151 个域名分 12 组，定义在 `src/constants.ts` 的 `SITE_GROUPS`：
+179 个域名分 13 组，定义在 `src/constants.ts` 的 `SITE_GROUPS`：
 
 | 分组 | 数量 | 覆盖 |
 |---|---|---|
@@ -370,6 +371,7 @@ data/
 | `game` | 29 | Rockstar、Epic、Battle.net、EA、Ubisoft、Riot |
 | `dev` | 22 | PyPI、Maven、Go、Rust、Conda、VS Code |
 | `web` | 16 | 必应、微软账户、Edge、DeepL、验证码 |
+| `microsoft` | 28 | 微软主站、账号、Office 365、Outlook、Teams、Windows Update、Store、Azure、VS、Xbox |
 | `steam` | 11 | 商店、社区、CDN 静态资源 |
 | `docker` | 7 | 镜像拉取、认证、Layer 下载 |
 | `cloudflare` | 7 | 官方主站、开发者文档、Workers、Pages |
@@ -385,7 +387,7 @@ data/
 
 ## 性能参考
 
-本机实测（联通，151 个域名）：
+本机实测（联通，151 个域名的阶段）：
 
 | 场景 | 耗时 |
 |---|---|

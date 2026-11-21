@@ -287,12 +287,7 @@
       <h2>长时间稳定性监控</h2>
       <p class="hint">按固定间隔反复采样，记录延迟变化。用于发现「什么时候开始变慢」这类间歇性问题。</p>
       <div class="row">
-        <select id="monitorGroup">
-          <option value="npm">npm / 前端 CDN（6 个）</option>
-          <option value="github">GitHub（40 个）</option>
-          <option value="docker">Docker Hub（7 个）</option>
-          <option value="steam">Steam（11 个）</option>
-        </select>
+        <select id="monitorGroup"></select>
         <select id="monitorInterval">
           <option value="30">30 秒</option>
           <option value="60" selected>1 分钟</option>
@@ -401,6 +396,12 @@ async function loadGroups() {
       opt2.value = g.id
       opt2.textContent = `${g.name}（${g.count} 个）`
       el('refreshGroup').appendChild(opt2)
+
+      // 监控分组也按实际分组生成，避免写死之后数量/清单过期
+      const opt3 = document.createElement('option')
+      opt3.value = g.id
+      opt3.textContent = `${g.name}（${g.count} 个）`
+      el('monitorGroup').appendChild(opt3)
     }
   } catch (e) {
     el('engineInfo').textContent = '连接失败'

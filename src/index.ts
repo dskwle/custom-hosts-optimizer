@@ -163,7 +163,11 @@ async function collectEntries(
 
   if (opts.groupParam) {
     const allowedDomains = new Set(resolveGroupDomains(opts.groupParam))
-    const customSet = new Set((await getCustomDomains(c.env)).map((d) => d.domain))
+    // custom=false 时自定义域名也不该混进分组输出，
+    // 否则「只要 microsoft 组」的结果里会掺进一堆自己加的域名
+    const customSet = opts.includeCustom
+      ? new Set((await getCustomDomains(c.env)).map((d) => d.domain))
+      : new Set<string>()
     allData = allData.filter(([, domain]) => allowedDomains.has(domain) || customSet.has(domain))
     console.log(`按分组 [${opts.groupParam}] 过滤后: ${allData.length} 条`)
   }
