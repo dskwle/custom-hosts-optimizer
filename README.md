@@ -49,6 +49,8 @@ Cloudflare Workers 有两条硬限制，直接决定了能做什么：
 | **广告规则拼接** | 可选追加 AWAvenue-Ads-Rule 黑名单，带开关；上游只写了单族的条目自动补齐 v4/v6 |
 | **Microsoft 全家桶** | 账号登录、Office 365、Outlook、Teams、Windows Update、Store、Azure、VS、Xbox 共 28 个域名 |
 | **自定义屏蔽** | 批量粘贴域名，同时写 `0.0.0.0` 与 `::`，IPv4/IPv6 一起堵死 |
+| **网页诊断（抓包）** | 内嵌 Chromium（noVNC）打开站点，CDP 采集全部子请求，按域名聚合耗时/失败，勾选后一键加速或屏蔽 |
+| **Clash 规则输出** | `/clash/*` 输出 hosts、屏蔽、广告、SNI 阻断四类规则，mihomo 的 rule-providers 可直接拉取并自动更新 |
 | **无鉴权** | 本地控制台不设任何权限校验 |
 
 ---
@@ -281,6 +283,31 @@ bump     → katabump.com / control.katabump.com …（内置加速）
 
 ---
 
+### 网页诊断（内嵌抓包）
+
+左侧是容器里的 Chromium（通过 noVNC 投屏），右边实时列出它发出的每个请求。抓包由 CDP 完成，
+能看到跨域 iframe、XHR、静态资源的耗时分解，但拿不到响应体（不需要 MITM 证书）。
+
+判定口径：`TTFB > 5s` 或 `总耗时 > 5s` 记慢；`ERR_TIMED_OUT` / 连接重置记失败；缓存命中的请求只计数不计耗时。
+按域名聚合后给建议：
+
+| 情况 | 建议 | 默认勾选 |
+|---|---|---|
+| 第三方 + 失败 | 屏蔽 | ✓ |
+| 第三方 + 慢 | 加速（换 IP） | ✓ |
+| 第一方 + 慢/失败 | 忽略（改 hosts 通常无解） | ✗ |
+| SNI 阻断（命中已知清单） | 走代理 | ✗（hosts 无效，勾了也没用） |
+
+勾选后「测速并加速」会逐个域名实测再写入自定义域名，「加入屏蔽」直接进屏蔽清单；单次最多 50 个，前端自动分批。
+结果是同一份数据——立刻体现在 `/host` 与 `/clash/*` 里。
+
+**一个必须知道的限制**：加速与屏蔽只作用于**导出的** hosts / Clash 配置。内嵌浏览器自己走容器网络，
+不读这些规则，所以"屏蔽后再抓一次"仍然会看到那些请求——这不代表规则没生效，换个客户端验证。
+
+> 抓包需要额外的两个容器，默认不启动：
+> `docker compose --profile capture up -d`（Chromium 约 122MB 空闲内存，noVNC 约 107MB）。
+> CDP 只监听宿主 `127.0.0.1:9223`，noVNC 在 `6080`，X11 在 `127.0.0.1:6000`。
+
 ## 工作方式
 
 单个域名的探测流程：
@@ -332,6 +359,12 @@ SNI 阻断归因（仅诊断时）
 | `GET /host_fast` | **仅加速**：只有优选区，不含广告与屏蔽段 |
 | `GET /host_block` | **仅屏蔽**：广告规则 + 自定义屏蔽，每条域名 v4/v6 各一行 |
 | `GET /hosts.json` | 结构化 JSON，含分组归类（已剔除屏蔽域名） |
+| `GET /clash/hosts.yaml` | 加速域名 → IP 映射（`hosts:` 段，v4/v6 混排） |
+| `GET /clash/block.yaml` | 屏蔽域名（rule-provider，`behavior: domain`） |
+| `GET /clash/ads.yaml` | 广告规则域名（与 block 去重，可单独开关） |
+| `GET /clash/proxy.yaml` | SNI 阻断域名（只能走代理，改 hosts 无效） |
+| `GET /clash/snippet.yaml` | 可直接粘进 mihomo 配置的合并片段 |
+| `GET /clash/config.example.yaml` | 完整配置模板（含 `dns.use-hosts`、fake-ip、TUN 注释） |
 
 三个文本接口都支持 `?group=` 过滤分组；`/host` 与 `/host_block` 支持 `?ads=false` 临时去掉广告规则。
 
@@ -425,7 +458,8 @@ data/
 │   ├── domain_data.json       域名优选结果（核心）
 │   ├── ads_rules_v2.json      广告规则缓存（每条域名 v4+v6）
 │   ├── ads_config.json        广告开关
-│   └── custom_blocklist.json  自定义屏蔽清单
+│   ├── custom_blocklist.json  自定义屏蔽清单
+│   └── capture/               抓包会话（最近 20 个，默认只存域名不存 URL）
 ├── ip-cache.json             IP 延迟缓存（TTL 2 小时）
 ├── blocked-domains.json      SNI 阻断排除清单
 └── network-identity.json     出口 IP 基线

@@ -425,7 +425,9 @@
       <h2>网页诊断 <span class="badge gray" id="capStatusBadge">未开始</span></h2>
       <p class="hint">
         在左侧内嵌浏览器里打开目标站点，抓包会记录页面发出的全部请求，按域名汇总耗时与失败情况。<br>
-        勾选右侧表格里的域名，可以一键「测速并加速」或「加入屏蔽」，与其它标签页的数据是同一份。
+        勾选右侧表格里的域名，可以一键「测速并加速」或「加入屏蔽」，与其它标签页的数据是同一份。<br>
+        <strong>注意</strong>：加速与屏蔽只作用于导出的 hosts / Clash 配置；内嵌浏览器本身走容器网络，
+        不读这些规则，所以屏蔽之后重新抓包仍然会看到对应请求，这不代表规则没生效。
       </p>
       <div class="row">
         <input type="text" class="mono" id="capUrl" placeholder="https://example.com" value="https://" style="flex:1;min-width:260px">
