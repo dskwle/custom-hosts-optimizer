@@ -395,7 +395,9 @@
       <h2>已排除的 SNI 阻断域名 <span class="badge gray" id="blockedCount">0</span></h2>
       <p class="hint">
         这些域名的阻断发生在 TLS 握手的 SNI 阶段，由中间设备按域名匹配切断，<strong>改 hosts 完全无效，必须走代理</strong>。
-        默认刷新不再检测它们以节省时间。若怀疑已恢复，可先「重新检测」。
+        默认刷新不再检测它们以节省时间，但<strong>后台每 30 分钟会自动复查一次</strong>——
+        阻断解除（换了出口线路、中间设备策略调整）后会自动移出本清单，无需手动干预。
+        想立即验证可点「重新检测全部」。
       </p>
       <div class="row" style="margin-bottom:10px">
         <button id="btnBlockedRecheck">重新检测全部</button>
@@ -412,7 +414,8 @@
         <p class="hint">
           探测失败的域名每分钟自动重试一次。连续失败达到 <strong>60 次（约 1 小时）</strong>
           且 SNI 结论为阻断，才会移到上方清单；期间任何一次成功即清零。
-          超时类失败只累计、不判死。
+          超时类失败只累计、不判死。<br>
+          上方清单里的域名也会每 <strong>30 分钟</strong>自动复查，恢复后自动移出。
         </p>
         <div id="failList"><p class="empty">暂无失败记录</p></div>
       </div>

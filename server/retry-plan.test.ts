@@ -26,14 +26,15 @@ test('到期的域名进入本轮', () => {
   assert.deepEqual(r.due, ['a.com'])
 })
 
-test('已在排除清单的域名不再重试', () => {
+test('已在排除清单的域名不进 due，而是进 recheck', () => {
   const r = planRetry({
     failures: [{ domain: 'a.com', consecutive: 60, lastFailedAt: iso(90_000) }],
-    blocked: ['a.com'],
+    blocked: [{ domain: 'a.com', blockedAt: iso(31 * 60_000) }],
     limit: 10,
     now,
   })
   assert.deepEqual(r.due, [])
+  assert.deepEqual(r.recheck, ['a.com'])
 })
 
 test('按最早失败优先，避免后面的域名被饿死', () => {
@@ -70,14 +71,64 @@ test('时间戳异常时当作早已到期（宁可多测不卡住）', () => {
   assert.deepEqual(r.due, ['x.com'])
 })
 
-test('大小写不敏感地跳过已阻断域名', () => {
+test('未到复查间隔的已排除域名不复查', () => {
   const r = planRetry({
-    failures: [{ domain: 'A.com', consecutive: 60, lastFailedAt: iso(90_000) }],
-    blocked: ['a.com'],
+    failures: [],
+    blocked: [{ domain: 'a.com', blockedAt: iso(5 * 60_000) }],
     limit: 10,
     now,
   })
-  assert.deepEqual(r.due, [])
+  assert.deepEqual(r.recheck, [])
+})
+
+test('已排除域名按最久没复查优先', () => {
+  const r = planRetry({
+    failures: [],
+    blocked: [
+      { domain: 'recent.com', blockedAt: iso(31 * 60_000) },
+      { domain: 'oldest.com', blockedAt: iso(120 * 60_000) },
+      { domain: 'mid.com', blockedAt: iso(60 * 60_000) },
+    ],
+    limit: 10,
+    now,
+  })
+  assert.deepEqual(r.recheck, ['oldest.com', 'mid.com', 'recent.com'])
+})
+
+test('失败域名优先占额度，剩余才给复查', () => {
+  const r = planRetry({
+    failures: [
+      { domain: 'f1.com', consecutive: 2, lastFailedAt: iso(120_000) },
+      { domain: 'f2.com', consecutive: 2, lastFailedAt: iso(120_000) },
+    ],
+    blocked: [{ domain: 'b1.com', blockedAt: iso(999_999_999) }],
+    limit: 2,
+    now,
+  })
+  assert.equal(r.due.length, 2)
+  assert.deepEqual(r.recheck, [])
+})
+
+test('失败域名不足额度时，补上复查', () => {
+  const r = planRetry({
+    failures: [{ domain: 'f1.com', consecutive: 2, lastFailedAt: iso(120_000) }],
+    blocked: [{ domain: 'b1.com', blockedAt: iso(999_999_999) }],
+    limit: 3,
+    now,
+  })
+  assert.deepEqual(r.due, ['f1.com'])
+  assert.deepEqual(r.recheck, ['b1.com'])
+})
+
+test('recheck 间隔可配置', () => {
+  const r = planRetry({
+    failures: [],
+    blocked: [{ domain: 'b.com', blockedAt: iso(5 * 60_000) }],
+    limit: 10,
+    now,
+    blockedIntervalMs: 60_000,
+  })
+  assert.deepEqual(r.recheck, ['b.com'])
 })
 
 test('shouldBlocklist：三个条件同时满足才判死', () => {

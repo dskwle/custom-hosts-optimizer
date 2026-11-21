@@ -14,7 +14,7 @@
 import { probeDomain } from './probe.js'
 import { clearFailure, listExhausted, listFailures, recordFailure, FAILURE_THRESHOLD } from './failures.js'
 import { planRetry, shouldBlocklist } from './retry-plan.js'
-import { markBlocked, getBlockedDomains } from './blocked.js'
+import { markBlocked, getBlockedDomains, listBlocked, unmarkBlocked } from './blocked.js'
 import { addCustomDomain, getCustomDomains } from '../src/services/hosts.js'
 import { ALL_DOMAINS } from '../src/constants.js'
 
@@ -27,6 +27,8 @@ export interface RetrierOptions {
   concurrency?: number
   /** 连续失败阈值，默认 60 */
   threshold?: number
+  /** 已排除域名的复查间隔，默认 30 分钟 */
+  blockedIntervalMs?: number
 }
 
 export interface RetrierStats {
@@ -34,6 +36,10 @@ export interface RetrierStats {
   examined: number
   recovered: number
   blocklisted: number
+  /** 从排除清单里复查的数量 */
+  rechecked: number
+  /** 复查后确认恢复、已移出清单的数量 */
+  recheckRecovered: number
   lastRunAt: string | null
   running: boolean
 }
@@ -45,6 +51,8 @@ const stats: RetrierStats = {
   examined: 0,
   recovered: 0,
   blocklisted: 0,
+  rechecked: 0,
+  recheckRecovered: 0,
   lastRunAt: null,
   running: false,
 }
@@ -73,31 +81,51 @@ function shouldCountFailure(verdict: string | undefined, uniqueIpCount: number):
 /**
  * 跑一轮。导出出来便于手动触发（排障接口）与单测。
  */
+export interface RoundResult {
+  examined: number
+  recovered: number
+  blocklisted: number
+  rechecked: number
+  recheckRecovered: number
+}
+
+const EMPTY_ROUND: RoundResult = {
+  examined: 0,
+  recovered: 0,
+  blocklisted: 0,
+  rechecked: 0,
+  recheckRecovered: 0,
+}
+
 export async function runRetryRound(
   env: any,
   options: RetrierOptions = {},
-): Promise<{ examined: number; recovered: number; blocklisted: number }> {
+): Promise<RoundResult> {
   const batchLimit = options.batchLimit ?? 20
   const concurrency = Math.max(1, options.concurrency ?? 4)
   const threshold = options.threshold ?? FAILURE_THRESHOLD
 
-  const [failures, blockedSet] = await Promise.all([listFailures(), getBlockedDomains()])
-  if (!failures.length) return { examined: 0, recovered: 0, blocklisted: 0 }
+  const [failures, blockedEntries] = await Promise.all([listFailures(), listBlocked()])
+  if (!failures.length && !blockedEntries.length) return EMPTY_ROUND
 
   const plan = planRetry({
     failures,
-    blocked: blockedSet,
+    // 已排除域名也参与，但走更长的复查间隔：
+    // SNI 阻断可能解除，只靠用户手点「重新检测」不现实。
+    blocked: blockedEntries.map((e) => ({ domain: e.domain, blockedAt: e.blockedAt })),
     limit: batchLimit,
     now: Date.now(),
     intervalMs: options.intervalMs ?? 60_000,
+    blockedIntervalMs: options.blockedIntervalMs ?? 30 * 60_000,
   })
-  if (!plan.due.length) return { examined: 0, recovered: 0, blocklisted: 0 }
+  if (!plan.due.length && !plan.recheck.length) return EMPTY_ROUND
 
   stats.rounds += 1
   stats.running = true
 
   let recovered = 0
   let blocklisted = 0
+  let recheckRecovered = 0
   let cursor = 0
 
   const worker = async () => {
@@ -148,16 +176,52 @@ export async function runRetryRound(
 
   await Promise.all(Array.from({ length: Math.min(concurrency, plan.due.length) }, worker))
 
+  // 复查已排除域名：通了就自动移出清单，让用户不必手动点「重新检测」
+  let recheckCursor = 0
+  if (plan.recheck.length) {
+    const recheckWorker = async () => {
+      while (recheckCursor < plan.recheck.length) {
+        const domain = plan.recheck[recheckCursor]
+        recheckCursor += 1
+        try {
+          // 复查用 useCache:false：缓存命中的是旧结论，复查就失去意义
+          const probe = await probeDomain(domain, { checkSni: true, useCache: false })
+          if (probe.bestIp) {
+            await unmarkBlocked(domain)
+            recheckRecovered += 1
+            console.log(`[retrier] ${domain} 复查已恢复，移出 SNI 阻断清单`)
+          }
+        } catch (err) {
+          console.error(`[retrier] ${domain} 复查异常`, err)
+        }
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, plan.recheck.length) }, recheckWorker),
+    )
+  }
+
   stats.examined += plan.due.length
   stats.recovered += recovered
   stats.blocklisted += blocklisted
+  stats.rechecked += plan.recheck.length
+  stats.recheckRecovered += recheckRecovered
   stats.lastRunAt = new Date().toISOString()
   stats.running = false
 
-  if (recovered || blocklisted) {
-    console.log(`[retrier] 本轮测 ${plan.due.length} 个，恢复 ${recovered}，判定阻断 ${blocklisted}`)
+  if (recovered || blocklisted || recheckRecovered) {
+    console.log(
+      `[retrier] 本轮重试 ${plan.due.length} 个（恢复 ${recovered}，判定阻断 ${blocklisted}），` +
+        `复查已排除 ${plan.recheck.length} 个（恢复 ${recheckRecovered}）`,
+    )
   }
-  return { examined: plan.due.length, recovered, blocklisted }
+  return {
+    examined: plan.due.length,
+    recovered,
+    blocklisted,
+    rechecked: plan.recheck.length,
+    recheckRecovered,
+  }
 }
 
 /**
