@@ -358,9 +358,10 @@ SNI 阻断归因（仅诊断时）
 
 | 接口 | 说明 |
 |---|---|
-| `GET /host` | **全部**：优选区 + 广告规则 + 自定义屏蔽（`/hosts` 同义） |
+| `GET /host` | **全部**：优选区 + 广告规则 + 自定义屏蔽（`/hosts` 同义）。双栈域名 v4/v6 各一行 |
 | `GET /host_fast` | **仅加速**：只有优选区，不含广告与屏蔽段 |
 | `GET /host_block` | **仅屏蔽**：广告规则 + 自定义屏蔽，每条域名 v4/v6 各一行 |
+| `GET /host_v4` | 全部纯 IPv4：剔除所有 IPv6 行，给只支持 v4 的环境（`/host_fast_v4` 同义的仅加速版） |
 | `GET /hosts.json` | 结构化 JSON，含分组归类（已剔除屏蔽域名） |
 | `GET /clash/hosts.yaml` | 加速域名 → IP 映射（`hosts:` 段，v4/v6 混排） |
 | `GET /clash/block.yaml` | 屏蔽域名（rule-provider，`behavior: domain`） |
