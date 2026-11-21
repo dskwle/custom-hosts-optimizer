@@ -1,10 +1,10 @@
 # D1–D3/D5–D7 控制台「网页诊断」标签页
 
-- **结论**：可合并（一处需主 agent/A 确认：noVNC 默认端口）
+- **结论**：可合并
 - **Lane / Owner**：D / agent-D
-- **分支 / 基线**：`feat/D-capture-ui` @ `a765f37`（从 `integration/capture@a765f37` 切出）
-- **状态**：REPORTED
-- **报告时间**：2026-11-21 11:25
+- **分支 / 基线**：`feat/D-capture-ui`（从 `integration/capture@a765f37` 切出，两个提交：主体 + 契约 v1.1 跟进）
+- **状态**：REPORTED（第 2 版，已并入 A 的端口确认与 C 的 v1.1 口径）
+- **报告时间**：2026-11-21 11:40
 
 ## 变更范围
 
@@ -109,6 +109,14 @@ PASS  规则 404 时提示「规则输出未启用」
 - SSE 只消费 `state` / `request` / `error` / `end` 四种帧；`end` 后不再重连
 - 表格列全部取自 `HostSummary`（p95 优先 `p95TotalMs`，缺失时退化到 `p95TtfbMs`；`verdict`/`reason`/`suggested` 原样展示，前端不做二次判定）
 - 「慢」的筛选口径按契约 `SLOW`（p95 > 5000ms），与 C 的判定一致
+- `p50TtfbMs` / `p95TtfbMs` / `p95TotalMs` 为 `undefined`（全部缓存命中）时显示 `—`，不会显示成 `0ms`
+
+### 契约 v1.1 跟进（C 的 `feat/C-aggregate @ 3f501d3`）
+
+- **`verdict='proxy'` 的行不给勾选框**，也不参与全选/反选/默认预选（改 hosts 无效，只提示加 Clash proxy 规则）。
+  实现在 `capRowHtml` 的 `selectable` 与 `capApplySummary` / 全选 / 反选三处，`proxy` 与 `accel`/`block` 可在同一批结果里共存。
+- **`HostSummary.timeouts`**：没有单独加列（表格已 8 列、宽度紧张），改为「失败」单元格的 `title`（如「2 个超时」），
+  完整文案由 C 写进 `reason`；字段缺失时按 `?? 0` 兜底。
 
 前端额外加了三个**仅本地开发用**的 URL 开关（都写在注释里，不影响生产）：
 
@@ -125,14 +133,18 @@ PASS  规则 404 时提示「规则输出未启用」
    于是 `s.requests = [...s.requests, r]` 抛 `TypeError: s.requests is not iterable`，进程直接退出。
    现象：前端只看到 `state: running` + 0 条数据。修复只需把 L143–146 的三处 `s.requests` 改成 `rec.requests`
    （我已在 `/tmp` 副本上验证）。**建议主 agent 修完再让 B/C 用它联调。**
-2. **noVNC 默认端口**：任务书写 6080，但 `docs/dev-plan-capture-novnc.md` L224 与
-   `docs/design-capture-and-clash.md` L49/L186 写的是 NAS 上现有 novnc 的 **8888**。
-   当前实现默认 6080，并可用 `?vncPort=` / `?vnc=` 覆盖，等 A 确认 compose 里实际 publish 的端口后再定默认值。
-   已发消息问 agent-A，尚未收到回复。
-3. **历史会话是否允许直接应用**：按任务书「只读」实现了（历史会话下两个按钮禁用，提示「历史会话只读」）。
+2. **历史会话是否允许直接应用**：按任务书「只读」实现了（历史会话下两个按钮禁用，提示「历史会话只读」）。
    如果产品上希望「回看旧会话也能一键加速」，去掉 `capSyncActions` 里的 `cap.history` 条件即可。
-4. **`GET /local/capture?limit=20` 的挂载形式**：契约表格写 `GET /?limit=20`，mock 实现的是
+3. **`GET /local/capture?limit=20` 的挂载形式**：契约表格写 `GET /?limit=20`，mock 实现的是
    `/local/capture?limit=20`（无尾斜杠）。前端按 mock 的写法调用，若 B 用了尾斜杠形式请告知，改一处字符串即可。
+
+### 已确认（本版并入）
+
+- **noVNC 端口 = 6080**（agent-A 确认：compose 里 `${CAPTURE_NOVNC_PORT:-6080}:8080`，容器内部 8080）。
+  8888 是 NAS 上另一个独立 novnc 容器，指过去会看不到抓包浏览器，所以默认值用 6080；
+  前端留了 `CAP_VNC_PORT` 常量 + `?vncPort=` / `?vnc=` 双覆盖，将来若改成 `/vnc/` 反代只换 base 即可。
+- 直连发布端口、不经 app 反代；noVNC 前端是静态页，**重试时带 `_t=<ts>` 绕过浏览器缓存**（A 的建议）。
+- 镜像零鉴权、可能缺中文字体、单实例这三条限制已写进「内嵌浏览器」卡片的说明文字。
 
 ## 风险与回滚
 
