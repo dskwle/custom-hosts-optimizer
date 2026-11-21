@@ -1,0 +1,16 @@
+{
+  "url": "https://video.example.com",
+  "requests": [
+    { "requestId": "v-001", "host": "video.example.com", "kind": "document", "status": 200, "ttfbMs": 380, "totalMs": 920, "bytes": 78000 },
+    { "requestId": "v-002", "host": "player.example.com", "kind": "script", "status": 200, "cached": true, "bytes": 140000 },
+    { "requestId": "v-003", "host": "static.example.com", "kind": "script", "status": 200, "ttfbMs": 150, "totalMs": 300, "bytes": 88000 },
+    { "requestId": "v-004", "host": "thumbnails.example.com", "kind": "img", "status": 200, "ttfbMs": 260, "totalMs": 420, "bytes": 60000 },
+    { "requestId": "v-005", "host": "cdn.video-cdn.net", "kind": "media", "status": 200, "ttfbMs": 5200, "totalMs": 5600, "bytes": 4200000 },
+    { "requestId": "v-006", "host": "cdn.video-cdn.net", "kind": "media", "status": 200, "ttfbMs": 140, "totalMs": 260, "bytes": 3800000 },
+    { "requestId": "v-007", "host": "cdn.video-cdn.net", "kind": "media", "status": 200, "ttfbMs": 180, "totalMs": 240, "bytes": 3900000 },
+    { "requestId": "v-008", "host": "stream.example.com", "kind": "media", "status": 200, "ttfbMs": 8200, "totalMs": 8400, "bytes": 1200 },
+    { "requestId": "v-009", "host": "i.ytimg.com", "kind": "img", "status": 200, "cached": true, "bytes": 24000 },
+    { "requestId": "v-010", "host": "api.example.com", "kind": "xhr", "failed": true, "errorText": "net::ERR_NAME_NOT_RESOLVED" },
+    { "requestId": "v-011", "host": "player.vimeo.com", "kind": "script", "status": 200, "ttfbMs": 6100, "totalMs": 9800, "bytes": 210000 }
+  ]
+}
