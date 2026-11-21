@@ -83,6 +83,56 @@ export async function listStoredSessions(limit = RETAIN_SESSIONS): Promise<Captu
 }
 
 /**
+ * 删除单个会话文件。返回是否真的删掉了：
+ * - false 表示文件不存在（调用方按 404 处理）
+ * - 抛错表示文件存在但删不掉（权限/占用），调用方按 500 处理
+ *
+ * 不做"删不掉就忽略"的处理——用户点了清理却说成功，比报错更糟。
+ */
+export async function deleteSession(id: string): Promise<boolean> {
+  const file = fileOf(id)
+  if (!file) return false
+  try {
+    await fs.unlink(file)
+    return true
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw err
+  }
+}
+
+/**
+ * 清空会话文件，返回删除数量。
+ *
+ * `except` 里的 id 会保留（用于"正在抓包的不删"）。按文件名匹配而不是先解析内容，
+ * 这样列表接口读不出来的损坏文件也能被清掉——"清空全部"就该真的空。
+ * 单个文件删失败不影响其余，只影响计数。
+ */
+export async function clearStoredSessions(except: ReadonlySet<string> = new Set()): Promise<number> {
+  let names: string[]
+  try {
+    names = await fs.readdir(dir())
+  } catch {
+    return 0
+  }
+  let removed = 0
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue
+    const id = name.slice(0, -'.json'.length)
+    if (except.has(id)) continue
+    const file = fileOf(id)
+    if (!file) continue
+    try {
+      await fs.unlink(file)
+      removed += 1
+    } catch {
+      /* 单个失败继续删下一个 */
+    }
+  }
+  return removed
+}
+
+/**
  * 只保留最近 retain 个会话。删除失败的忽略：
  * 磁盘满/权限不足时，宁可多留几个文件也不能让 stop 接口整个失败——
  * 用户已经抓完的数据比"目录整齐"重要得多。

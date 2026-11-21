@@ -14,6 +14,7 @@ const arg = (name, def) => {
   return i > 0 ? process.argv[i + 1] : def
 }
 const PORT = Number(arg('port', 8899))
+const SEED = Number(arg('seed', 0))
 
 const now = () => new Date().toISOString()
 const sessions = new Map()
@@ -158,6 +159,47 @@ const server = http.createServer((req, res) => {
     return json(res, 200, { sessions: [...sessions.values()].map((v) => v.session).reverse() })
   }
 
+  if (p === '/local/capture/purge' && req.method === 'POST') {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    return req.on('end', () => {
+      let parsed = {}
+      try {
+        parsed = JSON.parse(body || '{}')
+      } catch {
+        /* 当作空对象 */
+      }
+      const ids = Array.isArray(parsed.ids) ? parsed.ids : []
+      const targets = parsed.all === true ? [...sessions.keys()] : ids
+      const deleted = []
+      const failed = []
+      for (const id of targets) {
+        const rec = sessions.get(id)
+        if (!rec) {
+          failed.push({ id, reason: '会话不存在' })
+          continue
+        }
+        if (rec.session.status === 'running') {
+          failed.push({ id, reason: '正在抓包，请先停止' })
+          continue
+        }
+        sessions.delete(id)
+        deleted.push(id)
+      }
+      json(res, 200, { deleted, failed })
+    })
+  }
+
+  const del = p.match(/^\/local\/capture\/([^/]+)$/)
+  if (del && req.method === 'DELETE') {
+    const id = del[1]
+    const rec = sessions.get(id)
+    if (!rec) return json(res, 404, { error: 'session not found' })
+    if (rec.session.status === 'running') return json(res, 409, { error: '该会话正在抓包，请先停止再清理' })
+    sessions.delete(id)
+    return json(res, 200, { deleted: [id], failed: [] })
+  }
+
   const m = p.match(/^\/local\/capture\/([^/]+)(\/summary|\/stop|\/stream)?$/)
   if (m) {
     const [, id, sub] = m
@@ -178,6 +220,8 @@ const server = http.createServer((req, res) => {
         'access-control-allow-origin': '*',
       })
       res.write(`data: ${JSON.stringify({ type: 'state', session: rec.session })}\n\n`)
+      // seed 出来的历史会话没有 SSE 订阅集合，这里补齐，否则 /stream 一访问就崩
+      if (!clients.has(id)) clients.set(id, new Set())
       clients.get(id).add(res)
       const ping = setInterval(() => res.write(': ping\n\n'), 15000)
       req.on('close', () => {
@@ -194,6 +238,26 @@ const server = http.createServer((req, res) => {
 
   json(res, 404, { error: 'not found' })
 })
+
+// --seed N：预置 N 个已结束会话，方便调「会话列表」的排版与清理交互
+if (SEED > 0) {
+  for (let i = 0; i < SEED; i += 1) {
+    const id = `capture-seed${String(i).padStart(2, '0')}-mock`
+    const started = new Date(Date.now() - (i + 1) * 37 * 60 * 1000).toISOString()
+    sessions.set(id, {
+      session: {
+        id,
+        url: `https://www.example-site-${i + 1}.com/some/deep/path?with=query&and=more`,
+        status: i === 1 ? 'failed' : 'stopped',
+        startedAt: started,
+        endedAt: new Date(Date.parse(started) + 9000).toISOString(),
+        requestCount: 12 + i * 7,
+        hostCount: 4 + i,
+      },
+      requests: [],
+    })
+  }
+}
 
 server.listen(PORT, () => {
   console.log(`mock capture 已启动: http://127.0.0.1:${PORT}`)

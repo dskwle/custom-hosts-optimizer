@@ -172,21 +172,63 @@
   tr.detail-row .verdict { margin-top: 10px; }
 
   /* ---------- 网页诊断 ---------- */
-  .cap-layout { display: flex; gap: 16px; align-items: stretch; flex-wrap: wrap; margin-bottom: 16px; }
+  .cap-layout {
+    display: grid; gap: 16px; margin-bottom: 16px; align-items: start;
+    grid-template-columns: minmax(320px, 0.78fr) minmax(600px, 1.62fr);
+  }
   .cap-layout > .card { margin-bottom: 0; }
-  .cap-vnc-card { flex: 1 1 380px; min-width: 300px; display: flex; flex-direction: column; }
-  .cap-req-card { flex: 1.6 1 600px; min-width: 340px; display: flex; flex-direction: column; }
+  .cap-vnc-card, .cap-req-card { display: flex; flex-direction: column; min-width: 0; }
+  /* 高度交给宽高比决定：盒子比例与远端 X 屏一致，noVNC 才不会出现上下黑边 */
   .cap-vnc-box {
-    position: relative; height: 440px; background: #1c1c1a;
-    border: 1px solid var(--border); border-radius: 9px; overflow: hidden;
+    position: relative; width: 100%; aspect-ratio: 1600 / 968;
+    background: #1c1c1a; border: 1px solid var(--border); border-radius: 9px; overflow: hidden;
+  }
+  @media (max-width: 1180px) {
+    .cap-layout { grid-template-columns: 1fr; }
   }
   .cap-vnc-box iframe { width: 100%; height: 100%; border: 0; display: block; background: #1c1c1a; }
   .cap-vnc-cover {
-    position: absolute; inset: 0; z-index: 2; padding: 20px; gap: 10px;
+    position: absolute; inset: 0; z-index: 2; padding: 14px; gap: 8px; overflow: auto;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    text-align: center; background: #1c1c1a; color: #b9b7ad; font-size: 13px;
+    text-align: center; background: #1c1c1a; color: #b9b7ad; font-size: 12px; line-height: 1.5;
   }
   .cap-vnc-cover .sub { color: #8b897f; word-break: break-all; }
+  /* ---------- 会话历史面板 ---------- */
+  .cap-hist {
+    border: 1px solid var(--border);
+    border-radius: 9px; overflow: hidden; background: #fff;
+  }
+  .cap-hist-head {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 12px; background: #faf9f6; border-bottom: 1px solid var(--border);
+  }
+  .cap-hist-title { font-size: 13px; font-weight: 600; }
+  .cap-hist-head .spacer { flex: 1; }
+  .cap-hist-pickall { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .cap-hist-list { max-height: 380px; overflow-y: auto; padding-bottom: 6px; }
+  .cap-hist-item {
+    display: grid; grid-template-columns: 20px 1fr auto; gap: 10px; align-items: start;
+    padding: 9px 12px; border-bottom: 1px solid #f5f4f0;
+  }
+  .cap-hist-item > input[type="checkbox"] { margin: 2px 0 0; }
+  .cap-hist-ops { padding-top: 1px; }
+  .cap-hist-item:last-child { border-bottom: none; }
+  .cap-hist-item.is-current { background: #f7f6f1; }
+  .cap-hist-main { min-width: 0; }
+  .cap-hist-l1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+  .cap-hist-time { font-variant-numeric: tabular-nums; }
+  .cap-hist-l2 {
+    margin-top: 3px; font-size: 12px; color: var(--muted);
+    font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .cap-hist-scale { font-size: 12px; color: var(--muted); }
+  .cap-hist-ops { display: flex; gap: 6px; flex-shrink: 0; }
+  .cap-hist-empty { padding: 20px 12px; margin: 0; text-align: center; color: var(--muted); font-size: 13px; }
+  @media (max-width: 720px) {
+    .cap-hist-item { grid-template-columns: 20px 1fr; }
+    .cap-hist-ops { grid-column: 2; justify-content: flex-start; }
+  }
+
   /* 全屏：整块区域铺满视口，Esc 或再点一次退出 */
   .cap-vnc-card.cap-fs {
     position: fixed; inset: 0; z-index: 200; margin: 0;
@@ -199,15 +241,22 @@
     overflow: auto; max-height: 420px; margin-top: 12px;
     border: 1px solid var(--border); border-radius: 9px;
   }
-  .cap-table-wrap table { margin-top: 0; min-width: 560px; font-size: 12px; }
+  .cap-table-wrap table {
+    margin-top: 0; width: 100%; min-width: 560px; font-size: 11.5px; table-layout: fixed;
+  }
+  .cap-table-wrap th, .cap-table-wrap td { padding: 6px 6px; }
+  .cap-table-wrap td.num, .cap-table-wrap th:nth-child(n+4):nth-child(-n+6) { text-align: right; }
   .cap-table-wrap thead th { position: sticky; top: 0; z-index: 1; border-bottom: 1px solid var(--border); }
   .cap-table-wrap th, .cap-table-wrap td { padding: 6px 5px; white-space: nowrap; }
   .cap-table-wrap td { vertical-align: top; }
   .cap-table-wrap td:nth-child(1) { vertical-align: middle; }
-  .cap-host { font-family: var(--mono); font-size: 12px; min-width: 140px; white-space: normal; overflow-wrap: anywhere; }
+  .cap-host {
+    font-family: var(--mono); font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .cap-kinds { color: var(--muted); font-size: 12px; }
   .cap-advice { white-space: normal !important; min-width: 104px; }
-  .cap-advice .cap-reason { color: var(--muted); font-size: 11px; line-height: 1.45; margin-top: 2px; }
+  .cap-advice .cap-reason { color: var(--muted); font-size: 10.5px; line-height: 1.4; margin-top: 2px; }
   .cap-foot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
   .cap-count { color: var(--muted); font-size: 12px; }
   .cap-rule-row {
@@ -435,14 +484,7 @@
         <button id="btnCapStop" disabled>停止</button>
         <span id="capEnv" class="sub"></span>
       </div>
-      <div class="row" style="margin-top:8px">
-        <select id="capSessions"><option value="">当前会话</option></select>
-        <button class="sm" id="btnCapReloadSessions">刷新会话列表</button>
-        <span id="capSessionInfo" class="sub"></span>
-      </div>
-      <p class="sub" id="capHistoryNote" style="display:none;margin:10px 0 0">
-        正在回看历史会话（只读）。历史数据不可再应用，切回「当前会话」后可继续操作。
-      </p>
+      <p class="sub" id="capSessionInfo" style="margin:8px 0 0"></p>
     </div>
 
     <div class="cap-layout">
@@ -487,8 +529,18 @@
         </div>
         <div class="cap-table-wrap" id="capTableWrap" style="display:none">
           <table>
+            <colgroup>
+              <col style="width:28px">
+              <col>
+              <col style="width:76px">
+              <col style="width:66px">
+              <col style="width:78px">
+              <col style="width:44px">
+              <col style="width:66px">
+              <col style="width:136px">
+            </colgroup>
             <thead><tr>
-              <th style="width:30px"></th>
+              <th></th>
               <th>域名</th>
               <th>类型</th>
               <th>状态</th>
@@ -509,6 +561,29 @@
           <button class="danger" id="btnCapBlock" disabled>加入屏蔽(0)</button>
         </div>
         <p class="sub" id="capApplyStatus"></p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>会话历史 <span class="badge gray" id="capHistCount">0</span></h2>
+      <p class="hint">
+        抓过的每一轮都留在这里，最多保留 20 条。回看是只读的，不影响当前抓包。
+      </p>
+      <p class="sub" id="capHistoryNote" style="display:none;margin:0 0 10px">
+        正在回看历史会话（只读），历史数据不可再应用。
+        <button class="sm" id="btnCapBackLive" style="margin-left:8px">回到实时</button>
+      </p>
+      <div class="cap-hist">
+        <div class="cap-hist-head">
+          <label class="cap-hist-pickall"><input type="checkbox" id="capHistAll"> 全选</label>
+          <span class="cap-hist-title" id="capHistHint">共 0 条</span>
+          <span class="spacer"></span>
+          <button class="sm" id="btnCapHistDel" disabled>清理选中</button>
+          <button class="sm" id="btnCapReloadSessions">刷新</button>
+          <button class="sm danger" id="btnCapHistClear" disabled>清空全部</button>
+        </div>
+        <div class="cap-hist-list" id="capHistList"></div>
+        <p class="cap-hist-empty" id="capHistEmpty">还没有历史会话，抓一轮之后会出现在这里</p>
       </div>
     </div>
 
@@ -1817,6 +1892,8 @@ const cap = {
   es: null,
   esTries: 0,
   inited: false,
+  sessions: [],       // 会话历史缓存（含正在跑的）
+  picked: new Set(),  // 待清理的会话 id
 }
 
 /** 抓包接口统一入口：404/502/网络不通都归为「服务未就绪」，不让页面卡死 */
@@ -2078,7 +2155,7 @@ function capAttach(session) {
   el('capVncCard').style.display = ''
   el('capHistoryNote').style.display = 'none'
   el('btnCapStop').disabled = cap.status !== 'running'
-  el('capSessionInfo').textContent = `${session.url || ''} · ${capTime(session.startedAt)}`
+  el('capSessionInfo').textContent = `当前会话开始于 ${capTime(session.startedAt)}`
   if (session.url) el('capUrl').value = session.url
   capRebuildView()
   capRefreshStatus()
@@ -2286,7 +2363,7 @@ function capRowHtml(h) {
 
   return `<tr>
     <td>${selectable ? `<input type="checkbox" data-check="${escAttr(h.host)}"${checked}>` : ''}</td>
-    <td class="cap-host">${escAttr(h.host)}${h.thirdParty ? ' <span class="badge gray" style="font-size:10px">第三方</span>' : ''}</td>
+    <td class="cap-host" title="${escAttr(h.host)}">${escAttr(h.host)}${h.thirdParty ? ' <span class="badge gray" style="font-size:10px">第三方</span>' : ''}</td>
     <td class="cap-kinds" title="${escAttr(kinds.join('/'))}">${escAttr(kindText || '—')}</td>
     <td>${status}</td>
     <td class="num ${capP95Class(p95)}">${fmtMs(p95)}${slow ? ' <span class="bad">慢</span>' : ''}</td>
@@ -2444,22 +2521,154 @@ async function capApply(action) {
 }
 
 /* ---------- 会话历史 ---------- */
+
+/** 会话状态 → 徽标 */
+function capSessionBadge(s) {
+  if (s.status === 'running') return '<span class="badge">进行中</span>'
+  if (s.status === 'failed') return '<span class="badge bad">失败</span>'
+  return '<span class="badge gray">已结束</span>'
+}
+
+function capSessionLabel(s) {
+  return `${capTime(s.startedAt)}｜${s.requestCount || 0} 个请求`
+}
+
+/** 只渲染，不发请求；清理后与回看切换都复用它 */
+function capRenderSessions() {
+  const list = cap.sessions
+  const box = el('capHistList')
+  const empty = el('capHistEmpty')
+
+  el('capHistCount').textContent = String(list.length)
+  if (el('capHistHint')) el('capHistHint').textContent = `共 ${list.length} 条`
+  empty.style.display = list.length ? 'none' : 'block'
+  box.style.display = list.length ? 'block' : 'none'
+
+  box.innerHTML = list.map((s) => {
+    const current = s.id === cap.sessionId && cap.history
+    const picked = cap.picked.has(s.id) ? ' checked' : ''
+    const url = s.url ? escAttr(s.url) : ''
+    return `<div class="cap-hist-item${current ? ' is-current' : ''}">
+      <input type="checkbox" data-pick="${escAttr(s.id)}"${picked}>
+      <div class="cap-hist-main">
+        <div class="cap-hist-l1">
+          <span class="cap-hist-time">${escAttr(capTime(s.startedAt))}</span>
+          ${capSessionBadge(s)}
+          ${current ? '<span class="badge gray">正在回看</span>' : ''}
+          <span class="cap-hist-scale">${s.requestCount || 0} 个请求 · ${s.hostCount || 0} 个域名</span>
+        </div>
+        <div class="cap-hist-l2" title="${url}">${url || '（未记录网址）'}</div>
+      </div>
+      <div class="cap-hist-ops">
+        <button class="sm" data-act="view" data-id="${escAttr(s.id)}"${current ? ' disabled' : ''}>回看</button>
+        <button class="sm danger" data-act="del" data-id="${escAttr(s.id)}">清理</button>
+      </div>
+    </div>`
+  }).join('')
+
+  capSyncHistoryActions()
+}
+
+/** 批量按钮与全选框状态 */
+function capSyncHistoryActions() {
+  const n = cap.sessions.length
+  const picked = cap.picked.size
+  el('btnCapHistDel').disabled = picked === 0
+  el('btnCapHistDel').textContent = picked ? `清理选中(${picked})` : '清理选中'
+  el('btnCapHistClear').disabled = n === 0
+  const all = el('capHistAll')
+  all.checked = n > 0 && picked === n
+  all.disabled = n === 0
+  all.indeterminate = picked > 0 && picked < n
+}
+
 async function capLoadSessions(selectId) {
-  const sel = el('capSessions')
-  const keep = selectId || sel.value || cap.sessionId
   try {
     const d = await capFetch('/local/capture?limit=20')
     const list = d.sessions || []
-    const opts = list.map((s) => {
-      const st = s.status === 'running' ? '进行中' : s.status === 'failed' ? '失败' : '已结束'
-      const label = `${capTime(s.startedAt)} · ${st} · ${s.requestCount || 0} 个请求`
-      return `<option value="${escAttr(s.id)}" title="${escAttr(s.url || '')}">${escAttr(label)}</option>`
-    }).join('')
-    sel.innerHTML = `<option value="">当前会话</option>${opts}`
-    if (keep && list.some((s) => s.id === keep)) sel.value = keep
-    else sel.value = ''
+    cap.sessions = list
+    // 列表里已经没有的 id 从待清理集合剔除，避免"清理选中(3)"实际只删掉 1 个
+    const alive = new Set(list.map((s) => s.id))
+    for (const id of [...cap.picked]) if (!alive.has(id)) cap.picked.delete(id)
+    if (selectId) cap.picked.delete(selectId)
+    capRenderSessions()
   } catch {
-    sel.innerHTML = '<option value="">抓包服务未就绪</option>'
+    cap.sessions = []
+    cap.picked.clear()
+    el('capHistList').innerHTML = ''
+    el('capHistList').style.display = 'none'
+    el('capHistEmpty').style.display = 'block'
+    el('capHistEmpty').textContent = '抓包服务未就绪，无法读取会话历史'
+    el('capHistCount').textContent = '0'
+    if (el('capHistHint')) el('capHistHint').textContent = '共 0 条'
+    capSyncHistoryActions()
+  }
+}
+
+/** 清理结果统一提示 */
+function capAfterDelete(res, verb) {
+  const deleted = (res && res.deleted) || []
+  const failed = (res && res.failed) || []
+  const parts = []
+  if (deleted.length) parts.push(`${verb} ${deleted.length} 个会话`)
+  if (failed.length) {
+    const reason = (failed[0] && failed[0].reason) || '未知原因'
+    parts.push(`${failed.length} 个未清理（${reason}）`)
+  }
+  el('capApplyStatus').textContent = parts.join('，') || '没有会话被清理'
+}
+
+async function capDeleteOne(id) {
+  const s = cap.sessions.find((x) => x.id === id)
+  const label = s ? capSessionLabel(s) : id
+  if (!confirm(`清理会话「${label}」？删除后不可恢复。`)) return
+  try {
+    const res = await capFetch(`/local/capture/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    cap.picked.delete(id)
+    // 删掉的正好是当前回看对象：退回实时，面板不该停在一个已不存在的会话上
+    if (cap.history && cap.sessionId === id) await capBackToLive()
+    await capLoadSessions()
+    capAfterDelete(res, '已清理')
+  } catch (e) {
+    el('capApplyStatus').textContent = `清理失败：${capErrText(e)}`
+  }
+}
+
+async function capDeletePicked() {
+  const ids = [...cap.picked]
+  if (!ids.length) return
+  if (!confirm(`清理选中的 ${ids.length} 个会话？删除后不可恢复。`)) return
+  try {
+    const res = await capFetch('/local/capture/purge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    })
+    cap.picked.clear()
+    if (cap.history && ids.includes(cap.sessionId)) await capBackToLive()
+    await capLoadSessions()
+    capAfterDelete(res, '已清理')
+  } catch (e) {
+    el('capApplyStatus').textContent = `清理失败：${capErrText(e)}`
+  }
+}
+
+async function capDeleteAll() {
+  const n = cap.sessions.length
+  if (!n) return
+  if (!confirm(`清空全部 ${n} 个会话？删除后不可恢复。`)) return
+  try {
+    const res = await capFetch('/local/capture/purge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ all: true }),
+    })
+    cap.picked.clear()
+    if (cap.history) await capBackToLive()
+    await capLoadSessions()
+    capAfterDelete(res, '已清空')
+  } catch (e) {
+    el('capApplyStatus').textContent = `清空失败：${capErrText(e)}`
   }
 }
 
@@ -2485,7 +2694,8 @@ async function capViewHistory(id) {
     ])
     const s = one.session || {}
     cap.liveCount = s.requestCount || 0
-    el('capSessionInfo').textContent = `${s.url || ''} · ${capTime(s.startedAt)} · 历史会话`
+    el('capSessionInfo').textContent = `正在回看：${capTime(s.startedAt)} · ${s.requestCount || 0} 个请求`
+    capRenderSessions()
     capApplySummary(sum.hosts || [])
   } catch (e) {
     el('capApplyStatus').textContent = capErrText(e)
@@ -2497,7 +2707,7 @@ async function capBackToLive() {
   cap.history = false
   el('capVncCard').style.display = ''
   el('capHistoryNote').style.display = 'none'
-  el('capSessions').value = ''
+  capRenderSessions()
   await capAttachLatest()
 }
 
@@ -2639,12 +2849,28 @@ el('capTableWrap').addEventListener('scroll', () => {
   if (w.scrollTop + w.clientHeight < w.scrollHeight - 120) return
   capAppendMore()
 })
-el('capSessions').addEventListener('change', async () => {
-  const id = el('capSessions').value
-  if (!id) return capBackToLive()
-  if (id === cap.sessionId && !cap.history) return
-  await capViewHistory(id)
+el('capHistList').addEventListener('change', (e) => {
+  const id = e.target && e.target.dataset ? e.target.dataset.pick : ''
+  if (!id) return
+  if (e.target.checked) cap.picked.add(id)
+  else cap.picked.delete(id)
+  capSyncHistoryActions()
 })
+el('capHistList').addEventListener('click', (e) => {
+  const btn = e.target && e.target.closest ? e.target.closest('button[data-act]') : null
+  if (!btn) return
+  if (btn.dataset.act === 'view') capViewHistory(btn.dataset.id)
+  else if (btn.dataset.act === 'del') capDeleteOne(btn.dataset.id)
+})
+el('capHistAll').addEventListener('change', (e) => {
+  cap.picked.clear()
+  if (e.target.checked) for (const s of cap.sessions) cap.picked.add(s.id)
+  capRenderSessions()
+})
+el('btnCapHistDel').addEventListener('click', capDeletePicked)
+el('btnCapHistClear').addEventListener('click', capDeleteAll)
+el('btnCapReloadSessions').addEventListener('click', () => capLoadSessions())
+el('btnCapBackLive').addEventListener('click', capBackToLive)
 document.querySelectorAll('.cap-rule-row [data-copy]').forEach((b) => {
   b.addEventListener('click', () => capRuleCopy(b.dataset.copy, b.dataset.name))
 })

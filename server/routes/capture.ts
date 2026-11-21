@@ -17,6 +17,7 @@ import { streamSSE } from 'hono/streaming'
 import type { Bindings } from '../../src/types.ts'
 import { CaptureHttpError, CaptureManager } from '../capture/session.ts'
 import type { CaptureFrame } from '../capture/stream.ts'
+import { clearStoredSessions, deleteSession, listStoredSessions } from '../capture/store.ts'
 import { probeDomain } from '../probe.ts'
 import { ALL_DOMAINS } from '../../src/constants.ts'
 import { addCustomDomain, getCustomDomains, removeCustomDomain } from '../../src/services/hosts.ts'
@@ -96,6 +97,83 @@ export function createCaptureRoutes(getEnv: () => Bindings, getCdpUrl: () => str
       return c.json({ session })
     } catch (err) {
       return fail(c, err)
+    }
+  })
+
+  // ---------------------------------------------------------------- 会话清理
+
+  /**
+   * 清空/批量清理。放在 `/:id` 之前无所谓（方法不同），但语义上属于"会话集合"。
+   *
+   * 正在抓包的会话一律拒绝：它还在往磁盘写，删了会让 stop 之后的落盘把文件又写回来，
+   * 用户看到"删了又出现"。让调用方先停再删，行为可预期。
+   */
+  routes.post('/purge', async (c) => {
+    const body = (await c.req.json().catch(() => null)) as
+      | { ids?: unknown; all?: unknown }
+      | null
+    const wantAll = body?.all === true
+    const ids = Array.isArray(body?.ids)
+      ? body.ids.filter((x): x is string => typeof x === 'string')
+      : []
+
+    if (!wantAll && ids.length === 0) {
+      return c.json({ error: '请指定要清理的会话（ids），或传 all=true 清空全部' }, 400)
+    }
+
+    // 运行中的会话集合：manager.list 会把 live 与磁盘合并，status=running 即 live
+    const running = new Set(
+      (await manager.list(1000)).filter((s) => s.status === 'running').map((s) => s.id),
+    )
+
+    const deleted: string[] = []
+    const failed: Array<{ id: string; reason: string }> = []
+
+    if (wantAll) {
+      // 一次扫目录按文件名删，保留运行中的，损坏文件也一并清掉
+      const keep = running
+      const storedIds = new Set(
+        (await listStoredSessions(Number.MAX_SAFE_INTEGER)).map((s) => s.id),
+      )
+      const removed = await clearStoredSessions(keep)
+      for (const id of storedIds) {
+        if (!keep.has(id)) deleted.push(id)
+      }
+      // removed 可能比 deleted 多（损坏文件没有 id 可报），差额记在 failed 之外不体现
+      for (const id of keep) failed.push({ id, reason: '正在抓包，请先停止' })
+      c.header('Cache-Control', 'no-store')
+      return c.json({ deleted, failed, removed })
+    } else {
+      for (const id of ids) {
+        if (running.has(id)) {
+          failed.push({ id, reason: '正在抓包，请先停止' })
+          continue
+        }
+        try {
+          if (await deleteSession(id)) deleted.push(id)
+          else failed.push({ id, reason: '会话不存在' })
+        } catch (err) {
+          failed.push({ id, reason: err instanceof Error ? err.message : String(err) })
+        }
+      }
+    }
+
+    c.header('Cache-Control', 'no-store')
+    return c.json({ deleted, failed })
+  })
+
+  /** 删除单个会话。路径参数直接进文件名，store 里已做 id 白名单校验 */
+  routes.delete('/:id', async (c) => {
+    const id = c.req.param('id')
+    const running = (await manager.list(1000)).some((s) => s.id === id && s.status === 'running')
+    if (running) return c.json({ error: '该会话正在抓包，请先停止再清理' }, 409)
+    try {
+      const ok = await deleteSession(id)
+      if (!ok) return c.json({ error: 'session not found' }, 404)
+      c.header('Cache-Control', 'no-store')
+      return c.json({ deleted: [id], failed: [] })
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
     }
   })
 

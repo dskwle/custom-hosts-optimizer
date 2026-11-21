@@ -100,6 +100,8 @@ p95     = 对排序后的耗时取 95% 分位（不足 1 条时返回该值）
 | GET | `/:id/summary` | — | `{sessionId: string, hosts: HostSummary[]}` |
 | POST | `/:id/stop` | — | `{session: CaptureSession}` |
 | GET | `/:id/stream` | — | SSE，见 §3 |
+| DELETE | `/:id` | — | `{deleted: string[], failed: []}`；不存在 404，运行中 409 |
+| POST | `/purge` | `{ids?: string[], all?: boolean}` | `{deleted: string[], failed: [{id, reason}], removed?: number}`；运行中的跳过 |
 | POST | `/apply` | `{hosts: string[], action: 'accel' \| 'block'}` | `{added: string[], skipped: {domain,reason}[], failed: {domain,error}[]}` |
 
 错误约定：
