@@ -237,7 +237,18 @@ root.post("/local/refresh", async (c) => {
               if (consecutive === 1) {
                 console.log(`[local/refresh] ${domain} 首次失败（${r.sni.verdict}），进入后台重试队列`)
               }
+            } else if (!r.sni && r.uniqueIpCount > 0) {
+              // 跑到了探测但没出 SNI 结论（少见）：按 unknown 计，交给后台重试
+              const consecutive = await recordFailure(domain, {
+                error: `${r.uniqueIpCount} 个候选 IP 均无法完成 TLS 握手`,
+                verdict: "unknown",
+              })
+              if (consecutive === 1) {
+                console.log(`[local/refresh] ${domain} 首次失败（无 SNI 结论），进入后台重试队列`)
+              }
             }
+            // DNS 完全解析不出（uniqueIpCount === 0）不计入：域名本身有问题，
+            // 每分钟重测也不会有结果，不该占着队列。
 
             // 失败原因：优先取 SNI 结论，否则汇总 TLS 失败原因
             let error: string | undefined

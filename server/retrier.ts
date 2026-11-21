@@ -53,12 +53,21 @@ export function retrierStats(): RetrierStats {
   return { ...stats }
 }
 
-/** 是否该把这次失败计入「连续失败」：只有 SNI 类失败才值得累计 */
-function countsAsSniFailure(verdict?: string): boolean {
-  // sni-blocked 之外，unknown（含超时）也累计：
-  // 它同样是"没测通"，只是暂时不能据此判死；判死还要看 shouldBlocklist 的
-  // verdict === 'sni-blocked' 条件，所以这里放宽不会误封。
-  return verdict === 'sni-blocked' || verdict === 'unknown'
+/**
+ * 是否该把这次失败计入「连续失败」。
+ *
+ * 计入的条件是「探测确实跑到了 SNI 判定阶段」：
+ *   - sni-blocked：真实阻断，累计（到阈值才判死）
+ *   - unknown：含超时，同样没测通，累计但永不判死（见 shouldBlocklist）
+ *
+ * 不计入的是「压根没连上目标」的情况：DNS 解析不出（uniqueIpCount === 0）、
+ * 全部候选 TCP 不通（tcp-blocked）。这类是环境或域名本身的问题，
+ * 让它累计只会把 DNS 失效的域名也拖进队列、每分钟白测一次。
+ */
+function shouldCountFailure(verdict: string | undefined, uniqueIpCount: number): boolean {
+  if (verdict === 'sni-blocked' || verdict === 'unknown') return true
+  // 有候选 IP 但都没有 SNI 结论（极少见），说明跑过了探测，按 unknown 处理
+  return verdict === undefined && uniqueIpCount > 0
 }
 
 /**
@@ -107,8 +116,10 @@ export async function runRetryRound(
           continue
         }
 
-        if (!countsAsSniFailure(verdict)) {
-          // TCP 不通 / DNS 失败属于环境问题，不该让域名背锅：既不累计也不判死
+        if (!shouldCountFailure(verdict, probe.uniqueIpCount)) {
+          // DNS 解析不出 / TCP 全不通：属于环境或域名本身的问题，
+          // 不累计也不判死；清掉已有计数，避免这类域名长期占着队列被反复白测。
+          await clearFailure(domain)
           continue
         }
 
