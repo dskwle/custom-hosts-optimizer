@@ -7,15 +7,17 @@
 #
 # 用法：
 #   ./scripts/orch/capture-smoke.sh            跑完自动清理（只清 capture 的两个容器）
+#
+# 断言三条：noVNC 网页 200 / CDP 是 Chrome 且非 Headless / CDP 只监听 loopback。
 #   ./scripts/orch/capture-smoke.sh --keep     跑完保留容器，方便人工看 noVNC 画面
 #
-# 环境变量：CAPTURE_CDP_PORT(9222) / CAPTURE_NOVNC_PORT(6080) / SMOKE_TIMEOUT(90)
+# 环境变量：CAPTURE_CDP_PORT(9223) / CAPTURE_NOVNC_PORT(6080) / SMOKE_TIMEOUT(90)
 # 没有 docker 或 docker 不可用时打印跳过并 exit 0（本地 Mac 开发机上不阻塞门禁）。
 set -uo pipefail
 
 cd "$(dirname "$0")/../.." || exit 1
 
-CDP_PORT=${CAPTURE_CDP_PORT:-9222}
+CDP_PORT=${CAPTURE_CDP_PORT:-9223}
 NOVNC_PORT=${CAPTURE_NOVNC_PORT:-6080}
 WAIT_SECONDS=${SMOKE_TIMEOUT:-90}
 KEEP=0
@@ -102,6 +104,25 @@ else
     FAIL=1
   else
     ok "不是 headless 模式"
+  fi
+
+  # 断言三：CDP 必须只监听 loopback。
+  # 防止以后有人图省事把 chromium 改成 bridge 网络再绑 0.0.0.0，把浏览器控制权
+  # 暴露给整个局域网。容器内 /proc/net/tcp 的 local_address 里 0100007F = 127.0.0.1，
+  # 00000000 = 0.0.0.0。
+  hexport=$(printf '%04X' "$CDP_PORT")
+  listen=$(docker exec custom-hosts-chromium sh -c "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null" 2>/dev/null \
+    | awk -v p=":${hexport}" '$2 ~ p"$" {print $2}' | head -1)
+  if [ -z "$listen" ]; then
+    bad "容器内没找到监听 ${CDP_PORT} 的 socket（hex ${hexport}），CDP 可能没起来"
+    FAIL=1
+  else
+    addr=${listen%%:*}
+    case "$addr" in
+      0100007F) ok "CDP 只监听容器 loopback（${listen}）" ;;
+      00000000|"") bad "CDP 监听了所有网卡（${listen}），局域网可直接控制浏览器；必须用 host 网络 + loopback" ; FAIL=1 ;;
+      *) bad "CDP 监听地址异常：${listen}（期望 0100007F = 127.0.0.1）" ; FAIL=1 ;;
+    esac
   fi
 fi
 
