@@ -13,6 +13,7 @@ import { serve } from "@hono/node-server"
 import { Hono } from "hono"
 import { readFile } from "node:fs/promises"
 import { timingSafeEqual } from "node:crypto"
+import net from "node:net"
 import path from "node:path"
 import { FileKV } from "./kv.js"
 import {
@@ -1079,6 +1080,50 @@ const fakeCtx = {
   },
 }
 
+// ---------------------------------------------------------------- noVNC 同源内嵌
+/**
+ * 把 noVNC 的"遥控器"前端放在自己服务里，而不是 iframe 直连 :6080。
+ *
+ * 这样做解决三件事：对外只剩 8788 一个端口；noVNC 静态页与画面数据都经过
+ * 同一套 Basic Auth；iframe 同源，不用再维护 vncPort 覆盖与跨端口缓存穿透。
+ *
+ * 注意：noVNC 前端不是纯静态——它要靠 WebSocket 连到 websockify 才能拿到画面。
+ * WebSocket 握手不走 Hono 中间件，所以下面的 upgrade 里要自己校验 Authorization。
+ */
+const NOVNC_DIR = path.resolve(process.cwd(), "public/novnc")
+const NOVNC_UPSTREAM_PORT = Number(process.env.CAPTURE_NOVNC_UPSTREAM_PORT || 6080)
+
+const NOVNC_MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".wasm": "application/wasm",
+}
+
+root.get("/novnc/*", async (c) => {
+  const rel = c.req.path.slice("/novnc/".length) || "vnc.html"
+  const file = path.resolve(NOVNC_DIR, rel)
+  // 防路径穿越：resolve 之后必须仍在目录内
+  if (file !== NOVNC_DIR && !file.startsWith(NOVNC_DIR + path.sep)) {
+    return c.text("not found", 404)
+  }
+  try {
+    const body = await readFile(file)
+    c.header("Content-Type", NOVNC_MIME[path.extname(file).toLowerCase()] || "application/octet-stream")
+    c.header("Cache-Control", "no-cache")
+    return c.body(body)
+  } catch {
+    return c.text("noVNC 静态资源未安装（请用 Docker 运行，或执行 scripts/orch/vendor-novnc.sh）", 404)
+  }
+})
+
 // 兜底：/local/* 之外的请求交给原应用（hosts / hosts.json / api）。
 // 认证中间件已随管理后台一并移除，本地不再需要补凭据。
 root.all("*", (c) => worker.fetch(c.req.raw, env as any, fakeCtx as any))
@@ -1091,7 +1136,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
   })
 }
 
-serve({ fetch: (req) => root.fetch(req, env), port: PORT, hostname: HOST }, (info) => {
+const server = serve({ fetch: (req) => root.fetch(req, env), port: PORT, hostname: HOST }, (info) => {
   console.log(`\n  本地运行时已启动: http://${HOST}:${info.port}`)
   console.log(`  域名总数: ${ALL_DOMAINS.length} / ${SITE_GROUPS.length} 个分组`)
   console.log(`  KV 存储目录: data/kv\n`)
@@ -1100,4 +1145,54 @@ serve({ fetch: (req) => root.fetch(req, env), port: PORT, hostname: HOST }, (inf
   console.log(`    curl -X POST "http://${HOST}:${info.port}/local/refresh?group=npm" 只刷新指定组`)
   console.log(`    curl "http://${HOST}:${info.port}/local/probe?domain=api.github.com"  探测单个域名`)
   console.log(`    curl "http://${HOST}:${info.port}/local/groups"                  查看分组\n`)
+})
+
+/**
+ * WebSocket 升级：把 /novnc/websockify 原始字节转发到 127.0.0.1:6080/websockify。
+ *
+ * 不做协议解析、不引 WS 库：websockify 本身就是 WS 服务端，把客户端握手的
+ * 字节原样搬过去，之后两边 socket 互相 pipe 即可。app 是 host 网络，所以上游
+ * 用 loopback 就能连到 novnc 容器发布出来的端口。
+ */
+server.on("upgrade", (req, socket, head) => {
+  let pathname = "/"
+  let search = ""
+  try {
+    const u = new URL(req.url || "/", "http://localhost")
+    pathname = u.pathname
+    search = u.search
+  } catch {
+    socket.destroy()
+    return
+  }
+  if (pathname !== "/novnc/websockify") {
+    socket.destroy()
+    return
+  }
+  if (!AUTH_DISABLED && !basicAuthOk(req.headers.authorization)) {
+    socket.write(
+      'HTTP/1.1 401 Unauthorized\r\n' +
+        'WWW-Authenticate: Basic realm="custom-hosts admin", charset="UTF-8"\r\n' +
+        'Connection: close\r\n\r\n',
+    )
+    socket.destroy()
+    return
+  }
+
+  const upstream = net.connect(NOVNC_UPSTREAM_PORT, "127.0.0.1")
+  upstream.on("connect", () => {
+    const headers = Object.entries(req.headers)
+      .filter(([k]) => !["host", "connection", "upgrade", "content-length"].includes(k))
+      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v ?? ""}`)
+    const raw =
+      `GET /websockify${search} HTTP/1.1\r\n` +
+      `Host: 127.0.0.1:${NOVNC_UPSTREAM_PORT}\r\n` +
+      headers.map((h) => h + "\r\n").join("") +
+      "Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+    upstream.write(raw)
+    if (head.length) upstream.write(head)
+    socket.pipe(upstream).pipe(socket)
+  })
+  upstream.on("error", () => socket.destroy())
+  socket.on("error", () => upstream.destroy())
 })

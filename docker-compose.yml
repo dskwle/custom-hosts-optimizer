@@ -119,9 +119,10 @@ services:
       RUN_FLUXBOX: "yes"
       TZ: Asia/Shanghai
     ports:
-      # noVNC 网页：局域网可见。该镜像没有任何登录校验，
-      # 局域网以外访问必须由前面一层反向代理加认证（见 docs/deploy-capture.md §4）。
-      - "${CAPTURE_NOVNC_PORT:-6080}:8080"
+      # noVNC 的静态页与 websockify 只发布到宿主 loopback：
+      # 对外统一由 app 的 /novnc/* 提供（同源、带 Basic Auth、含 WS 升级转发）。
+      # 直接发布到 0.0.0.0 会绕过登录，等于局域网里谁都能接管浏览器。
+      - "127.0.0.1:${CAPTURE_NOVNC_PORT:-6080}:8080"
       # X11：只发布到宿主 loopback，给 host 网络的 chromium 用。
       # 写成 "6000:6000" 会把 X 显示暴露给局域网里任何人 —— 等于谁都能接管浏览器。
       - "127.0.0.1:${CAPTURE_X11_PORT:-6000}:6000"

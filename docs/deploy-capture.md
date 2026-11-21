@@ -154,30 +154,37 @@ command:
 
 ---
 
-## 4. noVNC 的访问与鉴权（重要）
+## 4. noVNC 的访问与鉴权（同源内嵌）
 
-- 浏览器打开：`http://<NAS-IP>:6080/vnc.html?autoconnect=1&resize=scale&reconnect=1`
-- 该镜像**没有任何登录校验**。谁能连上 6080，谁就能操作这个 Chromium（等于在 NAS 内网里有一个
-  "能上网的浏览器"），也能通过浏览器下载/上传文件。
-- 因此：**只在可信局域网使用**；要远程访问，前面必须加一层带认证的反代。反代需要处理 WebSocket 升级：
+**架构**：noVNC 的静态前端（约 1 MB，精简掉了测试与 IE polyfill）放在 `public/novnc/`，
+由 `app` 的 `/novnc/*` 直接托管；`novnc` 容器只保留 Xvfb / x11vnc / websockify，
+8080 只发布到宿主 `127.0.0.1:6080`。
 
-```nginx
-# nginx 片段：/vnc/ 反代到 noVNC，外面套 Basic Auth
-location /vnc/ {
-    auth_basic           "capture";
-    auth_basic_user_file /etc/nginx/.htpasswd;
-    proxy_pass           http://127.0.0.1:6080/;
-    proxy_http_version   1.1;
-    proxy_set_header     Upgrade $http_upgrade;   # noVNC 走 WebSocket
-    proxy_set_header     Connection "upgrade";
-    proxy_set_header     Host $host;
-    proxy_read_timeout   3600s;
-}
+```
+浏览器 ── HTTP ──> app:8788/novnc/vnc.html        （Basic Auth）
+       ── WS   ──> app:8788/novnc/websockify       （Basic Auth，握手单独校验）
+                        │ 原始字节转发
+                        v
+                 127.0.0.1:6080/websockify  → x11vnc → Xvfb → Chromium
 ```
 
-- 不要把 noVNC 挂在 `app` 的 `/local/*` 下面省鉴权：`app` 的 Basic Auth 只管 HTTP 请求，
-  noVNC 的 WebSocket 握手会绕过它，而且要在 Hono 里做 WS 升级代理，成本比在反代上加两行高得多。
-  **待主 agent 拍板**（见报告"待确认问题"）。
+- 控制台里的 iframe 是**同源相对路径** `/novnc/vnc.html?path=novnc/websockify&...`，
+  不再有 `vncPort` 覆盖，也不再有"文档写 8888 / 代码写 6080"的口径分歧。
+- 对外只有一个端口 8788；静态页、WebSocket 数据都经过同一套登录校验。
+- `server/index.ts` 里 `serve()` 返回的 Node server 注册了 `upgrade` 监听：
+  校验 `Authorization` 后把握手字节原样转发到 loopback，**不解析 RFB、不引 WS 库**。
+  注意 Hono 的中间件只作用于 HTTP 请求，WS 握手必须自己校验，否则会绕过鉴权。
+- `?vnc=<完整地址>` 仍保留，仅用于临时连外部 noVNC 排障。
+
+**升级 noVNC 前端**：资源是从运行中的镜像复制的精简集，版本与
+`CAPTURE_NOVNC_IMAGE` 对齐。升级镜像后执行：
+
+```bash
+./scripts/orch/vendor-novnc.sh       # 从容器重新同步 public/novnc/
+```
+
+本地不用 Docker 直接 `npm run local` 时，若 `public/novnc/` 不存在，
+`/novnc/*` 会返回 404 提示——这是预期的，抓包本来就需要容器。
 
 ---
 

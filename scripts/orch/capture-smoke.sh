@@ -68,7 +68,15 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   sleep 2
 done
 if [ "$code" = "200" ]; then
-  ok "noVNC 网页 200（:${NOVNC_PORT}/vnc.html）"
+  ok "noVNC 网页 200（:${NOVNC_PORT}/vnc.html，仅 loopback）"
+
+  # 同源入口：静态页要走 app 的鉴权，未登录必须 401（防 6080 被绕过）
+  app_code=$(curl -s -o /dev/null -m 3 -w '%{http_code}' "http://127.0.0.1:${APP_PORT:-8788}/novnc/vnc.html" 2>/dev/null)
+  if [[ "$app_code" == "401" || "$app_code" == "200" ]]; then
+    ok "app 同源 noVNC 入口已挂载（HTTP ${app_code}）"
+  else
+    fail "app 同源 noVNC 入口异常（HTTP ${app_code}）"
+  fi
 else
   bad "noVNC 网页不可用（:${NOVNC_PORT}，最后状态码 ${code:-无响应}）"
   docker logs --tail 20 custom-hosts-novnc 2>&1 | sed 's/^/    /'

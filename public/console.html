@@ -510,9 +510,9 @@
           <button class="sm" id="btnCapVncRetry">重试</button>
         </h2>
         <p class="hint" style="margin-bottom:10px">
-          画面来自容器内的 Chromium（noVNC），地址 <span class="mono" id="capVncUrl"></span><br>
+          画面来自容器内的 Chromium，前端已内嵌在本服务（<span class="mono" id="capVncUrl"></span>）。<br>
           <span style="font-size:11px">
-            直连发布端口，无登录校验，只在可信局域网内使用；远程访问需前置带认证的反代。
+            同源经由控制台，网页与画面数据都经过登录校验，对外不再暴露 6080。
             精简镜像可能缺中文字体（页面中文显示方块，不影响抓包结果）；单实例，同一时刻只有一块屏幕。
           </span>
         </p>
@@ -673,6 +673,14 @@ document.querySelectorAll('.tab').forEach((tab) => {
 document.querySelectorAll('.tab-content').forEach((c) => {
   c.style.display = c.id === 'hosts-tab' ? 'block' : 'none'
 })
+// ?tab=capture 之类的深链：便于直接分享/排障，不用每次手动点页签。
+// 必须等整段脚本跑完再点：cap 等状态是后面 const 声明的，
+// 在这里同步 click 会撞上暂时性死区，页签切换了但初始化抛错。
+setTimeout(() => {
+  const want = new URLSearchParams(location.search).get('tab')
+  const target = want && document.querySelector(`.tab[data-tab="${CSS.escape(want)}"]`)
+  if (target) target.click()
+}, 0)
 
 /* ---------- 分组下拉 ---------- */
 async function loadGroups() {
@@ -1984,8 +1992,8 @@ async function recheckBlocked() {
 // （node scripts/mock-capture.mjs --port 8899），其余接口仍然走 API 常量。
 const CAP_MOCK = new URLSearchParams(location.search).get('captureMock')
 const CAP = CAP_MOCK ? `http://127.0.0.1:${CAP_MOCK}` : API
-// noVNC 地址：默认当前主机的 6080；?vncPort=8888 只换端口，?vnc=<完整地址> 整体覆盖
-const CAP_VNC_PORT = new URLSearchParams(location.search).get('vncPort') || '6080'
+// noVNC 前端已内嵌到本服务：同源 /novnc/*，经 Basic Auth，WS 也走 8788。
+// 只保留 ?vnc=<完整地址> 作为排障时的整体覆盖（比如临时连外部 noVNC）。
 const CAP_VNC_URL = new URLSearchParams(location.search).get('vnc')
 const CAP_CHUNK = 200
 const CAP_APPLY_BATCH = 50   // 后端 /apply 单次上限，超过会 400（每个 accel 域名要现场 probe）
@@ -2097,8 +2105,9 @@ function capRefreshStatus() {
 /* ---------- noVNC ---------- */
 function capVncTarget() {
   if (CAP_VNC_URL) return CAP_VNC_URL
-  const host = location.hostname || '127.0.0.1'
-  return `http://${host}:${CAP_VNC_PORT}/vnc.html?autoconnect=1&resize=scale&reconnect=1`
+  // path 是 noVNC 用来拼 ws://<当前 host:port>/<path> 的参数。
+  // 必须指向 /novnc/websockify：服务端在那里做鉴权 + 字节转发到 websockify。
+  return '/novnc/vnc.html?path=novnc/websockify&autoconnect=1&resize=scale&reconnect=1'
 }
 
 function capVncCover(html) {
@@ -2174,8 +2183,8 @@ function capVncFail(url) {
   const cover = capVncCover(
     `<div>连接不上内嵌浏览器</div>
      <div class="sub mono">${escAttr(url)}</div>
-     <div class="sub">确认 noVNC 容器已启动、6080 端口可达（CAPTURE_NOVNC_PORT 可改）。<br>
-       也可用 <code>?vnc=&lt;完整地址&gt;</code> 或 <code>?vncPort=&lt;端口&gt;</code> 覆盖地址。</div>
+     <div class="sub">确认 novnc 容器已启动、宿主 127.0.0.1:6080 可达（CAPTURE_NOVNC_PORT 可改）。<br>
+       也可用 <code>?vnc=&lt;完整地址&gt;</code> 临时指向外部 noVNC 排障。</div>
      <button class="sm" id="capVncRetryInline">重试</button>`
   )
   cover.querySelector('#capVncRetryInline').addEventListener('click', () => capVncLoad(true))

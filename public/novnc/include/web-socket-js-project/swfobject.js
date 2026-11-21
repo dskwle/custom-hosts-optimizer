@@ -1,0 +1,1 @@
+../../../websockify/include/web-socket-js/swfobject.js

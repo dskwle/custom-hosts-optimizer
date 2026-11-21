@@ -285,7 +285,7 @@ bump     → katabump.com / control.katabump.com …（内置加速）
 
 ### 网页诊断（内嵌抓包）
 
-左侧是容器里的 Chromium（通过 noVNC 投屏），右边实时列出它发出的每个请求。抓包由 CDP 完成，
+左侧是容器里的 Chromium（noVNC 前端已内嵌在本服务，同源经 Basic Auth 投屏），右边实时列出它发出的每个请求。抓包由 CDP 完成，
 能看到跨域 iframe、XHR、静态资源的耗时分解，但拿不到响应体（不需要 MITM 证书）。
 
 判定口径：`TTFB > 5s` 或 `总耗时 > 5s` 记慢；`ERR_TIMED_OUT` / 连接重置记失败；缓存命中的请求只计数不计耗时。
@@ -308,7 +308,8 @@ bump     → katabump.com / control.katabump.com …（内置加速）
 
 > 抓包需要额外的两个容器，默认不启动：
 > `docker compose --profile capture up -d`（Chromium 约 122MB 空闲内存，noVNC 约 107MB）。
-> CDP 只监听宿主 `127.0.0.1:9223`，noVNC 在 `6080`，X11 在 `127.0.0.1:6000`。
+> CDP 只监听宿主 `127.0.0.1:9223`；noVNC 的 8080 只发布到 `127.0.0.1:6080`，
+> 对外统一由 `/novnc/*` 提供（网页与 WebSocket 都走 8788 并经过登录校验）；X11 在 `127.0.0.1:6000`。
 
 ## 工作方式
 
