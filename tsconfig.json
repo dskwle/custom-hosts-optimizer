@@ -6,6 +6,10 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
+    // scripts/check.sh 用 node --experimental-strip-types 直接跑 *.test.ts，
+    // Node 的 ESM 解析要求写全扩展名（./hosts.ts），因此需要放开这个限制。
+    // noEmit 已开启，不会把 .ts 后缀带进构建产物。
+    "allowImportingTsExtensions": true,
     "lib": ["ESNext"],
     "types": ["node"],
     // src/services/hosts.ts 用到了 Workers 的 cloudflare:sockets，
