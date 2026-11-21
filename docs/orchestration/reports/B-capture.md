@@ -2,7 +2,7 @@
 
 - **结论**：可合并（新增 7 个端点，契约零字段偏差；仅剩主 agent 的挂载行与 NAS 真实环境验收）
 - **Lane / Owner**：B / agent-B
-- **分支 / 基线**：`feat/B-capture` @ `713ecfd`（从 `integration/capture@9a3796d` 切出）
+- **分支 / 基线**：`feat/B-capture` @ `7ca3a5e`（从 `integration/capture@9a3796d` 切出，已 rebase 到含 A/C/D/E 的最新基线）
 - **状态**：REPORTED
 - **报告时间**：2026-11-21 11:29
 
