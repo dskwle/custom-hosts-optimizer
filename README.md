@@ -79,7 +79,7 @@ npm run local
 命令行方式：
 
 ```bash
-# 首次生成数据（232 个域名，约 60 秒）
+# 首次生成数据（234 个域名，约 60 秒）
 curl -X POST http://127.0.0.1:8788/local/refresh
 
 # 之后直接取 hosts
@@ -404,14 +404,14 @@ data/
 
 ## 域名分组
 
-232 个域名分 15 组，定义在 `src/constants.ts` 的 `SITE_GROUPS`：
+234 个域名分 15 组，定义在 `src/constants.ts` 的 `SITE_GROUPS`：
 
 | 分组 | 数量 | 覆盖 |
 |---|---|---|
 | `github` | 35 | GitHub 主站、Raw、头像、Actions、Release |
 | `game` | 29 | Rockstar、Epic、Battle.net、EA、Ubisoft、Riot |
 | `dev` | 22 | PyPI、Maven、Go、Rust、Conda、VS Code |
-| `web` | 23 | 必应、微软账户、Edge、DeepL、验证码、网盘、短链、IP 检测 |
+| `web` | 25 | 必应、微软账户、Edge、DeepL、验证码、网盘、短链、IP 检测 |
 | `microsoft` | 28 | 微软主站、账号、Office 365、Outlook、Teams、Windows Update、Store、Azure、VS、Xbox |
 | `netflix` | 13 | 主站、播放 API、资源 CDN、fast.com 测速 |
 | `steam` | 11 | 商店、社区、CDN 静态资源 |

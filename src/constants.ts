@@ -213,6 +213,8 @@ export const SITE_GROUPS: SiteGroup[] = [
       "cdn.staticstack.net",
       "ippure.com",
       "www.ippure.com",
+      "kpkuang.us",
+      "www.kpkuang.us",
     ],
   },
   {
