@@ -451,7 +451,11 @@
           <button class="sm" id="btnCapVncRetry">重试</button>
         </h2>
         <p class="hint" style="margin-bottom:10px">
-          画面来自容器内的 Chromium（noVNC），地址 <span class="mono" id="capVncUrl"></span>
+          画面来自容器内的 Chromium（noVNC），地址 <span class="mono" id="capVncUrl"></span><br>
+          <span style="font-size:11px">
+            直连发布端口，无登录校验，只在可信局域网内使用；远程访问需前置带认证的反代。
+            精简镜像可能缺中文字体（页面中文显示方块，不影响抓包结果）；单实例，同一时刻只有一块屏幕。
+          </span>
         </p>
         <div class="cap-vnc-box" id="capVncBox"></div>
       </div>
@@ -1912,16 +1916,18 @@ function capVncCover(html) {
   return div
 }
 
-function capVncLoad() {
+function capVncLoad(bust) {
   const box = el('capVncBox')
-  const url = capVncTarget()
-  el('capVncUrl').textContent = url
+  // 重试时带一个随机参数，绕过浏览器对整页的缓存（noVNC 前端是静态页，缓存住会一直连不上）
+  const base = capVncTarget()
+  const url = bust ? `${base}${base.includes('?') ? '&' : '?'}_t=${Date.now()}` : base
+  el('capVncUrl').textContent = base
   el('capVncBadge').textContent = '连接中'
   el('capVncBadge').className = 'badge gray'
   box.innerHTML = ''
 
   const cover = capVncCover(
-    `<div>正在连接内嵌浏览器…</div><div class="sub mono">${escAttr(url)}</div>`
+    `<div>正在连接内嵌浏览器…</div><div class="sub mono">${escAttr(base)}</div>`
   )
   cover.style.pointerEvents = 'none'
 
@@ -1930,7 +1936,7 @@ function capVncLoad() {
   const probe = CAP_VNC_URL ? Promise.resolve(true) : capVncReachable(url)
   probe.then((ok) => {
     if (!ok) {
-      capVncFail(url)
+      capVncFail(base)
       return
     }
     const frame = document.createElement('iframe')
@@ -1940,7 +1946,7 @@ function capVncLoad() {
     const timer = setTimeout(() => {
       if (settled) return
       settled = true
-      capVncFail(url)
+      capVncFail(base)
     }, 8000)
     frame.addEventListener('load', () => {
       if (settled) return
@@ -1971,10 +1977,11 @@ function capVncFail(url) {
   const cover = capVncCover(
     `<div>连接不上内嵌浏览器</div>
      <div class="sub mono">${escAttr(url)}</div>
-     <div class="sub">确认 noVNC 已启动、端口可达；也可用 <code>?vnc=&lt;完整地址&gt;</code> 或 <code>?vncPort=&lt;端口&gt;</code> 覆盖地址。</div>
+     <div class="sub">确认 noVNC 容器已启动、6080 端口可达（CAPTURE_NOVNC_PORT 可改）。<br>
+       也可用 <code>?vnc=&lt;完整地址&gt;</code> 或 <code>?vncPort=&lt;端口&gt;</code> 覆盖地址。</div>
      <button class="sm" id="capVncRetryInline">重试</button>`
   )
-  cover.querySelector('#capVncRetryInline').addEventListener('click', capVncLoad)
+  cover.querySelector('#capVncRetryInline').addEventListener('click', () => capVncLoad(true))
 }
 
 function capVncFullscreen() {
@@ -2209,11 +2216,13 @@ async function capRunSummary() {
 function capApplySummary(hosts) {
   cap.hosts = hosts
   cap.liveCount = cap.hosts.reduce((a, h) => a + (h.requests || 0), 0)
+  // proxy 表示改 hosts 无效，不参与勾选
+  const pickable = (h) => h.verdict !== 'proxy'
   if (!cap.userPicked) {
     // 首次拿到数据时按服务端建议预选
-    cap.selected = new Set(cap.hosts.filter((h) => h.suggested).map((h) => h.host))
+    cap.selected = new Set(cap.hosts.filter((h) => h.suggested && pickable(h)).map((h) => h.host))
   } else {
-    const alive = new Set(cap.hosts.map((h) => h.host))
+    const alive = new Set(cap.hosts.filter(pickable).map((h) => h.host))
     for (const h of [...cap.selected]) if (!alive.has(h)) cap.selected.delete(h)
   }
   capRebuildView()
@@ -2249,7 +2258,9 @@ function capRebuildView() {
 }
 
 function capRowHtml(h) {
-  const checked = cap.selected.has(h.host) ? ' checked' : ''
+  // verdict=proxy 表示改 hosts 无效，C 明确要求不给勾选框；其余行（含 ignore/unknown）仍可手选
+  const selectable = h.verdict !== 'proxy'
+  const checked = selectable && cap.selected.has(h.host) ? ' checked' : ''
   const slow = capIsSlow(h)
   const p95 = h.p95TotalMs != null ? h.p95TotalMs : (h.p95TtfbMs ?? null)
   const failures = h.failures || 0
@@ -2271,12 +2282,12 @@ function capRowHtml(h) {
   }[h.verdict] || '<span class="badge gray">未判定</span>'
 
   return `<tr>
-    <td><input type="checkbox" data-check="${escAttr(h.host)}"${checked}></td>
+    <td>${selectable ? `<input type="checkbox" data-check="${escAttr(h.host)}"${checked}>` : ''}</td>
     <td class="cap-host">${escAttr(h.host)}${h.thirdParty ? ' <span class="badge gray" style="font-size:10px">第三方</span>' : ''}</td>
     <td class="cap-kinds" title="${escAttr(kinds.join('/'))}">${escAttr(kindText || '—')}</td>
     <td>${status}</td>
     <td class="num ${capP95Class(p95)}">${fmtMs(p95)}${slow ? ' <span class="bad">慢</span>' : ''}</td>
-    <td class="num ${failures ? 'bad' : ''}">${failures}</td>
+    <td class="num ${failures ? 'bad' : ''}"${(h.timeouts ?? 0) ? ` title="${h.timeouts} 个超时"` : ''}>${failures}</td>
     <td class="num">${fmtBytes(h.bytes)}</td>
     <td class="cap-advice">${verdict}<div class="cap-reason">${escAttr(h.reason || '')}</div></td>
   </tr>`
@@ -2543,7 +2554,7 @@ function capOnShow() {
 el('btnCapStart').addEventListener('click', capStart)
 el('btnCapStop').addEventListener('click', capStop)
 el('btnCapVncFs').addEventListener('click', capVncFullscreen)
-el('btnCapVncRetry').addEventListener('click', capVncLoad)
+el('btnCapVncRetry').addEventListener('click', () => capVncLoad(true))
 el('btnCapReloadSessions').addEventListener('click', () => capLoadSessions(cap.sessionId))
 el('btnCapAccel').addEventListener('click', () => capApply('accel'))
 el('btnCapBlock').addEventListener('click', () => capApply('block'))
@@ -2563,13 +2574,14 @@ el('btnCapSortDir').addEventListener('click', () => {
 })
 el('btnCapAll').addEventListener('click', () => {
   cap.userPicked = true
-  for (const h of cap.view) cap.selected.add(h.host)
+  for (const h of cap.view) if (h.verdict !== 'proxy') cap.selected.add(h.host)
   capRenderTable()
   capSyncActions()
 })
 el('btnCapInvert').addEventListener('click', () => {
   cap.userPicked = true
   for (const h of cap.view) {
+    if (h.verdict === 'proxy') continue
     if (cap.selected.has(h.host)) cap.selected.delete(h.host)
     else cap.selected.add(h.host)
   }
