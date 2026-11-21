@@ -474,6 +474,7 @@ root.delete("/local/blocklist/:domain", async (c) => {
  */
 root.get("/local/lookup", async (c) => {
   const raw = (c.req.query("q") || "").trim().toLowerCase()
+  const mode = (c.req.query("mode") || "contains").toLowerCase()
   const cats = new Set(
     (c.req.query("cats") || "")
       .split(",")
@@ -520,8 +521,31 @@ root.get("/local/lookup", async (c) => {
     }
   }
 
+  // 三种匹配方式：包含（子串）、正则（JS 片段）、占位符（* 任意串 / ? 单字符）
+  let match: (d: string) => boolean
+  if (mode === "regex") {
+    let re: RegExp
+    try {
+      re = new RegExp(raw, "i")
+    } catch (e) {
+      return c.json({ ok: false, error: "正则语法错误：" + (e instanceof Error ? e.message : String(e)) }, 400)
+    }
+    match = (d) => re.test(d)
+  } else if (mode === "glob") {
+    // 没写通配符时按「包含」处理，避免 `github` 一条都匹配不到
+    const pattern = /[*?]/.test(raw) ? raw : `*${raw}*`
+    const escaped = pattern
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*/g, ".*")
+      .replace(/\?/g, ".")
+    const re = new RegExp(`^${escaped}$`, "i")
+    match = (d) => re.test(d)
+  } else {
+    match = (d) => d.includes(raw)
+  }
+
   const totalAll = rows.length
-  const matched = raw ? rows.filter((r) => r.domain.includes(raw)) : rows
+  const matched = raw ? rows.filter((r) => match(r.domain)) : rows
   // 精确命中排最前，其次前缀命中，其余按域名长度（越短越可能是主域）
   const rank = (d: string) => (d === raw ? 0 : d.startsWith(raw) ? 1 : 2)
   matched.sort((a, b) => rank(a.domain) - rank(b.domain) || a.domain.length - b.domain.length || a.domain.localeCompare(b.domain))
@@ -529,6 +553,7 @@ root.get("/local/lookup", async (c) => {
   return c.json({
     ok: true,
     query: raw,
+    mode,
     total: matched.length,
     totalAll,
     truncated: matched.length > 300,

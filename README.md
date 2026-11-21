@@ -220,7 +220,15 @@ curl "http://127.0.0.1:8788/hosts?group=github&ads=false"
 
 ### 域名查询
 
-输入片段即可模糊匹配，看清某个域名到底落在哪条规则里：
+看清某个域名到底落在哪条规则里，支持三种匹配方式：
+
+| 方式 | 写法示例 | 命中 |
+|---|---|---|
+| 包含匹配 | `github` | github.com、api.github.com、gist.github.com … |
+| 正则匹配 | `^api\..*\.com$` | api.github.com、api.deepl.com … |
+| 占位符匹配 | `*.github.com`、`cdn.*.net` | 前缀/后缀任意，`*` 任意串、`?` 单字符；不写通配符时等同包含匹配 |
+
+举个例子：
 
 ```
 github   → github.com / api.github.com / gist.github.com …（内置加速）
@@ -299,7 +307,7 @@ SNI 阻断归因（仅诊断时）
 | `GET /local/compare?domain=x&rounds=3` | 候选 IP 多轮对比 |
 | `GET /local/sni?domain=x` | 仅做 SNI 阻断判定 |
 | `POST /local/adopt` | 把 `{items:[{domain,ip}]}` 写成自定义域名（用实测 IP，不再重新解析）；已内置/已存在/已屏蔽的会跳过并说明原因 |
-| `GET /local/lookup?q=&cats=` | 模糊查询域名属于哪个规则；`cats` 取 `builtin-accel,builtin-block,custom-accel,custom-block` |
+| `GET /local/lookup?q=&cats=&mode=` | 查询域名属于哪个规则；`cats` 取 `builtin-accel,builtin-block,custom-accel,custom-block`，`mode` 取 `contains`（默认）/ `regex` / `glob` |
 | `GET /local/blocklist` | 只返回手动添加的屏蔽项，另附 `builtinCount` 内置规则数量 |
 
 刷新参数：

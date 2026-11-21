@@ -345,11 +345,18 @@
     <div class="card">
       <h2>域名规则查询</h2>
       <p class="hint">
-        模糊匹配某个域名落在哪条规则里。输入片段即可，例如 <code>github</code> 会命中 github.com、api.github.com 等；
-        留空则按分类浏览全部。
+        模糊匹配某个域名落在哪条规则里。三种匹配方式：<br>
+        <strong>包含</strong> 子串命中，如 <code>github</code> → github.com、api.github.com；
+        <strong>正则</strong> 写 JS 正则片段，如 <code>^api\..*\.com$</code>；
+        <strong>占位符</strong> 用 <code>*</code> 任意串、<code>?</code> 单字符，如 <code>*.github.com</code>、<code>cdn.*.net</code>。
       </p>
       <div class="row">
-        <input type="text" class="mono" id="lookupInput" placeholder="netflix / google-analytics / katabump" style="flex:1;min-width:280px">
+        <input type="text" class="mono" id="lookupInput" placeholder="netflix / ^api\..*\.com$ / *.github.com" style="flex:1;min-width:280px">
+        <select id="lookupMode">
+          <option value="contains" selected>包含匹配</option>
+          <option value="regex">正则匹配</option>
+          <option value="glob">占位符匹配</option>
+        </select>
         <button class="primary" id="btnLookup">查询</button>
         <span id="lookupStatus" class="sub"></span>
       </div>
@@ -1439,10 +1446,17 @@ async function runLookup() {
     el('lookupResult').innerHTML = '<p class="empty">输入关键字开始查询</p>'
     return
   }
+  const mode = el('lookupMode').value
   el('lookupStatus').textContent = '查询中…'
   try {
-    const url = `${API}/local/lookup?q=${encodeURIComponent(q)}&cats=${cats.join(',')}`
-    const d = await (await fetch(url)).json()
+    const url = `${API}/local/lookup?q=${encodeURIComponent(q)}&cats=${cats.join(',')}&mode=${mode}`
+    const res = await fetch(url)
+    const d = await res.json()
+    if (!res.ok || d.ok === false) {
+      el('lookupStatus').textContent = ''
+      el('lookupResult').innerHTML = `<p class="empty">${d.error || '查询失败'}</p>`
+      return
+    }
     el('lookupStatus').textContent = `命中 ${d.total} 条`
     if (!d.total) {
       el('lookupResult').innerHTML = `<p class="empty">没有匹配「${q}」的域名</p>`
@@ -1626,6 +1640,7 @@ el('lookupInput').addEventListener('input', () => {
   lookupTimer = setTimeout(runLookup, 250)
 })
 document.querySelectorAll('.lookupCat').forEach((c) => c.addEventListener('change', runLookup))
+el('lookupMode').addEventListener('change', runLookup)
 el('monitorGroup').addEventListener('change', () => { chartData = {}; startChartPolling() })
 window.addEventListener('resize', () => drawChart())
 
