@@ -1,0 +1,20 @@
+{
+  "url": "https://news.example.co.uk",
+  "requests": [
+    { "requestId": "a-001", "host": "news.example.co.uk", "kind": "document", "status": 200, "ttfbMs": 420, "totalMs": 1180, "bytes": 96000 },
+    { "requestId": "a-002", "host": "news.example.co.uk", "kind": "xhr", "status": 200, "ttfbMs": 480, "totalMs": 900, "bytes": 42000 },
+    { "requestId": "a-003", "host": "news.example.co.uk", "kind": "script", "status": 200, "ttfbMs": 210, "totalMs": 400, "bytes": 210000 },
+    { "requestId": "a-004", "host": "static.example.co.uk", "kind": "script", "status": 200, "ttfbMs": 260, "totalMs": 500, "bytes": 320000 },
+    { "requestId": "a-005", "host": "cdn.example.co.uk", "kind": "font", "status": 200, "ttfbMs": 6200, "totalMs": 6400, "bytes": 76000 },
+    { "requestId": "a-006", "host": "static.example.co.uk", "kind": "img", "status": 200, "cached": true, "bytes": 12000 },
+    { "requestId": "a-007", "host": "ads.doubleclick.net", "kind": "script", "status": 200, "ttfbMs": 8400, "totalMs": 8600, "bytes": 230000 },
+    { "requestId": "a-008", "host": "pagead2.googlesyndication.com", "kind": "script", "status": 200, "ttfbMs": 6100, "totalMs": 6400, "bytes": 300000 },
+    { "requestId": "a-009", "host": "cdn.taboola.com", "kind": "script", "status": 200, "ttfbMs": 6300, "totalMs": 6700, "bytes": 180000 },
+    { "requestId": "a-010", "host": "widgets.outbrain.com", "kind": "script", "status": 200, "ttfbMs": 7200, "totalMs": 9100, "bytes": 150000 },
+    { "requestId": "a-011", "host": "cdn.ads-network.co.uk", "kind": "img", "status": 200, "ttfbMs": 5400, "totalMs": 5600, "bytes": 88000 },
+    { "requestId": "a-012", "host": "tracker.adnetwork.com", "kind": "img", "failed": true, "errorText": "net::ERR_TIMED_OUT" },
+    { "requestId": "a-013", "host": "analytics.segment.io", "kind": "xhr", "failed": true, "errorText": "net::ERR_CONNECTION_RESET" },
+    { "requestId": "a-014", "host": "www.googletagmanager.com", "kind": "script", "status": 200, "ttfbMs": 300, "totalMs": 900, "bytes": 98000 },
+    { "requestId": "a-015", "host": "ssl.gstatic.com", "kind": "img", "status": 200, "cached": true, "bytes": 8000 }
+  ]
+}

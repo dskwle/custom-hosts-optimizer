@@ -1,0 +1,15 @@
+{
+  "url": "https://example.org",
+  "requests": [
+    { "requestId": "n-001", "host": "example.org", "kind": "document", "status": 200, "ttfbMs": 180, "totalMs": 340, "bytes": 52000 },
+    { "requestId": "n-002", "host": "static.example.org", "kind": "script", "status": 200, "ttfbMs": 90, "totalMs": 120, "bytes": 128000 },
+    { "requestId": "n-003", "host": "cdn.jsdelivr.net", "kind": "img", "status": 200, "ttfbMs": 210, "totalMs": 260, "bytes": 34000 },
+    { "requestId": "n-004", "host": "fonts.gstatic.com", "kind": "font", "status": 200, "ttfbMs": 60, "totalMs": 90, "bytes": 19000 },
+    { "requestId": "n-005", "host": "api.example.org", "kind": "xhr", "status": 200, "ttfbMs": 140, "totalMs": 180, "bytes": 2100 },
+    { "requestId": "n-006", "host": "cdn.jsdelivr.net", "kind": "img", "status": 200, "cached": true, "bytes": 1800 },
+    { "requestId": "n-007", "host": "cdn.jsdelivr.net", "kind": "script", "status": 200, "cached": true, "bytes": 46000 },
+    { "requestId": "n-008", "host": "static.example.org", "kind": "img", "status": 200, "ttfbMs": 320, "totalMs": 700, "bytes": 240000 },
+    { "requestId": "n-009", "host": "www.googletagmanager.com", "kind": "script", "status": 200, "ttfbMs": 420, "totalMs": 610, "bytes": 98000 },
+    { "requestId": "n-010", "host": "api.example.org", "kind": "xhr", "status": 200, "ttfbMs": 160, "totalMs": 200, "bytes": 3400 }
+  ]
+}
