@@ -170,6 +170,53 @@
   tr.detail-row table { margin-top: 8px; }
   tr.detail-row .prov-list { margin-top: 8px; }
   tr.detail-row .verdict { margin-top: 10px; }
+
+  /* ---------- 网页诊断 ---------- */
+  .cap-layout { display: flex; gap: 16px; align-items: stretch; flex-wrap: wrap; margin-bottom: 16px; }
+  .cap-layout > .card { margin-bottom: 0; }
+  .cap-vnc-card { flex: 1 1 380px; min-width: 300px; display: flex; flex-direction: column; }
+  .cap-req-card { flex: 1.6 1 600px; min-width: 340px; display: flex; flex-direction: column; }
+  .cap-vnc-box {
+    position: relative; height: 440px; background: #1c1c1a;
+    border: 1px solid var(--border); border-radius: 9px; overflow: hidden;
+  }
+  .cap-vnc-box iframe { width: 100%; height: 100%; border: 0; display: block; background: #1c1c1a; }
+  .cap-vnc-cover {
+    position: absolute; inset: 0; z-index: 2; padding: 20px; gap: 10px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; background: #1c1c1a; color: #b9b7ad; font-size: 13px;
+  }
+  .cap-vnc-cover .sub { color: #8b897f; word-break: break-all; }
+  /* 全屏：整块区域铺满视口，Esc 或再点一次退出 */
+  .cap-vnc-card.cap-fs {
+    position: fixed; inset: 0; z-index: 200; margin: 0;
+    border-radius: 0; border: none; padding: 12px 14px 14px;
+  }
+  .cap-vnc-card.cap-fs .cap-vnc-box { height: auto; flex: 1; }
+
+  .cap-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
+  .cap-table-wrap {
+    overflow: auto; max-height: 420px; margin-top: 12px;
+    border: 1px solid var(--border); border-radius: 9px;
+  }
+  .cap-table-wrap table { margin-top: 0; min-width: 560px; font-size: 12px; }
+  .cap-table-wrap thead th { position: sticky; top: 0; z-index: 1; border-bottom: 1px solid var(--border); }
+  .cap-table-wrap th, .cap-table-wrap td { padding: 6px 5px; white-space: nowrap; }
+  .cap-table-wrap td { vertical-align: top; }
+  .cap-table-wrap td:nth-child(1) { vertical-align: middle; }
+  .cap-host { font-family: var(--mono); font-size: 12px; min-width: 140px; white-space: normal; overflow-wrap: anywhere; }
+  .cap-kinds { color: var(--muted); font-size: 12px; }
+  .cap-advice { white-space: normal !important; min-width: 104px; }
+  .cap-advice .cap-reason { color: var(--muted); font-size: 11px; line-height: 1.45; margin-top: 2px; }
+  .cap-foot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  .cap-count { color: var(--muted); font-size: 12px; }
+  .cap-rule-row {
+    display: flex; gap: 10px; align-items: center; padding: 9px 0;
+    border-bottom: 1px solid #f5f4f0; font-size: 13px; flex-wrap: wrap;
+  }
+  .cap-rule-row:last-child { border-bottom: none; }
+  .cap-rule-row .mono { flex: 1; min-width: 200px; word-break: break-all; }
+  .cap-rule-row .cap-count { flex: 0 1 auto; }
 </style>
 </head>
 <body>
@@ -188,6 +235,7 @@
     <div class="tab" data-tab="domains">自定义域名</div>
     <div class="tab" data-tab="block">屏蔽网站</div>
     <div class="tab" data-tab="lookup">域名查询</div>
+    <div class="tab" data-tab="capture">网页诊断</div>
   </div>
 
   <!-- ========== Hosts ========== -->
@@ -370,6 +418,122 @@
       <div id="lookupResult"><p class="empty">输入关键字开始查询</p></div>
     </div>
   </div>
+
+  <!-- ========== 网页诊断 ========== -->
+  <div class="tab-content" id="capture-tab">
+    <div class="card">
+      <h2>网页诊断 <span class="badge gray" id="capStatusBadge">未开始</span></h2>
+      <p class="hint">
+        在左侧内嵌浏览器里打开目标站点，抓包会记录页面发出的全部请求，按域名汇总耗时与失败情况。<br>
+        勾选右侧表格里的域名，可以一键「测速并加速」或「加入屏蔽」，与其它标签页的数据是同一份。
+      </p>
+      <div class="row">
+        <input type="text" class="mono" id="capUrl" placeholder="https://example.com" value="https://" style="flex:1;min-width:260px">
+        <button class="primary" id="btnCapStart">开始抓包</button>
+        <button id="btnCapStop" disabled>停止</button>
+        <span id="capEnv" class="sub"></span>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <select id="capSessions"><option value="">当前会话</option></select>
+        <button class="sm" id="btnCapReloadSessions">刷新会话列表</button>
+        <span id="capSessionInfo" class="sub"></span>
+      </div>
+      <p class="sub" id="capHistoryNote" style="display:none;margin:10px 0 0">
+        正在回看历史会话（只读）。历史数据不可再应用，切回「当前会话」后可继续操作。
+      </p>
+    </div>
+
+    <div class="cap-layout">
+      <div class="card cap-vnc-card" id="capVncCard">
+        <h2 style="margin-bottom:8px">内嵌浏览器 <span class="badge gray" id="capVncBadge">未连接</span>
+          <span style="flex:1"></span>
+          <button class="sm" id="btnCapVncFs">全屏</button>
+          <button class="sm" id="btnCapVncRetry">重试</button>
+        </h2>
+        <p class="hint" style="margin-bottom:10px">
+          画面来自容器内的 Chromium（noVNC），地址 <span class="mono" id="capVncUrl"></span>
+        </p>
+        <div class="cap-vnc-box" id="capVncBox"></div>
+      </div>
+
+      <div class="card cap-req-card">
+        <h2>抓到的请求 <span class="badge gray" id="capRowCount">0 个域名</span></h2>
+        <p class="hint">
+          「慢」指 p95 耗时超过 5 秒；「建议」列是服务端按慢请求与失败情况给出的判定。
+          超过 200 行分批加载，滚动表格底部继续加载。
+        </p>
+        <div class="cap-toolbar">
+          <select id="capFilter">
+            <option value="all">全部</option>
+            <option value="slow">慢请求（>5s）</option>
+            <option value="fail">有失败</option>
+            <option value="third">第三方</option>
+          </select>
+          <select id="capSort">
+            <option value="p95" selected>按 p95 耗时</option>
+            <option value="failures">按失败数</option>
+            <option value="bytes">按流量</option>
+            <option value="host">按域名</option>
+          </select>
+          <button class="sm" id="btnCapSortDir">降序</button>
+          <button class="sm" id="btnCapAll">全选</button>
+          <button class="sm" id="btnCapInvert">反选</button>
+        </div>
+        <div class="cap-table-wrap" id="capTableWrap" style="display:none">
+          <table>
+            <thead><tr>
+              <th style="width:30px"></th>
+              <th>域名</th>
+              <th>类型</th>
+              <th>状态</th>
+              <th>p95 耗时</th>
+              <th>失败</th>
+              <th>字节</th>
+              <th>建议</th>
+            </tr></thead>
+            <tbody id="capTbody"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="capEmpty">尚未开始抓包</p>
+        <div class="cap-foot">
+          <span class="cap-count" id="capTableFoot"></span>
+          <span class="cap-count" id="capSelInfo"></span>
+          <span style="flex:1"></span>
+          <button class="primary" id="btnCapAccel" disabled>测速并加速(0)</button>
+          <button class="danger" id="btnCapBlock" disabled>加入屏蔽(0)</button>
+        </div>
+        <p class="sub" id="capApplyStatus"></p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>规则输出</h2>
+      <p class="hint">
+        给 Clash 用的三种产物。地址是公开端点，可直接被订阅；未启用时下面会显示「未启用」。
+      </p>
+      <div class="cap-rule-row" data-rule="snippet">
+        <span class="mono">/clash/snippet.yaml</span>
+        <span class="cap-count">可直接粘贴的合并片段</span>
+        <span class="badge gray" id="capRule-snippet">检测中</span>
+        <button class="sm" data-copy="/clash/snippet.yaml" data-name="snippet.yaml">复制片段</button>
+        <button class="sm" data-dl="/clash/snippet.yaml" data-name="snippet.yaml">下载</button>
+      </div>
+      <div class="cap-rule-row" data-rule="block">
+        <span class="mono">/clash/block.yaml</span>
+        <span class="cap-count">屏蔽规则（behavior: domain）</span>
+        <span class="badge gray" id="capRule-block">检测中</span>
+        <button class="sm" data-copy="/clash/block.yaml" data-name="block.yaml">复制片段</button>
+        <button class="sm" data-dl="/clash/block.yaml" data-name="block.yaml">下载</button>
+      </div>
+      <div class="cap-rule-row" data-rule="hosts">
+        <span class="mono">/clash/hosts.yaml</span>
+        <span class="cap-count">加速映射（domain → ip）</span>
+        <span class="badge gray" id="capRule-hosts">检测中</span>
+        <button class="sm" data-copy="/clash/hosts.yaml" data-name="hosts.yaml">复制片段</button>
+        <button class="sm" data-dl="/clash/hosts.yaml" data-name="hosts.yaml">下载</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -407,6 +571,7 @@ document.querySelectorAll('.tab').forEach((tab) => {
       c.style.display = c.id === `${name}-tab` ? 'block' : 'none'
     })
     if (name === 'monitor') { startChartPolling(); drawChart() }
+    if (name === 'capture') capOnShow()
   })
 })
 document.querySelectorAll('.tab-content').forEach((c) => {
@@ -1615,6 +1780,831 @@ async function recheckBlocked() {
     btn.disabled = false
   }
 }
+
+/* ---------- 八、网页诊断 ---------- */
+// 脱网开发开关：console.html?captureMock=8899 时，抓包相关接口指向本地 mock
+// （node scripts/mock-capture.mjs --port 8899），其余接口仍然走 API 常量。
+const CAP_MOCK = new URLSearchParams(location.search).get('captureMock')
+const CAP = CAP_MOCK ? `http://127.0.0.1:${CAP_MOCK}` : API
+// noVNC 地址：默认当前主机的 6080；?vncPort=8888 只换端口，?vnc=<完整地址> 整体覆盖
+const CAP_VNC_PORT = new URLSearchParams(location.search).get('vncPort') || '6080'
+const CAP_VNC_URL = new URLSearchParams(location.search).get('vnc')
+const CAP_CHUNK = 200
+const CAP_KIND_CN = {
+  document: '文档', script: '脚本', xhr: 'XHR', img: '图片', font: '字体', media: '媒体', other: '其他',
+}
+
+const cap = {
+  sessionId: '',
+  status: 'idle',        // idle | notready | running | stopped
+  history: false,        // 是否在回看历史会话（只读）
+  hosts: [],             // HostSummary[]，以服务端 summary 为准
+  view: [],              // 当前筛选 + 排序后的行
+  selected: new Set(),
+  userPicked: false,     // 用户是否手动改过勾选；改过之后不再套用 suggested
+  filter: 'all',
+  sortKey: 'p95',
+  sortDesc: true,
+  limit: CAP_CHUNK,
+  liveCount: 0,
+  es: null,
+  esTries: 0,
+  inited: false,
+}
+
+/** 抓包接口统一入口：404/502/网络不通都归为「服务未就绪」，不让页面卡死 */
+async function capFetch(path, opts) {
+  let res
+  try {
+    res = await fetch(`${CAP}${path}`, opts)
+  } catch {
+    const err = new Error('网络不通')
+    err.notReady = true
+    throw err
+  }
+  let body = null
+  try { body = await res.json() } catch {}
+  if (res.ok) return body || {}
+  const err = new Error((body && body.error) || `HTTP ${res.status}`)
+  if (res.status === 409) err.busy = true
+  if (res.status === 400) err.badRequest = true
+  err.notReady = res.status === 404 || res.status === 501 || res.status === 502 || res.status === 503
+  throw err
+}
+
+function capNotReady(e) {
+  return !!(e && e.notReady)
+}
+
+function capErrText(e) {
+  return capNotReady(e) ? '抓包服务未就绪（Chromium 未启动或后端未合并）' : (e && e.message ? e.message : String(e))
+}
+
+function capTime(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return isNaN(d.getTime()) ? String(iso) : d.toLocaleString('zh-CN', { hour12: false })
+}
+
+function fmtBytes(n) {
+  if (n == null || n === 0) return '0'
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+/** 耗时：超过 1 秒用秒显示，省出表格宽度 */
+function fmtMs(v) {
+  if (v == null) return '—'
+  return v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)}ms`
+}
+
+/** 慢请求：与契约 SLOW 口径一致（p95 超过 5 秒） */
+function capIsSlow(h) {
+  return (h.p95TotalMs ?? 0) > 5000 || (h.p95TtfbMs ?? 0) > 5000
+}
+
+function capP95Class(v) {
+  if (v == null) return ''
+  if (v < 500) return 'good'
+  if (v < 2000) return 'mid'
+  return 'bad'
+}
+
+/* ---------- 状态条 ---------- */
+function capRefreshStatus() {
+  const badge = el('capStatusBadge')
+  let text = '未开始'
+  let cls = 'gray'
+  if (cap.history) {
+    text = `回看会话（${cap.hosts.length} 个域名）`
+  } else if (cap.status === 'running') {
+    text = `抓包中 ${cap.liveCount} 个请求`
+    cls = ''
+  } else if (cap.status === 'stopped') {
+    text = `已停止（${cap.liveCount} 个请求）`
+  } else if (cap.status === 'notready') {
+    text = '服务未就绪'
+    cls = 'bad'
+  }
+  badge.textContent = text
+  badge.className = `badge ${cls}`.trim()
+  const rowBadge = el('capRowCount')
+  rowBadge.textContent = `${cap.view.length} 个域名`
+}
+
+/* ---------- noVNC ---------- */
+function capVncTarget() {
+  if (CAP_VNC_URL) return CAP_VNC_URL
+  const host = location.hostname || '127.0.0.1'
+  return `http://${host}:${CAP_VNC_PORT}/vnc.html?autoconnect=1&resize=scale&reconnect=1`
+}
+
+function capVncCover(html) {
+  const box = el('capVncBox')
+  const old = el('capVncCover')
+  if (old) old.remove()
+  const div = document.createElement('div')
+  div.className = 'cap-vnc-cover'
+  div.id = 'capVncCover'
+  div.innerHTML = html
+  box.appendChild(div)
+  return div
+}
+
+function capVncLoad() {
+  const box = el('capVncBox')
+  const url = capVncTarget()
+  el('capVncUrl').textContent = url
+  el('capVncBadge').textContent = '连接中'
+  el('capVncBadge').className = 'badge gray'
+  box.innerHTML = ''
+
+  const cover = capVncCover(
+    `<div>正在连接内嵌浏览器…</div><div class="sub mono">${escAttr(url)}</div>`
+  )
+  cover.style.pointerEvents = 'none'
+
+  // iframe 的 load 在「连接被拒」的错误页上也会触发，单靠它会把 404/拒绝误判成成功。
+  // 先用 no-cors 探一次可达性：能拿到响应（哪怕是 opaque）说明端口通，抛错就是连不上。
+  const probe = CAP_VNC_URL ? Promise.resolve(true) : capVncReachable(url)
+  probe.then((ok) => {
+    if (!ok) {
+      capVncFail(url)
+      return
+    }
+    const frame = document.createElement('iframe')
+    frame.title = '内嵌浏览器（noVNC）'
+    frame.src = url
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      capVncFail(url)
+    }, 8000)
+    frame.addEventListener('load', () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const c = el('capVncCover')
+      if (c) c.remove()
+      el('capVncBadge').textContent = '已加载'
+      el('capVncBadge').className = 'badge good'
+    })
+    box.appendChild(frame)
+  })
+}
+
+/** 探测 noVNC 端口是否可达；跨域不能读内容，只判断有没有响应 */
+async function capVncReachable(url) {
+  try {
+    await fetch(url, { mode: 'no-cors', cache: 'no-store' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function capVncFail(url) {
+  el('capVncBadge').textContent = '未连接'
+  el('capVncBadge').className = 'badge bad'
+  const cover = capVncCover(
+    `<div>连接不上内嵌浏览器</div>
+     <div class="sub mono">${escAttr(url)}</div>
+     <div class="sub">确认 noVNC 已启动、端口可达；也可用 <code>?vnc=&lt;完整地址&gt;</code> 或 <code>?vncPort=&lt;端口&gt;</code> 覆盖地址。</div>
+     <button class="sm" id="capVncRetryInline">重试</button>`
+  )
+  cover.querySelector('#capVncRetryInline').addEventListener('click', capVncLoad)
+}
+
+function capVncFullscreen() {
+  const card = el('capVncCard')
+  card.classList.toggle('cap-fs')
+  const on = card.classList.contains('cap-fs')
+  el('btnCapVncFs').textContent = on ? '退出全屏' : '全屏'
+}
+
+/* ---------- 抓包控制 ---------- */
+async function capLoadEnv() {
+  try {
+    const d = await capFetch('/local/capture/env')
+    el('capEnv').innerHTML = d.cdp
+      ? `<span class="good">CDP 就绪</span>${d.version ? ` · Chromium ${escAttr(d.version)}` : ''}`
+      : `<span class="bad">CDP 不可达</span>${d.error ? ` · ${escAttr(d.error)}` : ''}`
+  } catch (e) {
+    el('capEnv').innerHTML = '<span class="bad">抓包服务未就绪（Chromium 未启动或后端未合并）</span>'
+    if (cap.status === 'idle') {
+      cap.status = 'notready'
+      capRefreshStatus()
+    }
+  }
+}
+
+async function capStart() {
+  const url = el('capUrl').value.trim()
+  if (!/^https?:\/\/\S+/i.test(url)) {
+    toast('请输入以 http:// 或 https:// 开头的网址')
+    return
+  }
+  const btn = el('btnCapStart')
+  btn.disabled = true
+  el('capApplyStatus').textContent = ''
+  try {
+    const d = await capFetch('/local/capture/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url }),
+    })
+    capAttach(d.session)
+    toast('已开始抓包')
+  } catch (e) {
+    if (e.busy) {
+      toast('已有抓包会话在运行，正在接管')
+      await capAttachLatest()
+    } else if (capNotReady(e)) {
+      cap.status = 'notready'
+      capRefreshStatus()
+      el('capApplyStatus').textContent = capErrText(e)
+      toast('抓包服务未就绪')
+    } else {
+      el('capApplyStatus').textContent = `启动失败：${e.message}`
+      toast('启动失败')
+    }
+  } finally {
+    btn.disabled = false
+  }
+}
+
+async function capStop() {
+  if (!cap.sessionId || cap.history) return
+  el('btnCapStop').disabled = true
+  try {
+    const d = await capFetch(`/local/capture/${encodeURIComponent(cap.sessionId)}/stop`, { method: 'POST' })
+    cap.status = 'stopped'
+    cap.liveCount = (d.session && d.session.requestCount) || cap.liveCount
+    capRefreshStatus()
+    capScheduleSummary(0)
+    capLoadSessions(cap.sessionId)
+    toast('已停止抓包')
+  } catch (e) {
+    el('btnCapStop').disabled = false
+    toast(`停止失败：${capErrText(e)}`)
+  }
+}
+
+/** 接管一个会话：清空本地状态、连 SSE、补一次 summary */
+function capAttach(session) {
+  capCloseES()
+  cap.sessionId = session.id || ''
+  cap.status = session.status === 'running' ? 'running' : 'stopped'
+  cap.history = false
+  cap.hosts = []
+  cap.view = []
+  cap.selected.clear()
+  cap.userPicked = false
+  cap.limit = CAP_CHUNK
+  cap.liveCount = session.requestCount || 0
+  cap.esTries = 0
+  el('capVncCard').style.display = ''
+  el('capHistoryNote').style.display = 'none'
+  el('btnCapStop').disabled = cap.status !== 'running'
+  el('capSessionInfo').textContent = `${session.url || ''} · ${capTime(session.startedAt)}`
+  if (session.url) el('capUrl').value = session.url
+  capRebuildView()
+  capRefreshStatus()
+  capSyncActions()
+  capConnect()
+  capScheduleSummary(0)
+  capLoadSessions(session.id)
+}
+
+async function capAttachLatest() {
+  try {
+    const d = await capFetch('/local/capture?limit=1')
+    const s = (d.sessions || [])[0]
+    if (s) capAttach(s)
+    else {
+      cap.sessionId = ''
+      cap.status = 'idle'
+      cap.hosts = []
+      cap.view = []
+      cap.selected.clear()
+      capRebuildView()
+      capRefreshStatus()
+      capSyncActions()
+    }
+  } catch (e) {
+    cap.status = 'notready'
+    capRefreshStatus()
+  }
+}
+
+/* ---------- SSE ---------- */
+function capCloseES() {
+  if (cap.es) {
+    try { cap.es.close() } catch {}
+    cap.es = null
+  }
+}
+
+function capConnect() {
+  if (!cap.sessionId) return
+  capCloseES()
+  let es
+  try {
+    es = new EventSource(`${CAP}/local/capture/${encodeURIComponent(cap.sessionId)}/stream`)
+  } catch {
+    return
+  }
+  cap.es = es
+  es.onopen = () => {
+    cap.esTries = 0
+    // 服务端重连只推增量，这里补一次 summary 防止漏数据
+    capScheduleSummary(0)
+  }
+  es.onmessage = (ev) => {
+    let m
+    try { m = JSON.parse(ev.data) } catch { return }
+    capOnFrame(m)
+  }
+  es.onerror = () => {
+    // CONNECTING 时浏览器自己在重连（onopen 会再补 summary）；
+    // CLOSED 说明不会再重连，我们自己排一次退避重试
+    if (es.readyState !== EventSource.CLOSED) return
+    capCloseES()
+    if (cap.status !== 'running') return
+    cap.esTries += 1
+    if (cap.esTries <= 5) {
+      setTimeout(() => {
+        if (cap.status === 'running' && !cap.es) capConnect()
+      }, Math.min(2000 * cap.esTries, 10000))
+    } else {
+      el('capApplyStatus').textContent = '实时通道已断开，可点「停止」后重新开始抓包'
+    }
+  }
+}
+
+function capOnFrame(m) {
+  if (m.type === 'state' && m.session) {
+    const st = m.session.status
+    cap.status = st === 'running' ? 'running' : 'stopped'
+    if (typeof m.session.requestCount === 'number') {
+      cap.liveCount = Math.max(cap.liveCount, m.session.requestCount)
+    }
+    el('btnCapStop').disabled = cap.status !== 'running'
+    capRefreshStatus()
+  } else if (m.type === 'request') {
+    cap.liveCount += 1
+    capRefreshStatus()
+    // 合并 200ms 内的增量，别每条都去拉 summary
+    capScheduleSummary(250)
+  } else if (m.type === 'error') {
+    el('capApplyStatus').textContent = `抓包出错：${m.message || '未知原因'}`
+    toast('抓包出错')
+  } else if (m.type === 'end') {
+    cap.status = 'stopped'
+    el('btnCapStop').disabled = true
+    capRefreshStatus()
+    capScheduleSummary(0)
+    capLoadSessions(cap.sessionId)
+  }
+}
+
+/* ---------- summary 拉取（节流） ---------- */
+let capSummaryTimer = null
+let capSummaryBusy = false
+let capSummaryAgain = false
+
+function capScheduleSummary(delay) {
+  if (!cap.sessionId || cap.history) return
+  if (capSummaryTimer) return
+  capSummaryTimer = setTimeout(capRunSummary, delay == null ? 250 : delay)
+}
+
+async function capRunSummary() {
+  capSummaryTimer = null
+  if (!cap.sessionId || cap.history) return
+  if (capSummaryBusy) {
+    capSummaryAgain = true
+    return
+  }
+  capSummaryBusy = true
+  const id = cap.sessionId
+  try {
+    const d = await capFetch(`/local/capture/${encodeURIComponent(id)}/summary`)
+    if (id === cap.sessionId && !cap.history) capApplySummary(d.hosts || [])
+  } catch (e) {
+    if (capNotReady(e)) {
+      el('capApplyStatus').textContent = capErrText(e)
+    }
+  } finally {
+    capSummaryBusy = false
+    if (capSummaryAgain) {
+      capSummaryAgain = false
+      capScheduleSummary(250)
+    }
+  }
+}
+
+function capApplySummary(hosts) {
+  cap.hosts = hosts
+  cap.liveCount = cap.hosts.reduce((a, h) => a + (h.requests || 0), 0)
+  if (!cap.userPicked) {
+    // 首次拿到数据时按服务端建议预选
+    cap.selected = new Set(cap.hosts.filter((h) => h.suggested).map((h) => h.host))
+  } else {
+    const alive = new Set(cap.hosts.map((h) => h.host))
+    for (const h of [...cap.selected]) if (!alive.has(h)) cap.selected.delete(h)
+  }
+  capRebuildView()
+  capRefreshStatus()
+}
+
+/* ---------- 表格 ---------- */
+function capRebuildView() {
+  const f = cap.filter
+  const rows = cap.hosts.filter((h) => {
+    if (f === 'slow') return capIsSlow(h)
+    if (f === 'fail') return (h.failures || 0) > 0
+    if (f === 'third') return !!h.thirdParty
+    return true
+  })
+  const dir = cap.sortDesc ? -1 : 1
+  const val = (h) => {
+    if (cap.sortKey === 'failures') return h.failures || 0
+    if (cap.sortKey === 'bytes') return h.bytes || 0
+    if (cap.sortKey === 'host') return 0
+    return h.p95TotalMs ?? h.p95TtfbMs ?? -1
+  }
+  rows.sort((a, b) => {
+    if (cap.sortKey === 'host') return a.host.localeCompare(b.host) * dir
+    const d = val(a) - val(b)
+    if (d === 0) return a.host.localeCompare(b.host)
+    return d * dir
+  })
+  cap.view = rows
+  cap.limit = CAP_CHUNK
+  capRenderTable()
+  capSyncActions()
+}
+
+function capRowHtml(h) {
+  const checked = cap.selected.has(h.host) ? ' checked' : ''
+  const slow = capIsSlow(h)
+  const p95 = h.p95TotalMs != null ? h.p95TotalMs : (h.p95TtfbMs ?? null)
+  const failures = h.failures || 0
+  const status = failures === 0
+    ? '<span class="good">正常</span>'
+    : failures >= (h.requests || 0)
+      ? '<span class="bad">全部失败</span>'
+      : '<span class="mid">部分失败</span>'
+  const kinds = (h.kinds || []).map((k) => CAP_KIND_CN[k] || k)
+  const kindText = kinds.length > 2
+    ? `${kinds.slice(0, 2).join('/')}+${kinds.length - 2}`
+    : kinds.join('/')
+  const verdict = {
+    accel: '<span class="badge">建议加速</span>',
+    block: '<span class="badge bad">建议屏蔽</span>',
+    proxy: '<span class="badge" style="background:#e8e4f5;color:#534ab7">建议代理</span>',
+    ignore: '<span class="badge gray">忽略</span>',
+    unknown: '<span class="badge gray">未判定</span>',
+  }[h.verdict] || '<span class="badge gray">未判定</span>'
+
+  return `<tr>
+    <td><input type="checkbox" data-check="${escAttr(h.host)}"${checked}></td>
+    <td class="cap-host">${escAttr(h.host)}${h.thirdParty ? ' <span class="badge gray" style="font-size:10px">第三方</span>' : ''}</td>
+    <td class="cap-kinds" title="${escAttr(kinds.join('/'))}">${escAttr(kindText || '—')}</td>
+    <td>${status}</td>
+    <td class="num ${capP95Class(p95)}">${fmtMs(p95)}${slow ? ' <span class="bad">慢</span>' : ''}</td>
+    <td class="num ${failures ? 'bad' : ''}">${failures}</td>
+    <td class="num">${fmtBytes(h.bytes)}</td>
+    <td class="cap-advice">${verdict}<div class="cap-reason">${escAttr(h.reason || '')}</div></td>
+  </tr>`
+}
+
+function capRenderTable() {
+  const wrap = el('capTableWrap')
+  const empty = el('capEmpty')
+  const tbody = el('capTbody')
+  const total = cap.view.length
+
+  if (!total) {
+    tbody.innerHTML = ''
+    wrap.style.display = 'none'
+    empty.style.display = 'block'
+    empty.textContent = cap.hosts.length
+      ? '当前筛选条件下没有域名'
+      : (cap.status === 'idle'
+        ? '尚未开始抓包'
+        : cap.status === 'notready' ? '抓包服务未就绪，无法获取请求' : '等待请求…')
+    el('capTableFoot').textContent = ''
+    return
+  }
+
+  empty.style.display = 'none'
+  wrap.style.display = 'block'
+  tbody.innerHTML = cap.view.slice(0, cap.limit).map(capRowHtml).join('')
+  capRenderFoot()
+}
+
+function capRenderFoot() {
+  const total = cap.view.length
+  const shown = Math.min(cap.limit, total)
+  el('capTableFoot').textContent = shown < total
+    ? `已显示 ${shown}/${total} 个，滚动表格加载更多`
+    : `共 ${total} 个域名`
+}
+
+function capAppendMore() {
+  if (cap.limit >= cap.view.length) return
+  const next = cap.view.slice(cap.limit, cap.limit + CAP_CHUNK)
+  el('capTbody').insertAdjacentHTML('beforeend', next.map(capRowHtml).join(''))
+  cap.limit += CAP_CHUNK
+  capRenderFoot()
+}
+
+function capSyncActions() {
+  const n = cap.selected.size
+  const accel = el('btnCapAccel')
+  const block = el('btnCapBlock')
+  accel.textContent = `测速并加速(${n})`
+  block.textContent = `加入屏蔽(${n})`
+  const off = n === 0 || cap.history
+  accel.disabled = off
+  block.disabled = off
+  el('capSelInfo').textContent = cap.history
+    ? '历史会话只读'
+    : (n ? `已选 ${n} 个` : '')
+}
+
+/* ---------- 应用动作 ---------- */
+function capSkipText(reason) {
+  const r = String(reason || '')
+  if (r.includes('内置')) return '已内置'
+  if (r.includes('屏蔽')) return '已屏蔽'
+  if (r.includes('存在') || r.includes('已加')) return '已存在'
+  return r || '已跳过'
+}
+
+async function capApply(action) {
+  if (cap.history) {
+    toast('历史会话只读，切回当前会话后再应用')
+    return
+  }
+  const hosts = [...cap.selected]
+  if (!hosts.length) return
+  const label = action === 'accel' ? '加速' : '屏蔽'
+  const status = el('capApplyStatus')
+  status.textContent = `正在${label} ${hosts.length} 个域名…`
+  try {
+    const d = await capFetch('/local/capture/apply', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ hosts, action }),
+    })
+    const added = d.added || []
+    const skipped = d.skipped || []
+    const failed = d.failed || []
+    const parts = []
+    if (added.length) parts.push(`${label} ${added.length} 个`)
+    const reasons = new Map()
+    for (const s of skipped) {
+      const key = capSkipText(s.reason)
+      reasons.set(key, (reasons.get(key) || 0) + 1)
+    }
+    for (const [reason, count] of reasons) parts.push(`${count} 个${reason}`)
+    if (failed.length) parts.push(`${failed.length} 个失败（${failed[0].error || '未知原因'}）`)
+    const text = parts.length ? parts.join('，') : '没有变化'
+    status.textContent = `完成：${text}`
+    toast(`完成：${text}`)
+
+    if (added.length) {
+      cap.userPicked = true
+      for (const h of added) cap.selected.delete(h)
+      capRenderTable()
+      capSyncActions()
+    }
+    // 与其它标签页共用同一份数据，写完立刻刷新
+    loadHosts()
+    loadDomains()
+    loadBlocklist()
+  } catch (e) {
+    status.textContent = `${label}失败：${capErrText(e)}`
+    toast(`${label}失败`)
+  }
+}
+
+/* ---------- 会话历史 ---------- */
+async function capLoadSessions(selectId) {
+  const sel = el('capSessions')
+  const keep = selectId || sel.value || cap.sessionId
+  try {
+    const d = await capFetch('/local/capture?limit=20')
+    const list = d.sessions || []
+    const opts = list.map((s) => {
+      const st = s.status === 'running' ? '进行中' : s.status === 'failed' ? '失败' : '已结束'
+      const label = `${capTime(s.startedAt)} · ${st} · ${s.requestCount || 0} 个请求`
+      return `<option value="${escAttr(s.id)}" title="${escAttr(s.url || '')}">${escAttr(label)}</option>`
+    }).join('')
+    sel.innerHTML = `<option value="">当前会话</option>${opts}`
+    if (keep && list.some((s) => s.id === keep)) sel.value = keep
+    else sel.value = ''
+  } catch {
+    sel.innerHTML = '<option value="">抓包服务未就绪</option>'
+  }
+}
+
+async function capViewHistory(id) {
+  capCloseES()
+  cap.history = true
+  cap.sessionId = id
+  cap.status = 'stopped'
+  cap.hosts = []
+  cap.view = []
+  cap.selected.clear()
+  cap.userPicked = false
+  cap.limit = CAP_CHUNK
+  el('capVncCard').style.display = 'none'
+  el('capHistoryNote').style.display = 'block'
+  el('btnCapStop').disabled = true
+  capRebuildView()
+  capRefreshStatus()
+  try {
+    const [one, sum] = await Promise.all([
+      capFetch(`/local/capture/${encodeURIComponent(id)}`),
+      capFetch(`/local/capture/${encodeURIComponent(id)}/summary`),
+    ])
+    const s = one.session || {}
+    cap.liveCount = s.requestCount || 0
+    el('capSessionInfo').textContent = `${s.url || ''} · ${capTime(s.startedAt)} · 历史会话`
+    capApplySummary(sum.hosts || [])
+  } catch (e) {
+    el('capApplyStatus').textContent = capErrText(e)
+    capRefreshStatus()
+  }
+}
+
+async function capBackToLive() {
+  cap.history = false
+  el('capVncCard').style.display = ''
+  el('capHistoryNote').style.display = 'none'
+  el('capSessions').value = ''
+  await capAttachLatest()
+}
+
+/* ---------- 规则输出 ---------- */
+async function capRuleFetch(path) {
+  const res = await fetch(`${API}${path}`, { cache: 'no-store' })
+  if (!res.ok) {
+    const err = new Error(res.status === 404 ? '规则输出未启用' : `HTTP ${res.status}`)
+    err.notReady = true
+    throw err
+  }
+  return res.text()
+}
+
+async function capRuleCopy(path, name) {
+  try {
+    await navigator.clipboard.writeText(await capRuleFetch(path))
+    toast(`已复制 ${name}`)
+  } catch (e) {
+    toast(capNotReady(e) ? '规则输出未启用' : `复制失败：${e.message}`)
+  }
+}
+
+async function capRuleDownload(path, name) {
+  try {
+    const text = await capRuleFetch(path)
+    const blob = new Blob([text], { type: 'text/yaml' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = name
+    a.click()
+    URL.revokeObjectURL(a.href)
+    toast(`已下载 ${name}`)
+  } catch (e) {
+    toast(capNotReady(e) ? '规则输出未启用' : `下载失败：${e.message}`)
+  }
+}
+
+async function capProbeRules() {
+  const items = [
+    { key: 'snippet', path: '/clash/snippet.yaml' },
+    { key: 'block', path: '/clash/block.yaml' },
+    { key: 'hosts', path: '/clash/hosts.yaml' },
+  ]
+  for (const it of items) {
+    const badge = el(`capRule-${it.key}`)
+    if (!badge) continue
+    try {
+      const res = await fetch(`${API}${it.path}`, { cache: 'no-store' })
+      if (res.ok) {
+        badge.textContent = '可用'
+        badge.className = 'badge good'
+      } else {
+        badge.textContent = res.status === 404 ? '未启用' : `HTTP ${res.status}`
+        badge.className = 'badge gray'
+      }
+    } catch {
+      badge.textContent = '不可达'
+      badge.className = 'badge gray'
+    }
+  }
+}
+
+/* ---------- 实时通道兜底 ---------- */
+// EventSource 大多能自己重连，但长会话里也可能静默失效（readyState=CLOSED 且没有 error）。
+// 抓包中每 3 秒看一眼：通道死了就重建，活着一并补一次 summary，避免漏数据。
+function capEnsureLive() {
+  if (cap.status !== 'running' || cap.history || !cap.sessionId) return
+  if (!cap.es || cap.es.readyState === EventSource.CLOSED) {
+    cap.esTries = 0
+    capConnect()
+    return
+  }
+  capScheduleSummary(0)
+}
+setInterval(capEnsureLive, 3000)
+
+/* ---------- 懒初始化：第一次切到本页才加载，避免拖慢其它标签页 ---------- */
+function capOnShow() {
+  if (!cap.inited) {
+    cap.inited = true
+    capVncLoad()
+    capLoadEnv()
+    capLoadSessions()
+    capProbeRules()
+    el('capEmpty').textContent = '尚未开始抓包'
+    capAttachLatest()
+  }
+}
+
+/* ---------- 绑定（网页诊断） ---------- */
+el('btnCapStart').addEventListener('click', capStart)
+el('btnCapStop').addEventListener('click', capStop)
+el('btnCapVncFs').addEventListener('click', capVncFullscreen)
+el('btnCapVncRetry').addEventListener('click', capVncLoad)
+el('btnCapReloadSessions').addEventListener('click', () => capLoadSessions(cap.sessionId))
+el('btnCapAccel').addEventListener('click', () => capApply('accel'))
+el('btnCapBlock').addEventListener('click', () => capApply('block'))
+el('capFilter').addEventListener('change', () => {
+  cap.filter = el('capFilter').value
+  capRebuildView()
+  capRefreshStatus()
+})
+el('capSort').addEventListener('change', () => {
+  cap.sortKey = el('capSort').value
+  capRebuildView()
+})
+el('btnCapSortDir').addEventListener('click', () => {
+  cap.sortDesc = !cap.sortDesc
+  el('btnCapSortDir').textContent = cap.sortDesc ? '降序' : '升序'
+  capRebuildView()
+})
+el('btnCapAll').addEventListener('click', () => {
+  cap.userPicked = true
+  for (const h of cap.view) cap.selected.add(h.host)
+  capRenderTable()
+  capSyncActions()
+})
+el('btnCapInvert').addEventListener('click', () => {
+  cap.userPicked = true
+  for (const h of cap.view) {
+    if (cap.selected.has(h.host)) cap.selected.delete(h.host)
+    else cap.selected.add(h.host)
+  }
+  capRenderTable()
+  capSyncActions()
+})
+el('capTbody').addEventListener('change', (e) => {
+  const host = e.target && e.target.dataset ? e.target.dataset.check : ''
+  if (!host) return
+  cap.userPicked = true
+  if (e.target.checked) cap.selected.add(host)
+  else cap.selected.delete(host)
+  capSyncActions()
+})
+el('capTableWrap').addEventListener('scroll', () => {
+  const w = el('capTableWrap')
+  if (w.scrollTop + w.clientHeight < w.scrollHeight - 120) return
+  capAppendMore()
+})
+el('capSessions').addEventListener('change', async () => {
+  const id = el('capSessions').value
+  if (!id) return capBackToLive()
+  if (id === cap.sessionId && !cap.history) return
+  await capViewHistory(id)
+})
+document.querySelectorAll('.cap-rule-row [data-copy]').forEach((b) => {
+  b.addEventListener('click', () => capRuleCopy(b.dataset.copy, b.dataset.name))
+})
+document.querySelectorAll('.cap-rule-row [data-dl]').forEach((b) => {
+  b.addEventListener('click', () => capRuleDownload(b.dataset.dl, b.dataset.name))
+})
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return
+  if (el('capVncCard').classList.contains('cap-fs')) capVncFullscreen()
+})
 
 /* ---------- 绑定 ---------- */
 el('btnTiming').addEventListener('click', doTiming)
