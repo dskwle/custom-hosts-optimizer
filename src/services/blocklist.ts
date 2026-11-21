@@ -6,16 +6,22 @@
  * 通过 AAAA 记录走 IPv6 访问；只写 `::` 时纯 IPv4 网络照样能连。两者都写，
  * 才真正堵死。
  *
- * 清单存在 KV 的 custom_blocklist 键里，与广告规则彼此独立：
- * 广告规则是上游维护的黑名单，这里是用户自己加的。
+ * 两个来源合并输出：
+ * - 内置清单（constants.ts 的 BUILTIN_BLOCKLIST）：随代码分发，始终生效，不可单独删除
+ * - 用户清单（KV 的 custom_blocklist）：控制台「屏蔽网站」里自己加的
+ * 与广告规则彼此独立，广告规则由上游维护。
  */
 import type { Bindings } from "../types"
+import { BUILTIN_BLOCKLIST } from "../constants"
 
 const KV_KEY = "custom_blocklist"
+const BUILTIN = new Set(BUILTIN_BLOCKLIST.map((d) => d.toLowerCase()))
 
 export interface BlockEntry {
   domain: string
   addedAt: string
+  /** 来自内置清单：控制台里不可单独删除 */
+  builtin?: boolean
 }
 
 /**
@@ -42,14 +48,18 @@ export function normalizeDomain(input: string): string | null {
 }
 
 export async function getBlocklist(env: Bindings): Promise<BlockEntry[]> {
+  const builtin: BlockEntry[] = [...BUILTIN].map((domain) => ({ domain, addedAt: "", builtin: true }))
   try {
     const v = (await env.custom_hosts.get(KV_KEY, { type: "json" })) as BlockEntry[] | null
-    if (!Array.isArray(v)) return []
-    return v
+    if (!Array.isArray(v)) return builtin
+    const user = v
       .filter((e) => e && typeof e.domain === "string" && e.domain)
       .map((e) => ({ domain: e.domain.toLowerCase(), addedAt: e.addedAt || new Date().toISOString() }))
+      // 与内置清单重名的不再重复输出
+      .filter((e) => !BUILTIN.has(e.domain))
+    return [...builtin, ...user]
   } catch {
-    return []
+    return builtin
   }
 }
 
@@ -73,7 +83,7 @@ export async function addBlocked(
       invalid.push(String(raw).trim())
       continue
     }
-    if (known.has(domain)) {
+    if (known.has(domain) || BUILTIN.has(domain)) {
       existed.push(domain)
       continue
     }
@@ -86,17 +96,30 @@ export async function addBlocked(
   return { added, existed, invalid }
 }
 
-export async function removeBlocked(env: Bindings, domain: string): Promise<boolean> {
+export async function removeBlocked(
+  env: Bindings,
+  domain: string
+): Promise<{ ok: boolean; reason?: string }> {
   const d = normalizeDomain(domain) || domain.trim().toLowerCase()
+  if (BUILTIN.has(d)) {
+    return { ok: false, reason: "内置屏蔽规则不可单独取消，需要修改 src/constants.ts" }
+  }
   const list = await getBlocklist(env)
   const next = list.filter((e) => e.domain !== d)
-  if (next.length === list.length) return false
+  if (next.length === list.length) return { ok: false, reason: "不在清单中" }
   await saveBlocklist(env, next)
-  return true
+  return { ok: true }
 }
 
+/** 只清用户清单；内置清单不受影响。返回值是 KV 里实际清掉的条目数 */
 export async function clearBlocklist(env: Bindings): Promise<number> {
-  const list = await getBlocklist(env)
+  let raw = 0
+  try {
+    const v = (await env.custom_hosts.get(KV_KEY, { type: "json" })) as BlockEntry[] | null
+    raw = Array.isArray(v) ? v.length : 0
+  } catch {
+    raw = 0
+  }
   await saveBlocklist(env, [])
-  return list.length
+  return raw
 }

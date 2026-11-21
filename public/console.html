@@ -1283,7 +1283,9 @@ async function loadBlocklist() {
       return
     }
     el('blockTags').innerHTML = list.map((x) => `<span class="domain-tag">${x.domain}
-      <button data-domain="${x.domain}" title="取消屏蔽">×</button></span>`).join('')
+      ${x.builtin
+        ? '<span class="mono" title="内置规则，需改代码移除">内置</span>'
+        : `<button data-domain="${x.domain}" title="取消屏蔽">×</button>`}</span>`).join('')
     el('blockTags').querySelectorAll('button[data-domain]').forEach((b) => {
       b.addEventListener('click', () => unblockDomain(b.dataset.domain))
     })
@@ -1322,7 +1324,12 @@ async function addBlockedSites() {
 
 async function unblockDomain(domain) {
   try {
-    await fetch(`${API}/local/blocklist/${encodeURIComponent(domain)}`, { method: 'DELETE' })
+    const res = await fetch(`${API}/local/blocklist/${encodeURIComponent(domain)}`, { method: 'DELETE' })
+    const d = await res.json().catch(() => ({}))
+    if (!res.ok || !d.ok) {
+      toast(d.reason || '操作失败')
+      return
+    }
     toast('已取消屏蔽')
     loadBlocklist()
     loadHosts()

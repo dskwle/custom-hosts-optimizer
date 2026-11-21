@@ -79,7 +79,7 @@ npm run local
 命令行方式：
 
 ```bash
-# 首次生成数据（179 个域名，约 50 秒）
+# 首次生成数据（208 个域名，约 55 秒）
 curl -X POST http://127.0.0.1:8788/local/refresh
 
 # 之后直接取 hosts
@@ -206,6 +206,13 @@ curl "http://127.0.0.1:8788/hosts?group=github&ads=false"
 **只写一族没有意义**——只写 `0.0.0.0` 时，双栈机器仍会通过 AAAA 记录走 IPv6 访问；只写 `::` 时纯 IPv4 网络照样能连。两族都写才真正堵死。
 
 被屏蔽的域名会同时从优选区、广告区、`/hosts.json` 和批量刷新中剔除，避免出现「屏蔽了但 v4 优选地址先生效」这种自相矛盾的结果。AWAvenue 规则里只写单族的条目也会自动补齐另一族。
+
+清单分两个来源，合并输出：
+
+| 来源 | 存放位置 | 能否删除 |
+|---|---|---|
+| 内置规则 | `src/constants.ts` 的 `BUILTIN_BLOCKLIST` | 控制台标「内置」，不可单独删除，只能改代码 |
+| 自己添加 | KV `custom_blocklist` | 标签上的 × 随时取消，或「清空全部」 |
 
 ---
 
@@ -363,22 +370,23 @@ data/
 
 ## 域名分组
 
-179 个域名分 13 组，定义在 `src/constants.ts` 的 `SITE_GROUPS`：
+208 个域名分 14 组，定义在 `src/constants.ts` 的 `SITE_GROUPS`：
 
 | 分组 | 数量 | 覆盖 |
 |---|---|---|
 | `github` | 35 | GitHub 主站、Raw、头像、Actions、Release |
 | `game` | 29 | Rockstar、Epic、Battle.net、EA、Ubisoft、Riot |
 | `dev` | 22 | PyPI、Maven、Go、Rust、Conda、VS Code |
-| `web` | 16 | 必应、微软账户、Edge、DeepL、验证码 |
+| `web` | 23 | 必应、微软账户、Edge、DeepL、验证码、网盘、短链、IP 检测 |
 | `microsoft` | 28 | 微软主站、账号、Office 365、Outlook、Teams、Windows Update、Store、Azure、VS、Xbox |
+| `netflix` | 13 | 主站、播放 API、资源 CDN、fast.com 测速 |
 | `steam` | 11 | 商店、社区、CDN 静态资源 |
 | `docker` | 7 | 镜像拉取、认证、Layer 下载 |
-| `cloudflare` | 7 | 官方主站、开发者文档、Workers、Pages |
+| `cloudflare` | 12 | 官方主站、开发者文档、Workers、Pages、Turnstile 验证码 |
 | `npm` | 6 | npm registry、jsDelivr、unpkg、esm.sh |
 | `mod` | 6 | Nexusmods、CurseForge、Thunderstore |
-| `anime` | 5 | 番剧站、影视数据库 |
-| `adult` | 5 | — |
+| `anime` | 8 | 番剧站、影视数据库、资源站 |
+| `adult` | 6 | 成人站 |
 | `intl` | 3 | Stack Overflow、Python、Node.js |
 
 新增站点前建议先用 `/local/probe` 确认无 SNI 阻断——阻断的域名加进去也不会生效。

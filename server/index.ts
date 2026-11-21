@@ -124,6 +124,8 @@ root.post("/local/refresh", async (c) => {
     console.log(`[local/refresh] ${task.taskId} probing ${domains.length} domains`)
 
     const results: TaskItemResult[] = []
+    // 只有「两次判定都阻断」的域名才计入，避免把并发引起的偶发超时算成新发现
+    const confirmedBlocked: string[] = []
     let index = 0
 
     const workers = Array.from(
@@ -141,12 +143,22 @@ root.post("/local/refresh", async (c) => {
             // 判定为 SNI 阻断的域名记入排除清单，后续刷新默认跳过。
             // 判定依据是 checkSniBlock 的双 SNI 对照，可靠性较高：
             // 真实域名握手失败、换无关 SNI 却成功，说明阻断由域名匹配触发。
+            // 批量并发跑的时候，TLS 握手偶尔会因为本机连接数压力超时，
+            // 单次判定容易把正常域名误判成 SNI 阻断（实测一整轮全量刷新后
+            // 32 条阻断里有 23 条是误判）。这里再单独复核一次，
+            // 两次都判定阻断才写进清单——代价只在少数可疑域名上多花一次握手。
             if (r.sni?.verdict === "sni-blocked") {
-              await markBlocked(domain, {
-                reason: r.sni.explanation,
-                withSniError: r.sni.withSni.error,
-                withoutSniMs: r.sni.withoutSni.ms,
-              })
+              const confirm = await probeDomain(domain, { checkSni: true, useCache: false })
+              if (confirm.sni?.verdict === "sni-blocked") {
+                confirmedBlocked.push(domain)
+                await markBlocked(domain, {
+                  reason: r.sni.explanation,
+                  withSniError: r.sni.withSni.error,
+                  withoutSniMs: r.sni.withoutSni.ms,
+                })
+              } else {
+                console.log(`[local/refresh] ${domain} 首轮判为 SNI 阻断，复核后为 ${confirm.sni?.verdict}，不计入`)
+              }
             }
 
             // 失败原因：优先取 SNI 结论，否则汇总 TLS 失败原因
@@ -253,9 +265,7 @@ root.post("/local/refresh", async (c) => {
     const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1)
     console.log(`[local/refresh] done in ${elapsed}s, ${withLatency}/${results.length} with latency`)
 
-    const blockedNow = results.filter(
-      (r) => r.detail?.sni?.verdict === "sni-blocked"
-    ).length
+    const blockedNow = confirmedBlocked.length
     const adsResult = await adsPromise
 
     taskManager.complete(
@@ -429,8 +439,8 @@ root.post("/local/blocklist", async (c) => {
 })
 
 root.delete("/local/blocklist/:domain", async (c) => {
-  const ok = await removeBlocked(env as any, c.req.param("domain"))
-  return c.json({ ok })
+  const r = await removeBlocked(env as any, c.req.param("domain"))
+  return c.json(r, r.ok ? 200 : 400)
 })
 
 root.post("/local/blocklist/clear", async (c) => {

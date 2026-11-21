@@ -159,7 +159,7 @@ export const SITE_GROUPS: SiteGroup[] = [
   {
     id: "web",
     name: "网页工具",
-    description: "必应、微软账户、Edge、DeepL、验证码、数据站、hanime1",
+    description: "必应、微软账户、Edge、DeepL、验证码、网盘、短链、IP 检测",
     domains: [
       "www.bing.com",
       "login.live.com",
@@ -167,7 +167,6 @@ export const SITE_GROUPS: SiteGroup[] = [
       "api.deepl.com",
       "hcaptcha.com",
       "assets.hcaptcha.com",
-      "challenges.cloudflare.com",
       "steamdb.info",
       "op.gg",
       "tracker.gg",
@@ -177,6 +176,14 @@ export const SITE_GROUPS: SiteGroup[] = [
       "pan.baidu.com",
       "api.bilibili.com",
       "hanime1.me",
+      "www.mediafire.com",
+      "gofile.io",
+      "ouo.io",
+      "dnstest.dev",
+      "docs.wushuo.top",
+      "cdn.staticstack.net",
+      "ippure.com",
+      "www.ippure.com",
     ],
   },
   {
@@ -215,9 +222,29 @@ export const SITE_GROUPS: SiteGroup[] = [
     ],
   },
   {
+    id: "netflix",
+    name: "Netflix",
+    description: "主站、播放 API、登录、资源 CDN、官方测速站 fast.com",
+    domains: [
+      "netflix.com",
+      "www.netflix.com",
+      "api-global.netflix.com",
+      "ichnaea.netflix.com",
+      "ichnaea-web.netflix.com",
+      "appboot.netflix.com",
+      "help.netflix.com",
+      "media.netflix.com",
+      "assets.nflxext.com",
+      "codex.nflxext.com",
+      "fast.com",
+      "www.fast.com",
+      "api.fast.com",
+    ],
+  },
+  {
     id: "cloudflare",
     name: "Cloudflare",
-    description: "官方主站、开发者文档、博客、Workers、Pages",
+    description: "官方主站、开发者文档、博客、Workers、Pages、Turnstile 验证码",
     domains: [
       "cloudflare.com",
       "www.cloudflare.com",
@@ -225,6 +252,12 @@ export const SITE_GROUPS: SiteGroup[] = [
       "blog.cloudflare.com",
       "workers.cloudflare.com",
       "pages.dev",
+      // Turnstile 验证码与其挑战页分片，登录/注册页常用
+      "challenges.cloudflare.com",
+      "hagen.challenges.cloudflare.com",
+      "brunhild.challenges.cloudflare.com",
+      "ca1.cloudflarecaptcha.com",
+      "ca2.cloudflarecaptcha.com",
       // Cloudflare 控制面板入口。该域名长度随机、.mbf 无公开 NS 记录，
       // 是 CF 有意采用的特殊用途地址，避免面板入口被批量猜中。
       // 注意：地址可能随时间变化，失效后需替换为当前实际地址。
@@ -244,13 +277,16 @@ export const SITE_GROUPS: SiteGroup[] = [
   {
     id: "anime",
     name: "动漫影视",
-    description: "番剧站、影视数据库、追番记录",
+    description: "番剧站、影视数据库、追番记录、资源站",
     domains: [
       "animes.garden",
       "mikanime.tv",
       "tmdb.org",
       "themoviedb.org",
       "anilist.co",
+      "sorafolder.com",
+      "cossora.stream",
+      "hls-cdn.cossora.stream",
     ],
   },
   {
@@ -263,6 +299,7 @@ export const SITE_GROUPS: SiteGroup[] = [
       "theporndude.com",
       "18av.mm-cg.com",
       "javbooks.com",
+      "vdownload.hembed.com",
     ],
   },
   {
@@ -348,4 +385,24 @@ export const DNS_PROVIDERS: DNSProvider[] = [
     },
     type: "html"
   }
+]
+
+/**
+ * 内置屏蔽清单：随代码分发的黑名单，始终生效，控制台里不可单独删除。
+ *
+ * 都是实测确认的广告/追踪域名（用户反馈后固化），
+ * 与用户自己在「屏蔽网站」里加的清单合并输出，每条同样写 v4 + v6 两行。
+ */
+export const BUILTIN_BLOCKLIST: string[] = [
+  "www.google-analytics.com",
+  "i.jads.co",
+  "ck.juicyads.com",
+  "l.erodalabs.com",
+  "gl.xlfn.live",
+  "l.qqbfw.xyz",
+  "t.nettrck.store",
+  "zesty-career.com",
+  "diagramjawlineunhappy.com",
+  "www.ourdreamersai13.com",
+  "xn--the-realcomeandgo98-4704at12mxyjkj2es34dy15b.rqjc37.cyou",
 ]
