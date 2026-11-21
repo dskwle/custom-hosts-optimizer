@@ -321,6 +321,16 @@
         <pre id="hostsContent">点击「刷新显示」加载</pre>
       </div>
     </div>
+
+    <div class="card">
+      <h2>订阅与规则输出</h2>
+      <p class="hint">
+        加速与屏蔽的改动会实时体现在这些文件里，路由器 / Clash 直接订阅即可。
+        「复制」复制的是链接本体，「下载」拿的是当前内容。
+      </p>
+      <div id="feedList"></div>
+      <p class="sub" id="feedHint" style="margin-top:10px">正在检测各端点可用性…</p>
+    </div>
   </div>
 
   <!-- ========== 延迟诊断 ========== -->
@@ -660,6 +670,102 @@ function latencyClass(v) {
   return 'bad'
 }
 
+/* ---------- 首页：订阅与规则输出 ---------- */
+// 所有公开端点都在这里维护；新增规则输出时只需要在这个数组里加一行。
+// isClash 标记的端点属于 Clash 产物，未启用时显示「未启用」而不是报错。
+const FEEDS = [
+  { path: '/host', name: 'hosts 全量', desc: '加速 + 屏蔽，路由器 / 手动替换 hosts 用这个' },
+  { path: '/host_fast', name: 'hosts 加速', desc: '仅加速条目' },
+  { path: '/host_block', name: 'hosts 屏蔽', desc: '仅屏蔽条目（0.0.0.0 / ::）' },
+  { path: '/hosts.json', name: '结构化 JSON', desc: '含分组归类，程序化消费用' },
+  { path: '/clash/hosts.yaml', name: 'Clash 加速映射', desc: 'hosts: 段，v4/v6 混排', isClash: true },
+  { path: '/clash/block.yaml', name: 'Clash 屏蔽规则', desc: 'rule-provider，behavior: domain', isClash: true },
+  { path: '/clash/ads.yaml', name: 'Clash 广告规则', desc: '与屏蔽去重，可单独开关', isClash: true },
+  { path: '/clash/proxy.yaml', name: 'Clash SNI 阻断', desc: '只能走代理，改 hosts 无效', isClash: true },
+  { path: '/clash/snippet.yaml', name: 'Clash 合并片段', desc: '可直接粘贴进 mihomo 配置', isClash: true },
+  { path: '/clash/config.example.yaml', name: 'Clash 配置模板', desc: '完整模板，含 dns / TUN 注释', isClash: true },
+]
+
+function feedUrl(path) {
+  return `${location.origin}${path}`
+}
+
+function renderFeeds() {
+  el('feedList').innerHTML = FEEDS.map((f, i) => `
+    <div class="cap-rule-row" data-feed="${i}">
+      <span class="mono">${escAttr(feedUrl(f.path))}</span>
+      <span class="cap-count">${escAttr(f.name)} · ${escAttr(f.desc)}</span>
+      <span class="badge gray" data-feed-badge="${i}">检测中</span>
+      <button class="sm" data-feed-copy="${i}">复制</button>
+      <button class="sm" data-feed-dl="${i}">下载</button>
+    </div>`).join('')
+}
+
+async function checkFeeds() {
+  let clashOk = 0
+  let clashTotal = 0
+  await Promise.all(FEEDS.map(async (f, i) => {
+    const badge = document.querySelector(`[data-feed-badge="${i}"]`)
+    let code = 0
+    try {
+      const res = await fetch(f.path, { cache: 'no-store' })
+      code = res.status
+    } catch {
+      code = 0
+    }
+    if (badge) {
+      if (code === 200) {
+        badge.textContent = '可用'
+        badge.className = 'badge'
+      } else {
+        badge.textContent = f.isClash && code === 404 ? '未启用' : `不可用(${code || '无响应'})`
+        badge.className = 'badge bad'
+      }
+    }
+    if (f.isClash) {
+      clashTotal += 1
+      if (code === 200) clashOk += 1
+    }
+  }))
+  const hint = el('feedHint')
+  if (clashTotal && clashOk === 0) {
+    hint.textContent = 'Clash 规则输出未启用（未检测到 /clash/* 端点），hosts 系列不受影响。'
+  } else if (clashOk && clashOk < clashTotal) {
+    hint.textContent = `Clash 端点部分可用（${clashOk}/${clashTotal}），个别文件可能还没生成。`
+  } else {
+    hint.textContent = `全部 ${FEEDS.length} 个端点检测完成。`
+  }
+}
+
+async function copyFeedLink(i) {
+  const f = FEEDS[i]
+  try {
+    await copyText(feedUrl(f.path))
+    toast(`已复制 ${f.name} 链接`)
+  } catch (e) {
+    toast(`复制失败：${e.message}`)
+  }
+}
+
+async function downloadFeed(i) {
+  const f = FEEDS[i]
+  try {
+    const res = await fetch(f.path, { cache: 'no-store' })
+    if (!res.ok) {
+      toast(f.isClash && res.status === 404 ? '规则输出未启用' : `下载失败 HTTP ${res.status}`)
+      return
+    }
+    const blob = await res.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = f.path.split('/').pop() || 'download'
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 3000)
+  } catch (e) {
+    toast(`下载失败：${e.message}`)
+  }
+}
+
 /* ---------- 标签切换 ---------- */
 document.querySelectorAll('.tab').forEach((tab) => {
   tab.addEventListener('click', () => {
@@ -754,6 +860,14 @@ async function loadHosts() {
   }
 }
 
+el('feedList').addEventListener('click', (e) => {
+  const btn = e.target && e.target.closest ? e.target.closest('button') : null
+  if (!btn) return
+  if (btn.dataset.feedCopy != null) copyFeedLink(Number(btn.dataset.feedCopy))
+  else if (btn.dataset.feedDl != null) downloadFeed(Number(btn.dataset.feedDl))
+})
+renderFeeds()
+checkFeeds()
 el('btnLoadHosts').addEventListener('click', loadHosts)
 el('btnCopyHosts').addEventListener('click', async () => {
   const node = el('hostsContent')
