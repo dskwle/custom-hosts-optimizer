@@ -7,7 +7,7 @@
     "skipLibCheck": true,
     "noEmit": true,
     // 单测用 node --experimental-strip-types 直接跑 TS，必须写显式 .ts 后缀；
-    // 打开这个开关，tsc 才不会报 TS5097
+    // 否则 tsc 报 TS5097（noEmit 已开，带不进构建产物）
     "allowImportingTsExtensions": true,
     "lib": ["ESNext"],
     "types": ["node"],
