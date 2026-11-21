@@ -43,6 +43,7 @@ import {
   getBlocklist,
   getBuiltinBlocklist,
   getUserBlocklist,
+  normalizeDomain,
   addBlocked,
   removeBlocked,
   clearBlocklist,
@@ -465,6 +466,119 @@ root.post("/local/blocklist", async (c) => {
 root.delete("/local/blocklist/:domain", async (c) => {
   const r = await removeBlocked(env as any, c.req.param("domain"))
   return c.json(r, r.ok ? 200 : 400)
+})
+
+/**
+ * 手动添加自定义域名。
+ *
+ * 不走 /api/custom-domains：那条路用 Cloudflare / Google DoH 解析，
+ * 在国内直连不可达，绝大多数域名会直接报「无法解析」。
+ * 这里复用本地探测（AliDNS + DNSPod + 真实 TLS 握手），拿到的就是实测最优 IP。
+ */
+root.post("/local/custom-add", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { domains?: string[] } | null
+  const raw = Array.isArray(body?.domains) ? body!.domains : []
+  if (!raw.length) return c.json({ ok: false, error: "domains 为空" }, 400)
+
+  const builtinSet = new Set(ALL_DOMAINS.map((d: string) => d.toLowerCase()))
+  const customSet = new Set((await getCustomDomains(env as any)).map((d) => d.domain.toLowerCase()))
+  const blockedSet = new Set((await getBlocklist(env as any)).map((b) => b.domain.toLowerCase()))
+
+  const added: Array<{ domain: string; ip: string; latency: number | null }> = []
+  const skipped: Array<{ domain: string; reason: string }> = []
+  const failed: Array<{ domain: string; error: string }> = []
+
+  for (const item of raw) {
+    const domain = normalizeDomain(String(item))
+    if (!domain) {
+      failed.push({ domain: String(item).trim(), error: "不是合法域名" })
+      continue
+    }
+    if (builtinSet.has(domain)) {
+      skipped.push({ domain, reason: "内置加速" })
+      continue
+    }
+    if (customSet.has(domain)) {
+      skipped.push({ domain, reason: "已在自定义域名" })
+      continue
+    }
+    if (blockedSet.has(domain)) {
+      skipped.push({ domain, reason: "已屏蔽" })
+      continue
+    }
+    try {
+      const probe = await probeDomain(domain, { checkSni: true })
+      if (probe.sni?.verdict === "sni-blocked") {
+        failed.push({ domain, error: "SNI 阻断，改 hosts 无效" })
+        continue
+      }
+      if (!probe.bestIp) {
+        failed.push({ domain, error: "探测不到可用 IP" })
+        continue
+      }
+      const r = await addCustomDomain(env as any, domain, probe.bestIp)
+      if (!r) {
+        failed.push({ domain, error: "写入失败" })
+        continue
+      }
+      added.push({ domain, ip: probe.bestIp, latency: probe.latency })
+      customSet.add(domain)
+    } catch (e) {
+      failed.push({ domain, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  return c.json({ ok: true, added, skipped, failed })
+})
+
+/**
+ * 把某个域名在「手动加速」与「手动屏蔽」之间对调。
+ *
+ * 场景：配错边——本该加速的加到了屏蔽里，或反之。手工删了再加很绕，
+ * 这里一步完成：屏蔽 -> 先探到可用 IP 再加进自定义域名；加速 -> 从自定义域名
+ * 摘掉并写进屏蔽清单。内置规则不允许被这样改（会明确拒绝）。
+ */
+root.post("/local/switch", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { domain?: string; to?: string } | null
+  const domain = String(body?.domain || "").trim().toLowerCase()
+  const to = body?.to === "block" ? "block" : "allow"
+  if (!domain) return c.json({ ok: false, error: "domain 为空" }, 400)
+
+  if (to === "block") {
+    const removed = await removeCustomDomain(env as any, domain)
+    const r = await addBlocked(env as any, [domain])
+    if (r.builtin.length) {
+      return c.json({ ok: true, action: "blocked", note: "该域名已在内置屏蔽清单中", removed })
+    }
+    if (r.existed.length) {
+      return c.json({ ok: true, action: "blocked", note: "已在屏蔽列表中", removed })
+    }
+    if (!r.added.length) return c.json({ ok: false, error: "加入屏蔽失败" }, 400)
+    return c.json({ ok: true, action: "blocked", removed })
+  }
+
+  // 屏蔽 -> 加速
+  if (getBuiltinBlocklist().includes(domain)) {
+    return c.json({ ok: false, error: "该域名属于内置屏蔽规则，不能在这里解除（需要改 src/constants.ts）" }, 400)
+  }
+  if (ALL_DOMAINS.includes(domain)) {
+    // 已在内置加速里，只需要解除手动屏蔽
+    const r = await removeBlocked(env as any, domain)
+    return c.json({ ok: true, action: "unblocked", note: r.ok ? "已解除屏蔽（该域名本来就在内置加速列表）" : (r.reason || "") }, r.ok ? 200 : 400)
+  }
+
+  const probe = await probeDomain(domain, { checkSni: true })
+  if (probe.sni?.verdict === "sni-blocked") {
+    return c.json({ ok: false, error: "该域名 SNI 阻断，改 hosts 无效，解除屏蔽后也加速不了" }, 400)
+  }
+  if (!probe.bestIp) {
+    return c.json({ ok: false, error: "探测不到可用 IP，未做任何改动" }, 400)
+  }
+
+  const r = await removeBlocked(env as any, domain)
+  const added = await addCustomDomain(env as any, domain, probe.bestIp)
+  if (!added) return c.json({ ok: false, error: "已解除屏蔽，但写入自定义域名失败" }, 500)
+  return c.json({ ok: true, action: "unblocked", ip: probe.bestIp, latency: probe.latency, removed: r.ok })
 })
 
 /**

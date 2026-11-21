@@ -151,6 +151,7 @@
   }
   .domain-tag .mono { font-size: 11px; color: var(--muted); }
   .domain-tag button { padding: 0 4px; border: none; background: none; color: var(--bad); font-size: 14px; line-height: 1; cursor: pointer; }
+  .domain-tag button.alt { color: var(--accent); font-size: 12px; }
   .toast {
     position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
     background: #2c2c2a; color: #fff; padding: 10px 20px; border-radius: 8px;
@@ -1282,10 +1283,14 @@ async function loadDomains() {
       const domain = x.domain || x
       const ip = x.ip ? `<span class="mono">${x.ip}</span>` : ''
       return `<span class="domain-tag">${domain} ${ip}
+        <button class="alt" data-block="${domain}" title="配错了？改为屏蔽">⇄</button>
         <button data-domain="${domain}" title="删除">×</button></span>`
     }).join('')
     el('domainTags').querySelectorAll('button[data-domain]').forEach((b) => {
       b.addEventListener('click', () => removeDomain(b.dataset.domain))
+    })
+    el('domainTags').querySelectorAll('button[data-block]').forEach((b) => {
+      b.addEventListener('click', () => switchDomain(b.dataset.block, 'block'))
     })
   } catch (e) {
     el('domainsStatus').textContent = '加载失败：' + e.message
@@ -1293,40 +1298,35 @@ async function loadDomains() {
 }
 
 async function addDomains() {
-  const raw = el('domainInput').value.trim()
-  if (!raw) return
-  const domains = raw.split('\n').map((s) => s.trim()).filter(Boolean)
-  el('domainsStatus').textContent = `添加 ${domains.length} 个...`
+  const { list, dropped } = parseTargets(el('domainInput').value)
+  if (!list.length) {
+    toast(dropped ? `没有可识别的域名（忽略 ${dropped} 行）` : '请输入至少一个域名')
+    return
+  }
+  el('domainsStatus').textContent = `添加 ${list.length} 个...`
   try {
-    if (domains.length === 1) {
-      const res = await fetch(`${API}/api/custom-domains`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ domain: domains[0] }),
-      })
-      const d = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        el('domainsStatus').textContent = d.error || '添加失败'
-        toast(d.error || '添加失败')
-        return
-      }
-      el('domainInput').value = ''
-      el('domainsStatus').textContent = '已添加'
-      toast('已添加 1 个域名')
-    } else {
-      const res = await fetch(`${API}/api/custom-domains/batch`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ domains }),
-      })
-      const d = await res.json().catch(() => ({}))
-      const added = d.added || 0
-      const errs = d.errors || []
-      el('domainInput').value = added ? '' : el('domainInput').value
-      el('domainsStatus').textContent = `新增 ${added} 个` + (errs.length ? `，${errs.length} 个未加入（${errs[0].error}）` : '')
-      toast(added ? `已添加 ${added} 个域名` : (errs[0] ? errs[0].error : '没有新增'))
+    const res = await fetch(`${API}/local/custom-add`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ domains: list }),
+    })
+    const d = await res.json().catch(() => ({}))
+    if (!res.ok || d.ok === false) {
+      el('domainsStatus').textContent = d.error || '添加失败'
+      toast(d.error || '添加失败')
+      return
     }
+    const added = d.added || []
+    const skipped = d.skipped || []
+    const failed = d.failed || []
+    if (added.length) el('domainInput').value = ''
+    const notes = []
+    if (skipped.length) notes.push(`${skipped.length} 个已存在（${skipped[0].reason}）`)
+    if (failed.length) notes.push(`${failed.length} 个失败（${failed[0].error}）`)
+    el('domainsStatus').textContent = `新增 ${added.length} 个` + (notes.length ? `，${notes.join('，')}` : '')
+    toast(added.length ? `已添加 ${added.length} 个域名` : (notes.join('，') || '没有新增'))
     loadDomains()
+    loadHosts()
   } catch (e) {
     el('domainsStatus').textContent = '添加失败：' + e.message
   }
@@ -1353,9 +1353,13 @@ async function loadBlocklist() {
       return
     }
     el('blockTags').innerHTML = list.map((x) => `<span class="domain-tag">${x.domain}
+      <button class="alt" data-allow="${x.domain}" title="配错了？改为加速">⇄</button>
       <button data-domain="${x.domain}" title="取消屏蔽">×</button></span>`).join('')
     el('blockTags').querySelectorAll('button[data-domain]').forEach((b) => {
       b.addEventListener('click', () => unblockDomain(b.dataset.domain))
+    })
+    el('blockTags').querySelectorAll('button[data-allow]').forEach((b) => {
+      b.addEventListener('click', () => switchDomain(b.dataset.allow, 'allow'))
     })
   } catch (e) {
     el('blockStatus').textContent = '加载失败：' + e.message
@@ -1410,6 +1414,30 @@ async function unblockDomain(domain) {
   } catch (e) { toast('操作失败') }
 }
 
+/** 手动加速 <-> 手动屏蔽 一键对调；用于纠正配错边的情况 */
+async function switchDomain(domain, to) {
+  const btnLabel = to === 'block' ? '改为屏蔽' : '改为加速'
+  try {
+    const res = await fetch(`${API}/local/switch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ domain, to }),
+    })
+    const d = await res.json().catch(() => ({}))
+    if (!res.ok || !d.ok) {
+      toast(d.error || `${btnLabel}失败`)
+      return
+    }
+    toast(to === 'block' ? `已改为屏蔽 ${domain}` : `已改为加速 ${domain}${d.ip ? '（' + d.ip + '）' : ''}`)
+    loadDomains()
+    loadBlocklist()
+    loadHosts()
+    if (el('lookupInput').value.trim()) runLookup()
+  } catch (e) {
+    toast(`${btnLabel}失败`)
+  }
+}
+
 async function clearBlocklist() {
   if (!confirm('清空全部屏蔽域名？此操作不可撤销。')) return
   try {
@@ -1462,18 +1490,32 @@ async function runLookup() {
       el('lookupResult').innerHTML = `<p class="empty">没有匹配「${q}」的域名</p>`
       return
     }
+    const actionOf = (r) => {
+      if (r.category === 'custom-accel') {
+        return `<button class="sm" data-switch="${r.domain}" data-to="block" title="配错了？改为屏蔽">改为屏蔽</button>`
+      }
+      if (r.category === 'custom-block') {
+        return `<button class="sm" data-switch="${r.domain}" data-to="allow" title="配错了？改为加速">改为加速</button>`
+      }
+      return '<span class="sub">—</span>'
+    }
     const rows = d.results.map((r) => `<tr>
       <td><code>${r.domain}</code></td>
       <td><span class="${LOOKUP_BADGE[r.category] || 'badge gray'}">${r.label}</span></td>
       <td class="sub">${r.detail || '—'}</td>
       <td class="sub">${r.addedAt ? new Date(r.addedAt).toLocaleString('zh-CN', { hour12: false }) : '—'}</td>
+      <td>${actionOf(r)}</td>
     </tr>`).join('')
     el('lookupResult').innerHTML = `
       <table style="margin-top:14px">
-        <thead><tr><th>域名</th><th>分类</th><th>详情</th><th>添加时间</th></tr></thead>
+        <thead><tr><th>域名</th><th>分类</th><th>详情</th><th>添加时间</th><th>操作</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      ${d.truncated ? '<p class="sub">结果过多，只显示前 300 条</p>' : ''}`
+      ${d.truncated ? '<p class="sub">结果过多，只显示前 300 条</p>' : ''}
+      <p class="sub" style="margin-top:8px">只有「手动加速 / 手动屏蔽」的条目能一键对调；内置规则需改代码。</p>`
+    el('lookupResult').querySelectorAll('button[data-switch]').forEach((b) => {
+      b.addEventListener('click', () => switchDomain(b.dataset.switch, b.dataset.to))
+    })
   } catch (e) {
     el('lookupStatus').textContent = '查询失败：' + e.message
   }
