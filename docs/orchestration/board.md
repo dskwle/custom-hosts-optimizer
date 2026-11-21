@@ -1,7 +1,7 @@
 # 任务看板（唯一事实来源）
 
 > 只有主 agent 能改这张表。状态定义见 `multi-agent-workflow.md` §5。
-> 最后更新：2026-11-21 11:05 · 阶段：并行开发中（4 条 lane 已启动）
+> 最后更新：2026-11-21 11:25 · 阶段：E/C 已合并，A 返工中，D 开发中
 
 ## 状态图例
 
@@ -20,21 +20,21 @@
 
 | ID | 任务 | Owner | 分支 | 状态 | 轮次 |
 |---|---|---|---|---|---|
-| E1 | `/clash/hosts.yaml` | agent-E | feat/E-clash | IN_PROGRESS | 0 |
-| E2 | `/clash/block.yaml` + `/clash/ads.yaml` | agent-E | feat/E-clash | IN_PROGRESS | 0 |
-| E3 | `/clash/proxy.yaml`（SNI 阻断清单） | agent-E | feat/E-clash | IN_PROGRESS | 0 |
-| E4 | `/clash/snippet.yaml` 合并片段 | agent-E | feat/E-clash | IN_PROGRESS | 0 |
-| E5 | 完整配置模板 | agent-E | feat/E-clash | IN_PROGRESS | 0 |
-| E7 | `scripts/verify-clash.sh` 自动断言 | agent-E | feat/E-clash | IN_PROGRESS | 0 |
+| E1 | `/clash/hosts.yaml` | agent-E | feat/E-clash | MERGED | 0 |
+| E2 | `/clash/block.yaml` + `/clash/ads.yaml` | agent-E | feat/E-clash | MERGED | 0 |
+| E3 | `/clash/proxy.yaml`（SNI 阻断清单） | agent-E | feat/E-clash | MERGED | 0 |
+| E4 | `/clash/snippet.yaml` 合并片段 | agent-E | feat/E-clash | MERGED | 0 |
+| E5 | 完整配置模板 | agent-E | feat/E-clash | MERGED | 0 |
+| E7 | `scripts/verify-clash.sh` 自动断言 | agent-E | feat/E-clash | CHANGES_REQUESTED | 0 |
 
 ## Lane A（运行环境）
 
 | ID | 任务 | Owner | 分支 | 状态 | 轮次 |
 |---|---|---|---|---|---|
-| A1 | compose `capture` profile（chromium + novnc） | agent-A | feat/A-capture-env | IN_PROGRESS | 0 |
-| A2 | Chromium 启动参数 | agent-A | feat/A-capture-env | IN_PROGRESS | 0 |
-| A3 | `/local/capture/env` 自检接口 | agent-A | feat/A-capture-env | IN_PROGRESS | 0 |
-| A5 | 资源治理（内存上限、闲置自停） | agent-A | feat/A-capture-env | IN_PROGRESS | 0 |
+| A1 | compose `capture` profile（chromium + novnc） | agent-A | feat/A-capture-env | CHANGES_REQUESTED | 0 |
+| A2 | Chromium 启动参数 | agent-A | feat/A-capture-env | CHANGES_REQUESTED | 0 |
+| A3 | `/local/capture/env` 自检接口 | agent-A | feat/A-capture-env | CHANGES_REQUESTED | 0 |
+| A5 | 资源治理（内存上限、闲置自停） | agent-A | feat/A-capture-env | CHANGES_REQUESTED | 0 |
 
 ## Lane B（抓包后端）
 
@@ -51,10 +51,10 @@
 
 | ID | 任务 | Owner | 分支 | 状态 | 轮次 | 依赖 |
 |---|---|---|---|---|---|---|
-| C1 | 按 host 聚合 | agent-C | feat/C-aggregate | IN_PROGRESS | 0 | T0-1 |
-| C2 | 第一方/第三方判定 | agent-C | feat/C-aggregate | IN_PROGRESS | 0 | C1 |
-| C3 | 建议引擎 | agent-C | feat/C-aggregate | IN_PROGRESS | 0 | C1, C2 |
-| C5 | fixture 单测 | agent-C | feat/C-aggregate | IN_PROGRESS | 0 | C1–C3 |
+| C1 | 按 host 聚合 | agent-C | feat/C-aggregate | MERGED | 0 | T0-1 |
+| C2 | 第一方/第三方判定 | agent-C | feat/C-aggregate | MERGED | 0 | C1 |
+| C3 | 建议引擎 | agent-C | feat/C-aggregate | MERGED | 0 | C1, C2 |
+| C5 | fixture 单测 | agent-C | feat/C-aggregate | MERGED | 0 | C1–C3 |
 
 ## Lane D（控制台 UI）
 
@@ -86,3 +86,7 @@
 | 2026-11-21 11:02 | T0 完成并合入 local-runtime（a765f37），集成分支建立 |
 | 2026-11-21 11:05 | 建 worktree：wt-A/wt-C/wt-D/wt-E；E/A/C/D 四条 lane 并行启动；B 因依赖 A3 暂缓 |
 | 2026-11-21 11:05 | 抓取合并前基线：`baseline/host.txt`(2215) / `host_fast.txt`(226) / `host_block.txt`(1988) |
+| 2026-11-21 11:15 | **E 合并**（b0c95e9）+ 挂载路由（ad3d095）：/clash/* 五端点线上 200，mihomo 端到端通过；E7 脚本断言写错返工 |
+| 2026-11-21 11:18 | **A 第 1 轮打回**：镜像 entrypoint 强制 --headless（noVNC 里没有浏览器） |
+| 2026-11-21 11:22 | **C 合并**（bb058b6）：41 单测全绿，契约 v1.1 跟进完成 |
+| 2026-11-21 11:25 | **A 第 2 轮打回**：headed Chrome 忽略 --remote-debugging-address，改 host 网络 + X 走 loopback |
