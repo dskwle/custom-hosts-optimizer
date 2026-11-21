@@ -27,6 +27,7 @@ import { resolveAndMeasure } from "./timing.js"
 import { taskManager, monitor, type TaskItemResult } from "./tasks.js"
 import { cacheStats, clearCache } from "./ipcache.js"
 import { checkNetworkChange } from "./netcheck.js"
+import { createClashRoutes } from "./routes/clash.js"
 import { refreshAdsRules, getAdsEnabled, setAdsEnabled, getAdsRules } from "../src/services/ads.js"
 import {
   filterBlocked,
@@ -80,14 +81,18 @@ const DEFAULT_ADMIN_PASSWORD = "123456"
 const ADMIN_PASSWORD = (process.env.ADMIN_PASSWORD || "").trim() || DEFAULT_ADMIN_PASSWORD
 const AUTH_DISABLED = /^(off|false|0|no)$/i.test((process.env.ADMIN_AUTH || "").trim())
 
-/** 公开路径：三个 hosts 文本入口 + 结构化导出 + 容器健康检查 */
+/** 公开路径：hosts 文本入口 + 结构化导出 + Clash 规则 + 容器健康检查 */
 function isPublicPath(pathname: string): boolean {
   return (
     pathname.startsWith("/host") ||
     pathname === "/hosts.json" ||
+    pathname.startsWith("/clash/") ||
     pathname === "/local/health"
   )
 }
+
+// Clash 规则输出：与 /host* 同级公开，供 mihomo 的 rule-providers 直接拉取
+root.route("/clash", createClashRoutes(() => env as any))
 
 function basicAuthOk(header?: string): boolean {
   if (!header || !header.startsWith("Basic ")) return false
