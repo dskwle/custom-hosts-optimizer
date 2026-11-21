@@ -32,6 +32,8 @@ import { addBlocked, getBlocklist, normalizeDomain } from '../../src/services/bl
 const APPLY_MAX_HOSTS = 50
 /** probe 并发。4 与 /local/refresh 的默认并发 8 相比更保守：这里通常是交互式等待，稳比快重要 */
 const PROBE_CONCURRENCY = 4
+/** end 帧之后保持连接的时长（方案 A）：给前端留时间收完最后一帧再断 */
+const END_LINGER_MS = 5_000
 
 export interface ApplyResult {
   added: string[]
@@ -111,8 +113,10 @@ export function createCaptureRoutes(getEnv: () => Bindings, getCdpUrl: () => str
 
     return streamSSE(c, async (stream) => {
       let finished = false
+      let lingering = false
       let unsubscribe: () => void = () => {}
       let ping: ReturnType<typeof setInterval> | null = null
+      let lingerTimer: ReturnType<typeof setTimeout> | null = null
       let resolveDone: () => void = () => {}
 
       const done = new Promise<void>((resolve) => {
@@ -125,19 +129,34 @@ export function createCaptureRoutes(getEnv: () => Bindings, getCdpUrl: () => str
         void stream.write(`data: ${JSON.stringify(frame)}\n\n`)
       }
 
-      const finish = () => {
+      const teardown = () => {
         if (finished) return
         finished = true
+        if (lingerTimer) clearTimeout(lingerTimer)
+        lingerTimer = null
         unsubscribe()
         if (ping) clearInterval(ping)
         resolveDone()
+      }
+
+      /**
+       * end 帧之后**保持 5 秒**再关连接（主 agent 选定的方案 A）。
+       *
+       * 立刻关会有个实际窗口：前端刚收到 end 就断线，浏览器把这次断线当成
+       * "网络抖动"触发重连，于是又多一次 /summary 请求。留 5s 足够 TCP/代理
+       * 把最后一帧送出去，重连时再补一句 end 直接关。
+       */
+      const closeAfterLinger = () => {
+        if (finished || lingering) return
+        lingering = true
+        lingerTimer = setTimeout(teardown, END_LINGER_MS)
       }
 
       send({ type: 'state', session: initial })
 
       unsubscribe = manager.streams.subscribe(id, (frame) => {
         send(frame)
-        if (frame.type === 'end') finish()
+        if (frame.type === 'end') closeAfterLinger()
       })
 
       // 反代与浏览器都会掐掉长时间静默的连接，15s 一条注释行是 SSE 的常规做法
@@ -145,15 +164,18 @@ export function createCaptureRoutes(getEnv: () => Bindings, getCdpUrl: () => str
         if (!finished) void stream.write(': ping\n\n')
       }, 15_000)
 
-      // 历史会话或已经结束的会话：补一帧 end 立刻断开，别让前端挂着一个永远没数据的连接
+      // 重连到一个已经结束的会话：补 state + end 后直接关，不留 5s（不会再有数据了）
       if (initial.status === 'stopped' || initial.status === 'failed') {
-        send({ type: 'end', sessionId: id })
-        finish()
+        // 用 await 保证两帧真的写出去再关：立刻 close 会把排队中的数据丢掉
+        await stream.write(`data: ${JSON.stringify({ type: 'state', session: initial })}\n\n`)
+        await stream.write(`data: ${JSON.stringify({ type: 'end', sessionId: id })}\n\n`)
+        teardown()
+        return
       }
 
       // 客户端断开（关页面、刷新）必须退订，否则 publish 会一直往死连接写
-      stream.onAbort(finish)
-      c.req.raw.signal.addEventListener('abort', finish)
+      stream.onAbort(teardown)
+      c.req.raw.signal.addEventListener('abort', teardown)
 
       await done
     })
@@ -277,7 +299,9 @@ async function applyBlock(env: Bindings, hosts: string[]): Promise<ApplyResult> 
 
   result.added.push(...r.added)
   for (const domain of r.existed) result.skipped.push({ domain, reason: '已屏蔽' })
-  for (const domain of r.builtin) result.skipped.push({ domain, reason: '内置屏蔽' })
+  // 内置项也报"已屏蔽"：前端按关键字映射标签（内置/屏蔽/存在），
+  // 自创"内置屏蔽"虽然含"屏蔽"能匹配上，但会让三处文案不统一
+  for (const domain of r.builtin) result.skipped.push({ domain, reason: '已屏蔽' })
   for (const domain of r.invalid) result.failed.push({ domain, error: '域名非法' })
 
   for (const domain of r.added) {

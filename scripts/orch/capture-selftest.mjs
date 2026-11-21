@@ -215,6 +215,7 @@ function consumeStream(sessionId) {
   const frames = []
   let raw = ''
   const abort = new AbortController()
+  const state = { endedAt: 0, closedAt: 0 }
   const done = (async () => {
     try {
       const res = await fetch(`${BASE}/${sessionId}/stream`, { signal: abort.signal })
@@ -233,18 +234,21 @@ function consumeStream(sessionId) {
           for (const line of chunk.split('\n')) {
             if (!line.startsWith('data: ')) continue
             try {
-              frames.push(JSON.parse(line.slice(6)))
+              const frame = JSON.parse(line.slice(6))
+              frames.push(frame)
+              if (frame.type === 'end') state.endedAt = Date.now()
             } catch {
               /* 半帧忽略 */
             }
           }
         }
       }
+      state.closedAt = Date.now()
     } catch {
       /* abort 是正常的收尾方式 */
     }
   })()
-  return { frames, close: () => abort.abort(), done }
+  return { frames, state, close: () => abort.abort(), done }
 }
 
 // ---------------------------------------------------------------- 主流程
@@ -375,10 +379,12 @@ async function runFlow(base) {
   )
 
   head('SSE 帧')
-  // end 帧到达后连接会关，等一小会让消费端收完
-  await new Promise((r) => setTimeout(r, 500))
+  // 方案 A：运行中的连接收到 end 后应保持约 5s 再关。等它自然关闭，
+  // 而不是自己 abort，否则测不出"保持"这个行为。
+  await Promise.race([stream.done, new Promise((r) => setTimeout(r, 8000))])
   stream.close()
   await stream.done
+  const lingerMs = stream.state.endedAt ? stream.state.closedAt - stream.state.endedAt : -1
   const types = stream.frames.reduce((acc, f) => {
     acc[f.type] = (acc[f.type] ?? 0) + 1
     return acc
@@ -387,6 +393,29 @@ async function runFlow(base) {
   expect(stream.frames.some((f) => f.type === 'state'), '有 state 帧')
   expect(stream.frames.some((f) => f.type === 'request'), '有 request 帧')
   expect(stream.frames.some((f) => f.type === 'end'), '有 end 帧')
+  expect(lingerMs >= 4000 && lingerMs <= 7500, `end 帧后保持约 5s 再关（${lingerMs}ms）`)
+
+  head('SSE 重连到已结束的会话')
+  // 方案 A：运行中收到 end 后保持 5s 再关；但"重连到一个已结束的会话"应当补完
+  // state+end 立刻关，不能把前端晾在一个永远没数据的连接上。
+  const reconnectStart = Date.now()
+  let reconnectText = ''
+  try {
+    const res = await fetch(`${BASE}/${session.id}/stream`)
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      reconnectText += decoder.decode(value, { stream: true })
+    }
+  } catch (err) {
+    bad(`重连失败：${err.message}`)
+  }
+  const reconnectMs = Date.now() - reconnectStart
+  expect(reconnectText.includes('"type":"state"'), '重连先补一帧 state')
+  expect(reconnectText.includes('"type":"end"'), '重连收到 end 帧')
+  expect(reconnectMs < 3000, `重连后立即关闭（${reconnectMs}ms）`)
 
   head('列表与落盘')
   // 契约里是 GET /local/capture?limit=20（不带尾斜杠）；Hono 对 '/local/capture/' 会 404
