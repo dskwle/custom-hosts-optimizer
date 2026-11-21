@@ -16,7 +16,8 @@ import {
 } from "./services/hosts"
 import { SITE_GROUPS, resolveGroupDomains } from "./constants"
 import { getAdsEnabled, getAdsRules } from "./services/ads"
-import { getBlocklist } from "./services/blocklist"
+import { getBlocklist, getBuiltinBlocklist } from "./services/blocklist"
+import { getPausedAccel, getPausedShield } from "../server/paused.ts"
 import { Bindings } from "./types"
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -199,7 +200,11 @@ const hostsFull = async (c: Ctx, ipv4Only = false) => {
     const ads = await readAds(c)
     // v4 通、v6 全废的域名：v4 照常加速，v6 写进屏蔽区
     const v6Broken = ipv4Only ? [] : await getV6BrokenDomains(c.env)
-    const content = formatHostsFile(allData, dataAt, ads, blocked, ipv4Only, v6Broken)
+    // 用户暂停的内置规则：加速条目不输出，屏蔽条目不再堵死
+    const [pausedAccel, pausedShield] = await Promise.all([getPausedAccel(), getPausedShield()])
+    const content = formatHostsFile(
+      allData, dataAt, ads, blocked, ipv4Only, v6Broken, pausedAccel, pausedShield
+    )
     console.log(`[hosts] 全部条目 ${allData.length}，屏蔽 ${blocked.length}，长度 ${content.length}`)
 
     setHostsHeaders(c, forceRefresh)
@@ -222,7 +227,8 @@ const hostsFast = async (c: Ctx, ipv4Only = false) => {
 
     const allData = await collectEntries(c, { groupParam, forceRefresh, includeCustom })
     const blocked = await getBlocklist(c.env)
-    const content = formatFastHosts(allData, dataAt, blocked, ipv4Only)
+    const pausedAccel = await getPausedAccel()
+    const content = formatFastHosts(allData, dataAt, blocked, ipv4Only, pausedAccel)
 
     setHostsHeaders(c, forceRefresh)
     return c.text(content)
@@ -239,7 +245,8 @@ const hostsBlock = async (c: Ctx) => {
     const ads = await readAds(c)
     // 纯屏蔽端点在语义上是"只要 v4/v6 都不可达"，
     // 把仅 v6 坏的域名也带上会让只跑 v4 的环境误伤，所以这里不传
-    const content = formatBlockHosts(ads, blocked)
+    const pausedShield = await getPausedShield()
+    const content = formatBlockHosts(ads, blocked, null, pausedShield)
     if (!content) {
       c.header('Content-Type', 'text/plain; charset=utf-8')
       c.header('Cache-Control', 'no-store')

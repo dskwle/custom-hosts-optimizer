@@ -502,6 +502,9 @@
         <label class="row" style="gap:6px"><input type="checkbox" class="lookupCat" value="builtin-block" checked> 内置屏蔽</label>
         <label class="row" style="gap:6px"><input type="checkbox" class="lookupCat" value="custom-accel" checked> 手动加速</label>
         <label class="row" style="gap:6px"><input type="checkbox" class="lookupCat" value="custom-block" checked> 手动屏蔽</label>
+        <label class="row" style="gap:6px;padding-left:10px;border-left:1px solid var(--border)">
+          <input type="checkbox" id="lookupPausedOnly"> 只看已暂停
+        </label>
       </div>
       <div id="lookupResult"><p class="empty">输入关键字开始查询</p></div>
     </div>
@@ -1884,6 +1887,43 @@ async function unblockDomain(domain) {
 }
 
 /** 手动加速 <-> 手动屏蔽 一键对调；用于纠正配错边的情况 */
+/**
+ * 暂停 / 恢复一个内置条目。
+ *
+ * 暂停加速：该域名不再写入 hosts 优选区，也不参与后续刷新探测
+ * 暂停屏蔽：该域名不再写入 0.0.0.0 / :: 行，恢复原本的可达性
+ *
+ * 改完立刻重查一次，让按钮与徽标状态跟着变，而不是等用户再点一次查询。
+ */
+async function toggleBuiltinPause(btn) {
+  const domain = btn.dataset.pause
+  const kind = btn.dataset.kind
+  const toPause = btn.dataset.act === 'pause'
+  btn.disabled = true
+  try {
+    const res = await fetch(`${API}/local/paused`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ domain, kind, paused: toPause }),
+    })
+    const d = await res.json()
+    if (!res.ok || d.ok === false) {
+      toast(d.error || `HTTP ${res.status}`)
+      return
+    }
+    toast(toPause
+      ? `已暂停${kind === 'accel' ? '加速' : '屏蔽'}：${domain}`
+      : `已恢复${kind === 'accel' ? '加速' : '屏蔽'}：${domain}`)
+    await runLookup()
+    // hosts 内容变了，首页那份预览也该跟着刷新
+    if (typeof loadHosts === 'function') loadHosts()
+  } catch (e) {
+    toast(`操作失败：${e.message}`)
+  } finally {
+    btn.disabled = false
+  }
+}
+
 async function switchDomain(domain, to) {
   const btnLabel = to === 'block' ? '改为屏蔽' : '改为加速'
   try {
@@ -1924,10 +1964,25 @@ const LOOKUP_BADGE = {
   'custom-accel': 'badge',
   'custom-block': 'badge gray',
 }
+
+/** 内置条目的暂停切换按钮：暂停中的显示「恢复」，否则显示「暂停」 */
+function lookupPauseBtn(r) {
+  if (r.pauseKind !== 'accel' && r.pauseKind !== 'shield') return null
+  const act = r.paused ? 'resume' : 'pause'
+  const text = r.paused ? '恢复' : '暂停'
+  const title = r.paused
+    ? '恢复后重新写入 hosts'
+    : (r.pauseKind === 'accel' ? '暂停后该域名不再写入优选区' : '暂停后不再写入屏蔽行，恢复可达')
+  return `<button class="sm" data-pause="${escAttr(r.domain)}" data-kind="${r.pauseKind}" data-act="${act}" title="${escAttr(title)}">${text}</button>`
+}
 let lookupTimer = null
 
 function lookupCats() {
-  return [...document.querySelectorAll('.lookupCat:checked')].map((x) => x.value)
+  const cats = [...document.querySelectorAll('.lookupCat:checked')].map((x) => x.value)
+  // 「只看已暂停」是附加过滤，不在分类里；单独转成一个筛选标记传给后端
+  const onlyPaused = el('lookupPausedOnly')
+  if (onlyPaused && onlyPaused.checked) cats.push('paused')
+  return cats
 }
 
 async function runLookup() {
@@ -1959,6 +2014,8 @@ async function runLookup() {
       return
     }
     const actionOf = (r) => {
+      const pauseBtn = lookupPauseBtn(r)
+      if (pauseBtn) return pauseBtn
       if (r.category === 'custom-accel') {
         return `<button class="sm" data-switch="${r.domain}" data-to="block" title="配错了？改为屏蔽">改为屏蔽</button>`
       }
@@ -1969,7 +2026,7 @@ async function runLookup() {
     }
     const rows = d.results.map((r) => `<tr>
       <td><code>${r.domain}</code></td>
-      <td><span class="${LOOKUP_BADGE[r.category] || 'badge gray'}">${r.label}</span></td>
+      <td><span class="${r.paused ? 'badge gray' : (LOOKUP_BADGE[r.category] || 'badge gray')}">${r.label}</span></td>
       <td class="sub">${r.detail || '—'}</td>
       <td class="sub">${r.addedAt ? new Date(r.addedAt).toLocaleString('zh-CN', { hour12: false }) : '—'}</td>
       <td>${actionOf(r)}</td>
@@ -1983,6 +2040,9 @@ async function runLookup() {
       <p class="sub" style="margin-top:8px">只有「手动加速 / 手动屏蔽」的条目能一键对调；内置规则需改代码。</p>`
     el('lookupResult').querySelectorAll('button[data-switch]').forEach((b) => {
       b.addEventListener('click', () => switchDomain(b.dataset.switch, b.dataset.to))
+    })
+    el('lookupResult').querySelectorAll('button[data-pause]').forEach((b) => {
+      b.addEventListener('click', () => toggleBuiltinPause(b))
     })
   } catch (e) {
     el('lookupStatus').textContent = '查询失败：' + apiErrText(e)
@@ -3342,6 +3402,7 @@ el('lookupInput').addEventListener('input', () => {
   lookupTimer = setTimeout(runLookup, 250)
 })
 document.querySelectorAll('.lookupCat').forEach((c) => c.addEventListener('change', runLookup))
+el('lookupPausedOnly').addEventListener('change', runLookup)
 el('lookupMode').addEventListener('change', runLookup)
 el('monitorGroup').addEventListener('change', () => { chartData = {}; startChartPolling() })
 window.addEventListener('resize', () => drawChart())

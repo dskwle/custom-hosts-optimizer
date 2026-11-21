@@ -28,6 +28,15 @@ import { resolveAndMeasure } from "./timing.js"
 import { rankTimingDetails } from "./rank.js"
 import { clearFailure, recordFailure, listFailures, clearAllFailures } from "./failures.js"
 import { getBlockedDomains } from "./blocked.js"
+import { pickPaused } from "./pause-filter.js"
+import {
+  getPaused,
+  getPausedAccel,
+  getPausedShield,
+  setPaused,
+  setPausedMany,
+  clearPaused,
+} from "./paused.js"
 import { startRetrier, retrierStats, runRetryRound } from "./retrier.js"
 import { taskManager, monitor, type TaskItemResult } from "./tasks.js"
 import { cacheStats, clearCache } from "./ipcache.js"
@@ -178,15 +187,17 @@ root.post("/local/refresh", async (c) => {
     )
   }
 
-  // 被用户屏蔽的域名不参与优选：测出来也不会写进 hosts，纯粹浪费一轮探测
+  // 被用户屏蔽的域名不参与优选：测出来也不会写进 hosts，纯粹浪费一轮探测。
+  // 暂停加速的内置域名同理——它们本来就不输出了，再测一遍纯属白耗。
   const blocklist = await getBlocklist(env as any)
   const blockedNames = new Set(blocklist.map((b) => b.domain))
-  const domains = blockedNames.size
-    ? filtered.filter((d) => !blockedNames.has(d.toLowerCase()))
-    : filtered
+  const pausedAccel = await getPausedAccel()
+  const domains = filtered.filter(
+    (d) => !blockedNames.has(d.toLowerCase()) && !pausedAccel.has(d.toLowerCase()),
+  )
 
   if (domains.length < filtered.length) {
-    console.log(`[local/refresh] 跳过 ${filtered.length - domains.length} 个已屏蔽域名`)
+    console.log(`[local/refresh] 跳过 ${filtered.length - domains.length} 个已屏蔽/已暂停加速域名`)
   }
 
   // 已在排除清单里的域名集合：复核这些域名时不该污染「未判死」的失败计数。
@@ -722,19 +733,41 @@ root.get("/local/lookup", async (c) => {
     label: string
     detail?: string
     addedAt?: string
+    /** 内置条目是否被用户暂停；有值表示可切换 */
+    paused?: boolean
+    /** 该行对应的暂停维度：accel 暂停加速 / shield 暂停屏蔽 */
+    pauseKind?: "accel" | "shield"
   }
   const rows: Row[] = []
+
+  const [pausedAccel, pausedShield] = await Promise.all([getPausedAccel(), getPausedShield()])
 
   if (want("builtin-accel")) {
     for (const g of SITE_GROUPS) {
       for (const d of g.domains) {
-        rows.push({ domain: d, category: "builtin-accel", label: "内置加速", detail: g.name })
+        const paused = pausedAccel.has(d.toLowerCase())
+        rows.push({
+          domain: d,
+          category: "builtin-accel",
+          label: paused ? "内置加速（已暂停）" : "内置加速",
+          detail: paused ? `${g.name} · 已暂停，不写入 hosts` : g.name,
+          paused,
+          pauseKind: "accel",
+        })
       }
     }
   }
   if (want("builtin-block")) {
     for (const d of getBuiltinBlocklist()) {
-      rows.push({ domain: d, category: "builtin-block", label: "内置屏蔽" })
+      const paused = pausedShield.has(d.toLowerCase())
+      rows.push({
+        domain: d,
+        category: "builtin-block",
+        label: paused ? "内置屏蔽（已暂停）" : "内置屏蔽",
+        detail: paused ? "已暂停，不再写入屏蔽行" : undefined,
+        paused,
+        pauseKind: "shield",
+      })
     }
   }
   if (want("custom-accel")) {
@@ -777,8 +810,12 @@ root.get("/local/lookup", async (c) => {
     match = (d) => d.includes(raw)
   }
 
-  const totalAll = rows.length
-  const matched = raw ? rows.filter((r) => match(r.domain)) : rows
+  // 「已暂停」不是"分类"，而是一个附加过滤：勾了它就只看被暂停的内置条目。
+  // 它和另外四个分类是「与」关系，这样能既按分类又按暂停状态筛。
+  const scoped = pickPaused(rows, cats.has("paused"))
+
+  const totalAll = scoped.length
+  const matched = raw ? scoped.filter((r) => match(r.domain)) : scoped
   // 精确命中排最前，其次前缀命中，其余按域名长度（越短越可能是主域）
   const rank = (d: string) => (d === raw ? 0 : d.startsWith(raw) ? 1 : 2)
   matched.sort((a, b) => rank(a.domain) - rank(b.domain) || a.domain.length - b.domain.length || a.domain.localeCompare(b.domain))
@@ -792,6 +829,71 @@ root.get("/local/lookup", async (c) => {
     truncated: matched.length > 300,
     results: matched.slice(0, 300),
   })
+})
+
+/** 内置条目的暂停状态总览 */
+root.get("/local/paused", async (c) => {
+  const state = await getPaused()
+  return c.json({ ok: true, ...state })
+})
+
+/**
+ * 暂停 / 恢复内置站点。
+ * body: { domain: string | string[], kind: 'accel' | 'shield', paused: boolean }
+ *
+ * 只接受真正属于内置清单的域名：允许任意域名会让用户在「内置」这一层
+ * 塞进自己加的域名，跟自定义加速/屏蔽的语义就混了。
+ */
+root.post("/local/paused", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as
+    | { domain?: string | string[]; kind?: string; paused?: boolean }
+    | null
+  const kind = body?.kind === "shield" ? "shield" : body?.kind === "accel" ? "accel" : null
+  if (!kind) return c.json({ ok: false, error: "kind 必须是 accel 或 shield" }, 400)
+  if (typeof body?.paused !== "boolean") {
+    return c.json({ ok: false, error: "paused 必须是布尔值" }, 400)
+  }
+
+  const raw = Array.isArray(body?.domain) ? body!.domain : body?.domain ? [body.domain] : []
+  if (!raw.length) return c.json({ ok: false, error: "domain 为空" }, 400)
+
+  // 校验归属：加速只能来自 SITE_GROUPS，屏蔽只能来自内置屏蔽清单
+  const accelSet = new Set(SITE_GROUPS.flatMap((g) => g.domains.map((d) => d.toLowerCase())))
+  const shieldSet = new Set(getBuiltinBlocklist().map((d) => d.toLowerCase()))
+  const allowed = kind === "accel" ? accelSet : shieldSet
+
+  const accepted: string[] = []
+  const rejected: string[] = []
+  for (const x of raw) {
+    const d = String(x ?? "").trim().toLowerCase()
+    if (!d) continue
+    if (!allowed.has(d)) rejected.push(d)
+    else accepted.push(d)
+  }
+  if (!accepted.length) {
+    return c.json(
+      { ok: false, error: "这些域名不属于该类的内置清单", rejected },
+      400,
+    )
+  }
+
+  if (accepted.length === 1) await setPaused(accepted[0], kind, body.paused)
+  else await setPausedMany(accepted, kind, body.paused)
+
+  const verb = body.paused ? "暂停" : "恢复"
+  const what = kind === "accel" ? "加速" : "屏蔽"
+  return c.json({
+    ok: true,
+    accepted,
+    rejected,
+    message: `已${verb} ${accepted.length} 个内置${what}条目` + (rejected.length ? `，${rejected.length} 个不在内置清单中` : ""),
+  })
+})
+
+/** 清空所有暂停，恢复内置规则出厂状态 */
+root.post("/local/paused/clear", async (c) => {
+  await clearPaused()
+  return c.json({ ok: true })
 })
 
 root.post("/local/blocklist/clear", async (c) => {

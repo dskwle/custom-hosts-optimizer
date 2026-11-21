@@ -373,16 +373,20 @@ export function formatFastHosts(
   entries: HostEntry[],
   updatedAt?: string | number | null,
   blocked?: BlockEntry[] | null,
-  ipv4Only = false
+  ipv4Only = false,
+  pausedAccel?: Iterable<string> | null
 ): string {
   const blockedSet = new Set((blocked ?? []).map((b) => b.domain.toLowerCase()))
+  // 用户手动暂停的内置加速域名：不写进优选区，等于让客户端走正常 DNS
+  const pausedSet = new Set<string>()
+  for (const d of pausedAccel ?? []) pausedSet.add(String(d).toLowerCase())
 
   // 屏蔽优先级最高：被屏蔽的域名不能留在优选区，
   // 否则 v4 的优选地址会比 0.0.0.0 先生效，屏蔽形同虚设。
   const v4Filtered = filterByFamily(entries, ipv4Only)
-  const visible = blockedSet.size
-    ? v4Filtered.filter(([, domain]) => !blockedSet.has(domain.toLowerCase()))
-    : v4Filtered
+  const visible = v4Filtered.filter(
+    ([, domain]) => !blockedSet.has(domain.toLowerCase()) && !pausedSet.has(domain.toLowerCase())
+  )
 
   // 对齐宽度按实际最长地址动态计算。
   // 固定 padEnd(30) 在 IPv4 下够用（最长 15 字符），
@@ -417,9 +421,13 @@ export function formatFastHosts(
 export function formatBlockHosts(
   ads?: { content: string; ruleCount: number; fetchedAt?: string } | null,
   blocked?: BlockEntry[] | null,
-  v6Broken?: readonly string[] | null
+  v6Broken?: readonly string[] | null,
+  pausedShield?: Iterable<string> | null
 ): string {
   const blockedSet = new Set((blocked ?? []).map((b) => b.domain.toLowerCase()))
+  // 暂停屏蔽的内置域名：从屏蔽区剔除，恢复其可达性
+  const pausedSet = new Set<string>()
+  for (const d of pausedShield ?? []) pausedSet.add(String(d).toLowerCase())
   // 只屏蔽 v6：v4 那条优选记录照常输出，所以不能整域名放进 blocked
   const v6Only = (v6Broken ?? []).filter((d) => !blockedSet.has(d.toLowerCase()))
   const parts: string[] = []
@@ -444,10 +452,11 @@ export function formatBlockHosts(
     )
   }
 
-  if (blocked?.length) {
+  const effectiveBlocked = blocked?.filter((b) => !pausedSet.has(b.domain.toLowerCase()))
+  if (effectiveBlocked?.length) {
     const blockPad = 10
     const lines: string[] = []
-    for (const b of blocked) {
+    for (const b of effectiveBlocked) {
       lines.push(`${"0.0.0.0".padEnd(blockPad)}${b.domain}`)
       lines.push(`${"::".padEnd(blockPad)}${b.domain}`)
     }
@@ -455,7 +464,7 @@ export function formatBlockHosts(
       [
         "# ============================================================",
         "# 自定义屏蔽（0.0.0.0 与 :: 各一条，IPv4/IPv6 均不可达）",
-        `# 域名数：${blocked.length}`,
+        `# 域名数：${effectiveBlocked.length}`,
         "# ============================================================",
         lines.join("\n"),
       ].join("\n")
@@ -475,10 +484,12 @@ export function formatHostsFile(
   ads?: { content: string; ruleCount: number; fetchedAt?: string } | null,
   blocked?: BlockEntry[] | null,
   ipv4Only = false,
-  v6Broken?: readonly string[] | null
+  v6Broken?: readonly string[] | null,
+  pausedAccel?: Iterable<string> | null,
+  pausedShield?: Iterable<string> | null
 ): string {
-  const fast = formatFastHosts(entries, updatedAt, blocked, ipv4Only)
-  const block = formatBlockHosts(ads, blocked, v6Broken)
+  const fast = formatFastHosts(entries, updatedAt, blocked, ipv4Only, pausedAccel)
+  const block = formatBlockHosts(ads, blocked, v6Broken, pausedShield)
   // 空行分隔两个区段，方便使用者只截取上半部分（优选区）
   return block ? `${fast}\n${block}` : fast
 }

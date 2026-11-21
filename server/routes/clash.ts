@@ -18,6 +18,7 @@
 import { Hono, type Context } from "hono"
 import type { Bindings } from "../../src/types.js"
 import { getCompleteHostsData, getDataUpdatedAt } from "../../src/services/hosts.js"
+import { getPausedAccel, getPausedShield } from "../paused.js"
 import { getBlocklist } from "../../src/services/blocklist.js"
 import { getAdsRules } from "../../src/services/ads.js"
 import { listBlocked } from "../blocked.js"
@@ -76,11 +77,14 @@ export function createClashRoutes(getEnv: () => Bindings): Hono {
       "hosts.yaml",
       async () => {
         const env = getEnv()
-        const [entries, blocked, updatedAt] = await Promise.all([
+        const [allEntries, blocked, updatedAt, pausedAccel] = await Promise.all([
           getCompleteHostsData(env, false),
           getBlocklist(env),
           getDataUpdatedAt(env),
+          getPausedAccel(),
         ])
+        // 暂停加速的域名不进 hosts 段，与 /host 的输出保持一致
+        const entries = allEntries.filter(([, d]) => !pausedAccel.has(d.toLowerCase()))
         const hosts = buildClashHosts(entries, { blocked: blocked.map((b) => b.domain) })
         return formatClashHostsYaml(hosts, { updatedAt })
       },
@@ -95,11 +99,13 @@ export function createClashRoutes(getEnv: () => Bindings): Hono {
       "hosts-v4.yaml",
       async () => {
         const env = getEnv()
-        const [entries, blocked, updatedAt] = await Promise.all([
+        const [allEntries, blocked, updatedAt, pausedAccel] = await Promise.all([
           getCompleteHostsData(env, false),
           getBlocklist(env),
           getDataUpdatedAt(env),
+          getPausedAccel(),
         ])
+        const entries = allEntries.filter(([, d]) => !pausedAccel.has(d.toLowerCase()))
         const hosts = buildClashHosts(entries, {
           blocked: blocked.map((b) => b.domain),
           ipv4Only: true,
@@ -116,7 +122,12 @@ export function createClashRoutes(getEnv: () => Bindings): Hono {
     const yaml = await safeYaml(
       "block.yaml",
       async () => {
-        const entries = await getBlocklist(getEnv())
+        const [allEntries, pausedShield] = await Promise.all([
+          getBlocklist(getEnv()),
+          getPausedShield(),
+        ])
+        // 暂停屏蔽的条目不再 REJECT，与 /host_block 保持一致
+        const entries = allEntries.filter((e) => !pausedShield.has(e.domain.toLowerCase()))
         const payload = buildDomainPayload(entries.map((e) => e.domain))
         const builtin = entries.filter((e) => e.builtin).length
         return formatPayloadYaml(payload.domains, {
@@ -139,11 +150,16 @@ export function createClashRoutes(getEnv: () => Bindings): Hono {
       "ads.yaml",
       async () => {
         const env = getEnv()
-        const [meta, blocked] = await Promise.all([getAdsRules(env), getBlocklist(env)])
+        const [meta, blocked, pausedShield] = await Promise.all([
+          getAdsRules(env),
+          getBlocklist(env),
+          getPausedShield(),
+        ])
+        // exclude 里去掉已暂停屏蔽的域名，否则广告规则会绕过暂停继续拦截
         return formatAdsYaml(meta?.content ?? "", {
           fetchedAt: meta?.fetchedAt ?? null,
           version: meta?.version ?? null,
-          exclude: blocked.map((b) => b.domain),
+          exclude: blocked.map((b) => b.domain).filter((d) => !pausedShield.has(d.toLowerCase())),
         }).yaml
       },
       "# custom-hosts 广告规则 · 数据暂不可用\npayload: []\n"
