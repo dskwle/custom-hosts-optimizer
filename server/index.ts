@@ -29,6 +29,7 @@ import { cacheStats, clearCache } from "./ipcache.js"
 import { checkNetworkChange } from "./netcheck.js"
 import { createClashRoutes } from "./routes/clash.js"
 import { createCaptureEnvRoutes, resolveCdpUrl } from "./routes/capture-env.js"
+import { createCaptureRoutes, shutdownCaptureSessions } from "./routes/capture.js"
 import { refreshAdsRules, getAdsEnabled, setAdsEnabled, getAdsRules } from "../src/services/ads.js"
 import {
   filterBlocked,
@@ -126,6 +127,8 @@ root.use("*", async (c, next) => {
 // （踩过一次：放在中间件之前时，未登录访问 /local/capture/env 会直接 200。）
 root.route("/clash", createClashRoutes(() => env as any))
 root.route("/local/capture", createCaptureEnvRoutes(() => resolveCdpUrl()))
+// 抓包会话接口（同一前缀多次 route，Hono 按子路径分发）
+root.route("/local/capture", createCaptureRoutes(() => env as any, () => resolveCdpUrl()))
 
 root.post("/local/refresh", async (c) => {
   const groupParam = c.req.query("group")
@@ -1079,6 +1082,14 @@ const fakeCtx = {
 // 兜底：/local/* 之外的请求交给原应用（hosts / hosts.json / api）。
 // 认证中间件已随管理后台一并移除，本地不再需要补凭据。
 root.all("*", (c) => worker.fetch(c.req.raw, env as any, fakeCtx as any))
+
+// 退出时关掉抓包用的标签页，否则 noVNC 里会留一个 about:blank，
+// 下次启动复用时会误把用户手动开的页面当成抓包页
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => {
+    void shutdownCaptureSessions().finally(() => process.exit(0))
+  })
+}
 
 serve({ fetch: (req) => root.fetch(req, env), port: PORT, hostname: HOST }, (info) => {
   console.log(`\n  本地运行时已启动: http://${HOST}:${info.port}`)
