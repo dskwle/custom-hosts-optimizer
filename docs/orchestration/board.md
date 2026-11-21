@@ -1,7 +1,7 @@
 # 任务看板（唯一事实来源）
 
 > 只有主 agent 能改这张表。状态定义见 `multi-agent-workflow.md` §5。
-> 最后更新：2026-11-21 11:25 · 阶段：E/C 已合并，A 返工中，D 开发中
+> 最后更新：2026-11-21 11:40 · 阶段：A/C/E 已合并，B/D 开发中
 
 ## 状态图例
 
@@ -31,21 +31,21 @@
 
 | ID | 任务 | Owner | 分支 | 状态 | 轮次 |
 |---|---|---|---|---|---|
-| A1 | compose `capture` profile（chromium + novnc） | agent-A | feat/A-capture-env | CHANGES_REQUESTED | 0 |
-| A2 | Chromium 启动参数 | agent-A | feat/A-capture-env | CHANGES_REQUESTED | 0 |
-| A3 | `/local/capture/env` 自检接口 | agent-A | feat/A-capture-env | CHANGES_REQUESTED | 0 |
-| A5 | 资源治理（内存上限、闲置自停） | agent-A | feat/A-capture-env | CHANGES_REQUESTED | 0 |
+| A1 | compose `capture` profile（chromium + novnc） | agent-A | feat/A-capture-env | MERGED | 0 |
+| A2 | Chromium 启动参数 | agent-A | feat/A-capture-env | MERGED | 0 |
+| A3 | `/local/capture/env` 自检接口 | agent-A | feat/A-capture-env | MERGED | 0 |
+| A5 | 资源治理（内存上限、闲置自停） | agent-A | feat/A-capture-env | MERGED | 0 |
 
 ## Lane B（抓包后端）
 
 | ID | 任务 | Owner | 分支 | 状态 | 轮次 | 依赖 |
 |---|---|---|---|---|---|---|
-| B1 | CDP 客户端封装 | agent-B | feat/B-capture | BLOCKED | 0 | T0-1 |
-| B2 | target attach + navigate | agent-B | feat/B-capture | BLOCKED | 0 | B1 |
-| B3 | 事件采集与耗时计算 | agent-B | feat/B-capture | BLOCKED | 0 | B2 |
-| B4 | 会话管理与落盘 | agent-B | feat/B-capture | BLOCKED | 0 | B2 |
-| B5 | SSE 推送 | agent-B | feat/B-capture | BLOCKED | 0 | B3 |
-| B7 | `/local/capture/apply` | agent-B | feat/B-capture | BLOCKED | 0 | T0-1 |
+| B1 | CDP 客户端封装 | agent-B | feat/B-capture | IN_PROGRESS | 0 | T0-1 |
+| B2 | target attach + navigate | agent-B | feat/B-capture | IN_PROGRESS | 0 | B1 |
+| B3 | 事件采集与耗时计算 | agent-B | feat/B-capture | IN_PROGRESS | 0 | B2 |
+| B4 | 会话管理与落盘 | agent-B | feat/B-capture | IN_PROGRESS | 0 | B2 |
+| B5 | SSE 推送 | agent-B | feat/B-capture | IN_PROGRESS | 0 | B3 |
+| B7 | `/local/capture/apply` | agent-B | feat/B-capture | IN_PROGRESS | 0 | T0-1 |
 
 ## Lane C（聚合与判定）
 
@@ -90,3 +90,6 @@
 | 2026-11-21 11:18 | **A 第 1 轮打回**：镜像 entrypoint 强制 --headless（noVNC 里没有浏览器） |
 | 2026-11-21 11:22 | **C 合并**（bb058b6）：41 单测全绿，契约 v1.1 跟进完成 |
 | 2026-11-21 11:25 | **A 第 2 轮打回**：headed Chrome 忽略 --remote-debugging-address，改 host 网络 + X 走 loopback |
+| 2026-11-21 11:35 | A 第 3 轮通过：NAS 冒烟三条断言全过（noVNC 200 / Chrome 非 Headless / CDP 只绑 loopback），合并 `feat/A-capture-env` |
+| 2026-11-21 11:37 | 挂载 `/local/capture/env` 后发现**鉴权被绕过**（Hono use 只作用于其后注册的路由），已把挂载移到中间件之后并复验 401 |
+| 2026-11-21 11:40 | 启动 Lane B（抓包后端），worktree wt-B |
