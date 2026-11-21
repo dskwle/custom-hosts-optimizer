@@ -188,6 +188,9 @@ root.post("/local/refresh", async (c) => {
     console.log(`[local/refresh] 跳过 ${filtered.length - domains.length} 个已屏蔽域名`)
   }
 
+  // 已在排除清单里的域名集合：复核这些域名时不该污染「未判死」的失败计数
+  const alreadyBlocked = new Set(skipped.map((d) => d.toLowerCase()))
+
   const task = taskManager.create("refresh", domains.length)
 
   const run = async () => {
@@ -211,14 +214,17 @@ root.post("/local/refresh", async (c) => {
             // 批量也做 SNI 检测：前端点开某个域名时要能看到与单次检测一致的完整信息
             const r = await probeDomain(domain, { checkSni: true, useCache: !noCache })
 
-            // 判定为 SNI 阻断的域名记入排除清单，后续刷新默认跳过。
-            // 判定依据是 checkSniBlock 的双 SNI 对照，可靠性较高：
             // 不再「一次判定就写清单」。批量并发时 TLS 握手容易因本机连接数压力
             // 失败，一次性判死会让正常域名永久失去优化机会。
             // 现在只累计「连续失败次数」，由后台重试器每分钟重测，
             // 连续失败达到阈值（默认 60 次 ≈ 1 小时）才真正列入排除清单。
             // 任何一次成功都会把计数清零。
-            if (r.bestIp) {
+            //
+            // 已在排除清单里的域名（includeBlocked=true 的复核场景）不参与计数：
+            // 它们已经判死，再往「未判死队列」里塞会让两个列表互相污染。
+            if (alreadyBlocked.has(domain.toLowerCase())) {
+              // 复核只更新清单本身（下面按需新增），不进失败队列
+            } else if (r.bestIp) {
               await clearFailure(domain)
             } else if (r.sni?.verdict === "sni-blocked" || r.sni?.verdict === "unknown") {
               const consecutive = await recordFailure(domain, {
