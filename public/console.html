@@ -1794,6 +1794,7 @@ const CAP = CAP_MOCK ? `http://127.0.0.1:${CAP_MOCK}` : API
 const CAP_VNC_PORT = new URLSearchParams(location.search).get('vncPort') || '6080'
 const CAP_VNC_URL = new URLSearchParams(location.search).get('vnc')
 const CAP_CHUNK = 200
+const CAP_APPLY_BATCH = 50   // 后端 /apply 单次上限，超过会 400（每个 accel 域名要现场 probe）
 const CAP_KIND_CN = {
   document: '文档', script: '脚本', xhr: 'XHR', img: '图片', font: '字体', media: '媒体', other: '其他',
 }
@@ -2366,16 +2367,47 @@ async function capApply(action) {
   if (!hosts.length) return
   const label = action === 'accel' ? '加速' : '屏蔽'
   const status = el('capApplyStatus')
-  status.textContent = `正在${label} ${hosts.length} 个域名…`
+
+  // 后端单次最多 50 个（每个 accel 域名都要现场 probe），因此按 50 个一组顺序提交，
+  // 不并发：probe 是重活，并发会互相拖慢。
+  const batches = []
+  for (let i = 0; i < hosts.length; i += CAP_APPLY_BATCH) {
+    batches.push(hosts.slice(i, i + CAP_APPLY_BATCH))
+  }
+
+  const added = []
+  const skipped = []
+  const failed = []
+  let failure = null
+  let doneBatches = 0
+
+  const btnAccel = el('btnCapAccel')
+  const btnBlock = el('btnCapBlock')
+  btnAccel.disabled = true
+  btnBlock.disabled = true
+
   try {
-    const d = await capFetch('/local/capture/apply', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ hosts, action }),
-    })
-    const added = d.added || []
-    const skipped = d.skipped || []
-    const failed = d.failed || []
+    for (let i = 0; i < batches.length; i++) {
+      status.textContent = batches.length > 1
+        ? `正在${label} ${i + 1}/${batches.length} 批…`
+        : `正在${label} ${hosts.length} 个域名…`
+      try {
+        const d = await capFetch('/local/capture/apply', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ hosts: batches[i], action }),
+        })
+        added.push(...(d.added || []))
+        skipped.push(...(d.skipped || []))
+        failed.push(...(d.failed || []))
+        doneBatches += 1
+      } catch (e) {
+        // 某一批失败就停，后面的不再发；已成功的批次照常展示
+        failure = e
+        break
+      }
+    }
+
     const parts = []
     if (added.length) parts.push(`${label} ${added.length} 个`)
     const reasons = new Map()
@@ -2385,23 +2417,27 @@ async function capApply(action) {
     }
     for (const [reason, count] of reasons) parts.push(`${count} 个${reason}`)
     if (failed.length) parts.push(`${failed.length} 个失败（${failed[0].error || '未知原因'}）`)
-    const text = parts.length ? parts.join('，') : '没有变化'
-    status.textContent = `完成：${text}`
-    toast(`完成：${text}`)
+
+    // 部分成功必须说清楚是哪几批成了，避免"看着像全成功"
+    const summary = parts.length ? parts.join('，') : '没有变化'
+    status.textContent = failure
+      ? `已提交 ${doneBatches}/${batches.length} 批（${summary}），中断：${capErrText(failure)}`
+      : `完成：${summary}`
+    toast(failure ? `${label}中断（${doneBatches}/${batches.length} 批）` : `完成：${summary}`)
 
     if (added.length) {
       cap.userPicked = true
       for (const h of added) cap.selected.delete(h)
       capRenderTable()
-      capSyncActions()
     }
-    // 与其它标签页共用同一份数据，写完立刻刷新
-    loadHosts()
-    loadDomains()
-    loadBlocklist()
-  } catch (e) {
-    status.textContent = `${label}失败：${capErrText(e)}`
-    toast(`${label}失败`)
+    if (added.length || skipped.length) {
+      // 与其它标签页共用同一份数据，写完立刻刷新
+      loadHosts()
+      loadDomains()
+      loadBlocklist()
+    }
+  } finally {
+    capSyncActions()
   }
 }
 
