@@ -1,15 +1,16 @@
-// Cloudflare Workers 类型通过 @cloudflare/workers-types 全局提供
-/// <reference types="@cloudflare/workers-types" />
+/**
+ * 业务代码用到的存储接口。
+ * 本地实现见 server/kv.ts 的 FileKV（落盘到 data/kv），签名保持一致。
+ */
+export interface KVStore {
+  get(key: string, options?: { type?: "text" | "json" } | "text" | "json"): Promise<any>
+  put(key: string, value: string): Promise<void>
+  delete(key: string): Promise<void>
+  list?(options?: { prefix?: string }): Promise<{ keys: { name: string }[] }>
+}
 
 export interface Bindings {
-  custom_hosts: KVNamespace
-  API_KEY: string
-  // cron 分片刷新时用于回调自身
-  WORKER_URL?: string
-  INTERNAL_TOKEN?: string
-  ENABLE_OPTIMIZATION?: string
-  ADMIN_USERNAME?: string
-  ADMIN_PASSWORD?: string
+  custom_hosts: KVStore
 }
 
 export interface CustomDomain {

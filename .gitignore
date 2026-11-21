@@ -1,48 +1,20 @@
-# prod
-dist/
-
-# dev
-.yarn/
-!.yarn/releases
-.vscode/*
-!.vscode/launch.json
-!.vscode/*.code-snippets
-.idea/workspace.xml
-.idea/usage.statistics.xml
-.idea/shelf
-
-# deps
+# 依赖
 node_modules/
-.wrangler
 
-# env
-.env
-.env.production
+# 本地构建产物（npm run local 生成）
+dist-server/
 
-# Cloudflare Workers 敏感文件
-# 注意：wrangler.toml 是部署配置的唯一来源，必须纳入版本控制，
-# Cloudflare Workers Builds 直接读取仓库里的这份文件，因此不在此忽略。
-.dev.vars
+# 运行时数据：KV 快照、IP 缓存、网络身份、SNI 阻断清单
+data/
 
-# 备份和临时文件
-*.backup
-*.tmp
-.DS_Store
-
-# logs
+# 日志与临时文件
 logs/
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+*.tmp
+*.backup
 
-# misc
+# 编辑器 / 系统
+.vscode/*
+!.vscode/launch.json
+.idea/
 .DS_Store
-.idea
-
-build
-# 本地运行时产物与数据（local-runtime 分支）
-dist-server/
-data/

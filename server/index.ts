@@ -34,10 +34,11 @@ import {
   unmarkBlocked,
   clearBlocked,
 } from "./blocked.js"
-// src/index.ts 的默认导出是 { fetch, scheduled } 对象（Workers 入口约定），
-// 不是 Hono 实例，因此不能 route() 挂载，只能直接调用它的 fetch。
+// src/index.ts 的默认导出是 { fetch } 对象，不是 Hono 实例，
+// 因此不能 route() 挂载，只能直接调用它的 fetch。
 import worker from "../src/index.js"
 import { ALL_DOMAINS, SITE_GROUPS, resolveGroupDomains } from "../src/constants.js"
+import { addCustomDomain } from "../src/services/hosts.js"
 
 const PORT = Number(process.env.PORT || 8788)
 const HOST = process.env.HOST || "127.0.0.1"
@@ -47,14 +48,10 @@ const kv = new FileKV()
 // 静态资源目录：控制台页面直接从这里读取
 const PUBLIC_DIR = path.resolve(process.cwd(), "public")
 
+// 业务代码只依赖 custom_hosts：本地用文件系统实现，其余配置项
+// 都是 Workers 时代遗留（部署地址、内部 token、管理账号），已全部移除。
 const env = {
-  custom_hosts: kv as any,
-  WORKER_URL: `http://${HOST}:${PORT}`,
-  INTERNAL_TOKEN: process.env.INTERNAL_TOKEN || "local-dev-token",
-  ADMIN_USERNAME: process.env.ADMIN_USERNAME || "admin",
-  ADMIN_PASSWORD: process.env.ADMIN_PASSWORD,
-  ENABLE_OPTIMIZATION: process.env.ENABLE_OPTIMIZATION || "true",
-  API_KEY: process.env.API_KEY,
+  custom_hosts: kv,
 }
 
 // 外层路由：先处理本地专有接口，其余原样转交给 Workers 应用
@@ -344,6 +341,42 @@ root.get("/local/probe", async (c) => {
   const checkSni = c.req.query("sni") !== "false"
   const r = await probeDomain(domain, { checkSni })
   return c.json(r)
+})
+
+/**
+ * 把「检测通过」的域名连同实测最优 IP 一起写成自定义域名。
+ *
+ * 与 /api/custom-domains/batch 的区别：那个接口会自己再解析一次 IP，
+ * 可能把刚测好的最优地址换成另一个（甚至换成不可用的那个）；
+ * 这里直接落库探测结果，包含 IPv6 地址，hosts 输出与检测结论一致。
+ */
+root.post("/local/adopt", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as
+    | { items?: Array<{ domain?: string; ip?: string }> }
+    | null
+  const items = (body?.items ?? []).filter(
+    (x): x is { domain: string; ip?: string } => !!x && typeof x.domain === "string" && !!x.domain.trim()
+  )
+  if (!items.length) return c.json({ ok: false, error: "items 为空" }, 400)
+
+  const added: string[] = []
+  const updated: string[] = []
+  const failed: Array<{ domain: string; error: string }> = []
+
+  for (const it of items) {
+    const domain = it.domain.trim().toLowerCase()
+    const ip = typeof it.ip === "string" ? it.ip.trim() : undefined
+    try {
+      const r = await addCustomDomain(env as any, domain, ip || undefined)
+      if (!r) failed.push({ domain, error: "解析或写入失败" })
+      else if (r.isUpdate) updated.push(domain)
+      else added.push(domain)
+    } catch (e) {
+      failed.push({ domain, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  return c.json({ ok: true, added, updated, failed })
 })
 
 /** 仅做 SNI 阻断检测，用于快速判断某域名属于哪类问题 */

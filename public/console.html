@@ -210,11 +210,15 @@
   <div class="tab-content" id="latency-tab">
     <div class="card">
       <h2>真实延迟分解</h2>
-      <p class="hint">把一次 HTTPS 请求拆成 DNS / TCP / TLS / 首字节四段。能连上不等于能握手成功，TLS 段最容易被忽略。</p>
-      <div class="row">
-        <input type="text" class="mono" id="timingDomain" value="api.github.com" placeholder="域名">
+      <p class="hint">
+        把一次 HTTPS 请求拆成 DNS / TCP / TLS / 首字节四段。能连上不等于能握手成功，TLS 段最容易被忽略。<br>
+        支持一次粘贴多个域名（每行一个，也可直接贴网址），逐个检测 SNI；没有阻断的会自动加入自定义域名。
+      </p>
+      <textarea id="timingDomains" placeholder="api.github.com&#10;registry.npmjs.org&#10;https://cdn.jsdelivr.net/npm/vue  → 自动取 cdn.jsdelivr.net"></textarea>
+      <div class="row" style="margin-top:10px">
         <label class="row" style="gap:6px"><input type="checkbox" id="timingAll"> 对比全部候选 IP</label>
         <label class="row" style="gap:6px"><input type="checkbox" id="timingSni" checked> 检测 SNI 阻断</label>
+        <label class="row" style="gap:6px"><input type="checkbox" id="timingAdopt" checked> 通过后自动加入自定义域名</label>
         <button class="primary" id="btnTiming">开始测量</button>
         <span id="timingStatus" class="sub"></span>
       </div>
@@ -563,9 +567,184 @@ function renderSni(sni) {
   </div>`
 }
 
+/* 把多行输入拆成域名列表：允许直接粘网址，容忍逗号/分号分隔，去重并剔除非法项 */
+function parseTargets(raw) {
+  const list = []
+  const seen = new Set()
+  let dropped = 0
+  for (let line of String(raw || '').split(/[\n\r,;，；]+/)) {
+    const original = line.trim()
+    if (!original || original.startsWith('#')) continue
+    let s = original.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')  // 协议
+    s = s.split(/[/?#]/)[0]                        // 路径与查询
+    s = s.split('@').pop()                         // user:pass@
+    s = s.replace(/:\d+$/, '')                     // 端口
+    s = s.replace(/\.$/, '').toLowerCase()
+    // 纯 IP 无法做 SNI 判定，按无法识别处理
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(s) ||
+        !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(s)) {
+      dropped++
+      continue
+    }
+    if (seen.has(s)) continue
+    seen.add(s)
+    list.push(s)
+  }
+  return { list, dropped }
+}
+
+/** 把探测结果归成「能不能写进 hosts」的结论 */
+function batchVerdict(p) {
+  const v = p && p.sni && p.sni.verdict
+  if (!p || (p.error && !p.bestIp)) {
+    return { ok: false, label: p && p.error ? '探测失败' : '无结果', cls: 'bad', note: (p && p.error) || '' }
+  }
+  if (v === 'sni-blocked') return { ok: false, label: 'SNI 阻断', cls: 'bad', note: p.sni.explanation }
+  if (v === 'tcp-blocked') return { ok: false, label: 'TCP 不通', cls: 'bad', note: (p.sni && p.sni.explanation) || '' }
+  if (!p.bestIp) return { ok: false, label: '无可用 IP', cls: 'bad', note: '所有候选都无法完成 TLS 握手' }
+  if (v === 'unknown') return { ok: true, label: '可用（未归因）', cls: 'mid', note: (p.sni && p.sni.explanation) || '' }
+  return { ok: true, label: '无阻断', cls: 'good', note: (p.sni && p.sni.explanation) || '' }
+}
+
+function escAttr(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function batchRowView(r, adopt) {
+  if (r.state !== 'done') {
+    return `<tr><td>${r.domain}</td><td class="sub">检测中…</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>`
+  }
+  const p = r.probe || {}
+  const v = r.verdict
+  const ipCell = p.bestIp
+    ? `<code>${p.bestIp}</code>${p.bestIp.includes(':') ? ' <span class="badge" style="background:#e8e4f5;color:#534ab7;font-size:10px">6</span>' : ''}`
+    : '—'
+  const tcp = p.latency != null ? `${p.latency}ms` : '—'
+  const tls = p.tlsMs != null ? `${p.tlsMs}ms` : (p.bestIp ? '✓' : '✗')
+  let action
+  if (r.action === 'added') action = '<span class="badge good">已加入</span>'
+  else if (r.action === 'updated') action = '<span class="badge good">已更新</span>'
+  else if (r.action === 'failed') action = '<span class="badge bad">写入失败</span>'
+  else if (!v.ok) action = '<span class="badge gray">跳过</span>'
+  else action = `<span class="badge gray">${adopt ? '加入中' : '可加入'}</span>`
+
+  return `<tr title="${escAttr(v.note)}">
+    <td>${r.domain}</td>
+    <td class="${v.cls}">${v.label}</td>
+    <td>${ipCell}</td>
+    <td class="num">${tcp}</td>
+    <td class="num">${tls}</td>
+    <td>${action}</td>
+  </tr>`
+}
+
+/* 批量检测：并发 3 个域名同时探测，进度与结果实时刷新 */
+async function doTimingBatch(targets) {
+  const adopt = el('timingAdopt').checked
+  const withSni = el('timingSni').checked
+  const btn = el('btnTiming')
+  const status = el('timingStatus')
+  const box = el('timingResult')
+
+  btn.disabled = true
+  status.textContent = `检测中 0/${targets.length}…`
+
+  const results = targets.map((domain) => ({ domain, state: 'pending' }))
+  let done = 0
+
+  const draw = () => {
+    const list = results.slice().sort((a, b) => {
+      const av = a.state === 'done' ? (a.verdict.ok ? 1 : 0) : 0
+      const bv = b.state === 'done' ? (b.verdict.ok ? 1 : 0) : 0
+      if (av !== bv) return av - bv
+      return a.domain.localeCompare(b.domain)
+    })
+    const bad = results.filter((r) => r.state === 'done' && !r.verdict.ok).length
+    box.innerHTML = `
+      <p class="sub" style="margin:14px 0 8px">
+        共 ${targets.length} 个，已完成 ${done} 个${bad ? `，其中 <strong class="bad">${bad} 个不可用</strong>（已置顶）` : ''}。
+        ${adopt ? '判定可用的会连同实测最优 IP 一起写入自定义域名。' : ''}
+        悬停任意行可看 SNI 判定依据。
+      </p>
+      <table>
+        <thead><tr><th>域名</th><th>判定</th><th>最优 IP</th><th>TCP</th><th>TLS</th><th>处理</th></tr></thead>
+        <tbody>${list.map((r) => batchRowView(r, adopt)).join('')}</tbody>
+      </table>`
+  }
+
+  const run = async () => {
+    while (true) {
+      const r = results.find((x) => x.state === 'pending')
+      if (!r) return
+      r.state = 'running'
+      try {
+        const res = await fetch(`${API}/local/probe?domain=${encodeURIComponent(r.domain)}&sni=${withSni}`)
+        const p = await res.json()
+        r.probe = p
+        r.verdict = batchVerdict(p)
+      } catch (e) {
+        r.probe = null
+        r.verdict = { ok: false, label: '请求失败', cls: 'bad', note: e && e.message ? e.message : String(e) }
+      }
+      r.state = 'done'
+      done++
+      status.textContent = `检测中 ${done}/${targets.length}…`
+      draw()
+    }
+  }
+
+  draw()
+  await Promise.all(Array.from({ length: Math.min(3, results.length) }, run))
+
+  const adoptable = results.filter((r) => r.state === 'done' && r.verdict.ok && r.probe && r.probe.bestIp)
+  if (adopt && adoptable.length) {
+    status.textContent = `写入 ${adoptable.length} 个自定义域名…`
+    try {
+      const res = await fetch(`${API}/local/adopt`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ items: adoptable.map((r) => ({ domain: r.domain, ip: r.probe.bestIp })) }),
+      })
+      const d = await res.json()
+      const added = new Set(d.added || [])
+      const updated = new Set(d.updated || [])
+      for (const r of adoptable) {
+        r.action = added.has(r.domain) ? 'added' : updated.has(r.domain) ? 'updated' : 'failed'
+      }
+      draw()
+      loadDomains()
+      loadHosts()
+      toast(`已加入 ${added.size} 个${updated.size ? `，更新 ${updated.size} 个` : ''}`)
+    } catch (e) {
+      status.textContent = '写入失败：' + (e && e.message ? e.message : e)
+      btn.disabled = false
+      return
+    }
+  } else {
+    draw()
+  }
+
+  const okCount = results.filter((r) => r.state === 'done' && r.verdict.ok).length
+  status.textContent = `完成：${okCount}/${targets.length} 个可用`
+  btn.disabled = false
+}
+
 async function doTiming() {
-  const domain = el('timingDomain').value.trim()
-  if (!domain) return
+  const { list: targets, dropped } = parseTargets(el('timingDomains').value)
+  if (!targets.length) {
+    toast(dropped ? `没有可识别的域名（忽略 ${dropped} 行）` : '请输入至少一个域名')
+    return
+  }
+  if (dropped) toast(`已忽略 ${dropped} 行无法识别的输入`)
+  if (targets.length > 60) {
+    targets.length = 60
+    toast('一次最多检测 60 个，已截断')
+  }
+  if (targets.length === 1) return doTimingSingle(targets[0])
+  return doTimingBatch(targets)
+}
+
+async function doTimingSingle(domain) {
   const all = el('timingAll').checked
   const withSni = el('timingSni').checked
   const btn = el('btnTiming')

@@ -93,8 +93,61 @@ curl http://127.0.0.1:8788/hosts
 | `npm run local` | 构建 + 启动 |
 | `npm run local:dev` | 构建 + 启动，文件变化自动重启 |
 | `npm run local:build` | 只构建，产物在 `dist-server/` |
+| `npm run local:watch` | 只构建，监听源文件变化增量重建 |
+| `npm run typecheck` | TypeScript 类型检查（不产出文件） |
 
-`npm run deploy` 与 `npm run dev` 已改为直接报错退出，防止误部署覆盖线上。
+构建走 esbuild，把 `server/index.ts` 打成单文件 ESM；`cloudflare:sockets` 在打包时映射到 `server/shims/cloudflare-sockets.ts`，业务代码无需改动。
+
+本分支不含任何 Cloudflare 部署配置（`wrangler.toml`、CI 工作流、`.dev.vars` 均已移除），也不会误部署到线上。
+
+### 目录结构
+
+```
+src/                 业务逻辑：路由、hosts 生成、分组常量、广告规则
+server/              本地运行时：探测、缓存、任务、KV 文件实现
+  shims/             cloudflare:sockets 的 Node 实现
+public/console.html  单页控制台（自包含，无构建步骤）
+data/                运行时数据（自动创建，已 gitignore）
+dist-server/         构建产物（已 gitignore）
+Dockerfile           两阶段构建：esbuild 打包 → 精简运行镜像
+docker-compose.yml   应用 + 定时刷新器
+```
+
+---
+
+## Docker 部署
+
+NAS 或长期运行的机器上，直接用 compose 跑，无需装 Node：
+
+```bash
+docker compose up -d --build     # 首次会构建镜像（约 1~2 分钟）
+docker compose logs -f app       # 看启动日志
+curl http://127.0.0.1:8788/local/health
+```
+
+首次启动没有数据，`refresher` 容器会自动触发一次全量刷新（约 40~90 秒），之后每 2 小时一次。
+
+| 项 | 说明 |
+|---|---|
+| 网络 | `host` 模式，直接监听宿主机端口，不做 NAT 映射；这样容器能复用宿主机的 IPv6 出口 |
+| 端口 | 默认 `8788`，`APP_PORT=9000` 可改（app 与 refresher 同步生效） |
+| 数据 | `./data` 挂载到 `/app/data`，删容器不丢；容器以 uid 1000 运行，宿主机目录需同 uid 可写 |
+| 刷新 | `refresher` 每 7200 秒调一次 `/local/refresh?wait=true`，`REFRESH_INTERVAL` 可改 |
+| IPv6 | 默认开启，优选结果会同时写 v4 与 v6 地址；宿主机无 IPv6 时设 `ENABLE_IPV6=false` 省时间 |
+| npm 源 | 构建慢时加 `NPM_REGISTRY=https://registry.npmmirror.com` |
+
+```bash
+# 换端口、换 npm 源
+APP_PORT=9000 NPM_REGISTRY=https://registry.npmmirror.com docker compose up -d --build
+
+# 更新代码后重建
+docker compose up -d --build
+
+# 立即手动刷新一次
+docker compose exec app curl -fsS -X POST "http://127.0.0.1:8788/local/refresh?wait=true"
+```
+
+> 容器内**没有鉴权**。`host` 模式下服务直接监听 `0.0.0.0:8788`（仅 IPv4），局域网内任何人都能打开控制台和写自定义域名；若机器有公网 IPv4 入口，请在前置反代上加认证或限制来源。刻意不绑 `::`，避免把控制台暴露到公网 IPv6。
 
 ---
 
@@ -119,6 +172,8 @@ curl "http://127.0.0.1:8788/hosts?group=github&ads=false"
 
 - **单域名模式**：四段耗时分解 + SNI 阻断判定
 - **对比全部候选**：列出所有候选 IP 的 TCP / TLS / 成功率，标出被排除的地址及原因
+- **批量模式**：一次粘贴多行域名（可直接贴网址，自动去掉协议与路径），并发 3 个逐个探测；
+  结果按失败置顶排列，判定无 SNI 阻断的域名连同实测最优 IP 一起自动写入自定义域名，随即出现在 hosts 输出里
 
 ### 批量刷新
 
@@ -199,6 +254,7 @@ SNI 阻断归因（仅诊断时）
 | `GET /local/timing?domain=x` | 四段延迟分解（可带 `?ip=`） |
 | `GET /local/compare?domain=x&rounds=3` | 候选 IP 多轮对比 |
 | `GET /local/sni?domain=x` | 仅做 SNI 阻断判定 |
+| `POST /local/adopt` | 把 `{items:[{domain,ip}]}` 写成自定义域名（用实测 IP，不再重新解析） |
 
 刷新参数：
 

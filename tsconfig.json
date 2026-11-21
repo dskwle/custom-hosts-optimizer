@@ -5,14 +5,15 @@
     "moduleResolution": "Bundler",
     "strict": true,
     "skipLibCheck": true,
+    "noEmit": true,
     "lib": ["ESNext"],
-    "types": [
-      "@cloudflare/workers-types",
-      "@cloudflare/vitest-pool-workers"
-    ],
-    "jsx": "react-jsx",
-    "jsxImportSource": "hono/jsx"
+    "types": ["node"],
+    // src/services/hosts.ts 用到了 Workers 的 cloudflare:sockets，
+    // 本地分支由 server/shims 提供实现，esbuild 与 tsc 都指向同一份。
+    "paths": {
+      "cloudflare:sockets": ["./server/shims/cloudflare-sockets.ts"]
+    }
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*", "server/**/*"],
+  "exclude": ["node_modules", "dist-server", "data"]
 }

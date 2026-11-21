@@ -312,15 +312,6 @@ app.delete("/api/custom-domains/:domain", async (c) => {
 
 
 
-
-
-
-
-
-
-
-
-
 // 缓存管理 API - 参考 TinsFox/github-hosts 最佳实践
 app.get("/api/cache/status", async (c) => {
   try {
@@ -338,7 +329,7 @@ app.get("/api/cache/status", async (c) => {
     const lastUpdated = new Date(kvData.lastUpdated)
     const now = new Date()
     const ageMinutes = Math.round((now.getTime() - lastUpdated.getTime()) / 60000)
-    // 与 services/hosts.ts 的 cacheValidTime 保持一致（3 小时，略大于 2 小时的 cron 周期）
+    // 与 services/hosts.ts 的 cacheValidTime 保持一致（3 小时）
     const cacheValidTime = 3 * 60
     const isValid = ageMinutes < cacheValidTime
 
@@ -387,7 +378,7 @@ app.get("*", async (c) => {
 })
 
 // 全局错误处理：把未捕获异常的真实信息返回给调用方，
-// 避免线上只看到 Cloudflare 的 1101 页面而无从定位。
+// 否则本地只能看到一个没有上下文的 500 响应。
 app.onError((err, c) => {
   console.error('Unhandled error:', err)
   const message = err instanceof Error ? err.message : String(err)
