@@ -2055,6 +2055,37 @@ async function capFetch(path, opts) {
   throw err
 }
 
+let capNotReadyTimer = null
+
+/**
+ * notready 不是死状态。chromium 容器崩了会自动重启（restart: unless-stopped），
+ * 重启窗口只有几十秒；如果不探活，徽标会永远卡在「服务未就绪」，
+ * 用户只能靠刷新页面自救。这里每 3s 探一次 /env，恢复后自动回到实时会话。
+ */
+function capWatchNotReady() {
+  if (capNotReadyTimer) return
+  capNotReadyTimer = setInterval(async () => {
+    if (cap.status !== 'notready') {
+      clearInterval(capNotReadyTimer)
+      capNotReadyTimer = null
+      return
+    }
+    let env = null
+    try {
+      env = await capFetch('/local/capture/env')
+    } catch {
+      return // 服务还没回来，下一轮继续探
+    }
+    if (!env || !env.cdp) return // 容器在了但 Chromium 还没就绪
+    clearInterval(capNotReadyTimer)
+    capNotReadyTimer = null
+    cap.status = 'idle'
+    capRefreshStatus()
+    el('capApplyStatus').textContent = '抓包服务已恢复'
+    if (!cap.history) await capAttachLatest()
+  }, 3000)
+}
+
 function capNotReady(e) {
   return !!(e && e.notReady)
 }
@@ -2107,7 +2138,7 @@ function capRefreshStatus() {
   } else if (cap.status === 'stopped') {
     text = `已停止（${cap.liveCount} 个请求）`
   } else if (cap.status === 'notready') {
-    text = '服务未就绪'
+    text = '服务未就绪 · 自动重试中'
     cls = 'bad'
   }
   badge.textContent = text
@@ -2223,6 +2254,7 @@ async function capLoadEnv() {
     if (cap.status === 'idle') {
       cap.status = 'notready'
       capRefreshStatus()
+      capWatchNotReady()
     }
   }
 }
@@ -2251,8 +2283,9 @@ async function capStart() {
     } else if (capNotReady(e)) {
       cap.status = 'notready'
       capRefreshStatus()
+      capWatchNotReady()
       el('capApplyStatus').textContent = capErrText(e)
-      toast('抓包服务未就绪')
+      toast('抓包服务未就绪，恢复后将自动重连')
     } else {
       el('capApplyStatus').textContent = `启动失败：${e.message}`
       toast('启动失败')
@@ -2330,6 +2363,7 @@ async function capAttachLatest() {
   } catch (e) {
     cap.status = 'notready'
     capRefreshStatus()
+    capWatchNotReady()
   }
 }
 
