@@ -18,6 +18,7 @@ import type { Bindings } from '../../src/types.ts'
 import { CaptureHttpError, CaptureManager } from '../capture/session.ts'
 import type { CaptureFrame } from '../capture/stream.ts'
 import { clearStoredSessions, deleteSession, listStoredSessions } from '../capture/store.ts'
+import { markExisting, type ExistingSets } from '../capture/existing.ts'
 import { probeDomain } from '../probe.ts'
 import { ALL_DOMAINS } from '../../src/constants.ts'
 import { addCustomDomain, getCustomDomains, removeCustomDomain } from '../../src/services/hosts.ts'
@@ -35,6 +36,30 @@ const APPLY_MAX_HOSTS = 50
 const PROBE_CONCURRENCY = 4
 /** end 帧之后保持连接的时长（方案 A）：给前端留时间收完最后一帧再断 */
 const END_LINGER_MS = 5_000
+
+/**
+ * 当前生效的三类规则集合，用于给抓包结果打「已有规则」标签。
+ * 读失败（KV 未就绪）时返回空集合：最多少几个标签，不能让整个 summary 接口挂掉。
+ */
+async function readExistingSets(env: Bindings): Promise<ExistingSets> {
+  let customAccel = new Set<string>()
+  let blocked = new Set<string>()
+  try {
+    customAccel = new Set((await getCustomDomains(env)).map((d) => d.domain.trim().toLowerCase()))
+  } catch (err) {
+    console.error('[capture] 读取自定义域名失败', err)
+  }
+  try {
+    blocked = new Set((await getBlocklist(env)).map((b) => b.domain.trim().toLowerCase()))
+  } catch (err) {
+    console.error('[capture] 读取屏蔽清单失败', err)
+  }
+  return {
+    builtin: new Set(ALL_DOMAINS.map((d) => d.trim().toLowerCase())),
+    customAccel,
+    blocked,
+  }
+}
 
 export interface ApplyResult {
   added: string[]
@@ -87,8 +112,10 @@ export function createCaptureRoutes(getEnv: () => Bindings, getCdpUrl: () => str
     const id = c.req.param('id')
     const hosts = await manager.summary(id)
     if (!hosts) return c.json({ error: 'session not found' }, 404)
+    // 已有规则的域名不再默认勾选，并带上归类标签供前端单独列一列
+    const marked = markExisting(hosts, await readExistingSets(getEnv()))
     c.header('Cache-Control', 'no-store')
-    return c.json({ sessionId: id, hosts })
+    return c.json({ sessionId: id, hosts: marked })
   })
 
   routes.post('/:id/stop', async (c) => {

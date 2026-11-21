@@ -57,6 +57,8 @@ export interface HostSummary {
   kinds: RequestKind[]       // 出现过的类型，去重
   verdict: Verdict
   reason: string             // 一句话依据，给用户看，中文
+  /** 已在内置/自定义/屏蔽清单里；有值时前端默认不勾选并显示归类标签 */
+  existing?: 'builtin' | 'custom-accel' | 'blocked'
   suggested: boolean         // 默认是否勾选
 }
 

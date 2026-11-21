@@ -34,6 +34,9 @@ export interface CapturedRequest {
 
 export type Verdict = 'accel' | 'block' | 'proxy' | 'ignore' | 'unknown'
 
+/** 域名在现有规则里的归类；由路由层读 KV 后标记，聚合层不产生 */
+export type ExistingTag = 'builtin' | 'custom-accel' | 'blocked'
+
 export interface HostSummary {
   host: string
   requests: number
@@ -49,6 +52,8 @@ export interface HostSummary {
   verdict: Verdict
   reason: string             // 一句话依据，给用户看，中文
   suggested: boolean         // 默认是否勾选
+  /** 已在内置/自定义/屏蔽清单里；有值时前端默认不勾选并显示归类标签 */
+  existing?: ExistingTag
 }
 
 export interface CaptureEnv {

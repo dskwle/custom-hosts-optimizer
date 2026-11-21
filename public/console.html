@@ -260,7 +260,8 @@
     margin-top: 0; width: 100%; min-width: 640px; font-size: 13px; table-layout: fixed;
   }
   .cap-table-wrap th, .cap-table-wrap td { padding: 6px 6px; }
-  .cap-table-wrap td.num, .cap-table-wrap th:nth-child(n+4):nth-child(-n+6) { text-align: right; }
+  .cap-table-wrap td.num, .cap-table-wrap th:nth-child(n+5):nth-child(-n+8) { text-align: right; }
+  .cap-existing { white-space: nowrap; font-size: 12px; }
   .cap-table-wrap thead th { position: sticky; top: 0; z-index: 1; border-bottom: 1px solid var(--border); }
   .cap-table-wrap th, .cap-table-wrap td { padding: 6px 5px; white-space: nowrap; }
   .cap-table-wrap td { vertical-align: top; }
@@ -547,6 +548,7 @@
             <colgroup>
               <col style="width:30px">
               <col>
+              <col style="width:96px">
               <col style="width:86px">
               <col style="width:74px">
               <col style="width:88px">
@@ -557,6 +559,7 @@
             <thead><tr>
               <th></th>
               <th>域名</th>
+              <th>已有规则</th>
               <th>类型</th>
               <th>状态</th>
               <th>p95 耗时</th>
@@ -2444,7 +2447,11 @@ function capApplySummary(hosts) {
   const pickable = (h) => h.verdict !== 'proxy'
   if (!cap.userPicked) {
     // 首次拿到数据时按服务端建议预选
-    cap.selected = new Set(cap.hosts.filter((h) => h.suggested && pickable(h)).map((h) => h.host))
+    // 已在内置/自定义/屏蔽清单里的域名不再默认勾选：
+    // 点下去后端只会 skipped，白点一次；用户仍可手动勾选（比如想改规则）
+    cap.selected = new Set(
+      cap.hosts.filter((h) => h.suggested && pickable(h) && !h.existing).map((h) => h.host),
+    )
   } else {
     const alive = new Set(cap.hosts.filter(pickable).map((h) => h.host))
     for (const h of [...cap.selected]) if (!alive.has(h)) cap.selected.delete(h)
@@ -2481,6 +2488,14 @@ function capRebuildView() {
   capSyncActions()
 }
 
+/** 「已有规则」列的标签；没有命中显示破折号 */
+function capExistingHtml(h) {
+  if (h.existing === 'builtin') return '<span class="badge gray" title="已在内置加速列表">内置</span>'
+  if (h.existing === 'custom-accel') return '<span class="badge" title="已在自定义域名">已加速</span>'
+  if (h.existing === 'blocked') return '<span class="badge bad" title="已在屏蔽网站">已屏蔽</span>'
+  return '<span class="sub">—</span>'
+}
+
 function capRowHtml(h) {
   // verdict=proxy 表示改 hosts 无效，C 明确要求不给勾选框；其余行（含 ignore/unknown）仍可手选
   const selectable = h.verdict !== 'proxy'
@@ -2508,6 +2523,7 @@ function capRowHtml(h) {
   return `<tr>
     <td>${selectable ? `<input type="checkbox" data-check="${escAttr(h.host)}"${checked}>` : ''}</td>
     <td class="cap-host" title="${escAttr(h.host)}">${escAttr(h.host)}${h.thirdParty ? ' <span class="badge gray" style="font-size:10px">第三方</span>' : ''}</td>
+    <td class="cap-existing">${capExistingHtml(h)}</td>
     <td class="cap-kinds" title="${escAttr(kinds.join('/'))}">${escAttr(kindText || '—')}</td>
     <td>${status}</td>
     <td class="num ${capP95Class(p95)}">${fmtMs(p95)}${slow ? ' <span class="bad">慢</span>' : ''}</td>
