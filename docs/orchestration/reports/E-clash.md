@@ -180,10 +180,7 @@ $ ./scripts/verify-clash.sh
 [跳过] docker 守护进程不可用，跳过 mihomo 断言（YAML 结构与单测已覆盖）
 ```
 
-> **未取证的一项**：`mihomo -t` 与容器内的 hosts/REJECT 断言（第 3、4 步）。
-> 本机装了 Docker Desktop 但守护进程没起，我没有替你启动 GUI 应用。
-> 主 agent 起 docker 后直接跑 `./scripts/verify-clash.sh` 即可补齐这两步；脚本自己会 `docker pull metacubex/mihomo:latest`、跑 `-t`、
-> 起临时容器验 `/dns/query`（A + AAAA）与 REJECT 403，结束自动 `docker rm -f`。
+> **第 3、4 步当时未取证**（本机 Docker Desktop 守护进程没起）。第 1 轮返工后已补跑，见文末「harness 修复」一节。
 
 ## 契约偏差
 
@@ -224,3 +221,111 @@ $ ./scripts/verify-clash.sh
 
 **可合并**，建议排在 A 之前（E 无依赖，且主 agent 合并后需顺手补 `server/index.ts` 的两行挂载 + `isPublicPath`）。
 合并后请跑：`./scripts/check.sh && ./scripts/verify-clash.sh`（有 docker 时第 3、4 步才会真正执行）。
+
+---
+
+## harness 修复（第 1 轮，回应 CHANGES_REQUESTED）
+
+主 agent 用真实产物（`/clash/snippet.yaml` + 192.168.6.5 上的服务 + http 型 provider）做了端到端验证，
+证明产物本身没问题，但 **E7 脚本的两处断言写错了**——会让以后每次跑都假红。已修，并在本机真跑通了 4 步。
+
+### P1-1 验证配置没有可用的 DNS，却用 `/dns/query` 断言
+
+- 根因：`dns:` 段只写了 `enable: true`，没有 `listen`。mihomo 没有监听就不会起 DNS 服务，`/dns/query` 直接返回
+  `{"message":"DNS section is disabled"}`。
+- 修法：验证配置补 `listen: 0.0.0.0:1053` + `fake-ip` + `use-hosts`；容器发布 `1053/tcp` 与 `1053/udp`；
+  断言改为 **dig 优先（`+tcp` → UDP）→ 取不到再退回 `/dns/query`**，命令与结果都打印出来（`来源：...`），一眼能看出用的哪条路。
+- 为什么不是只用 dig：本机实测 mihomo 这个构建 **DoTCP 直接断连**（`communications error ... end of file`），只写 `+tcp` 会假红；
+  而主 agent 那边是 UDP 被端口映射吞掉。两者都得容错，所以三路依次回退。
+
+### P1-2 用 HTTP 状态码判 REJECT
+
+- 根因：mihomo 的 REJECT 经 HTTP 代理返回 **502**，目标不可达也是 502，状态码根本区分不了；
+  旧代码把 502 当成"REJECT 未生效"，把 502 当成"放行成功"，两条都反了。
+- 修法：完全改成看 mihomo 日志的规则命中行（配置里 `log-level` 从 `warning` 提到 `info`，否则这些行根本不打印）：
+  - REJECT：日志里必须出现 `--> clash-blocked.example:80` 且同行有 `RuleSet(ch-block) using REJECT`
+  - 放行：`--> clash-proxy.example:80` 的行不能出现 `using REJECT`，且要命中 `RuleSet(ch-proxy)` / `using PROXY` / `dial PROXY` 之一
+  - 日志异步刷盘，用轮询等待（最多 9 秒）而不是写死 `sleep`；失败时自动打印容器日志尾部 15 行
+- 顺手删掉了所有 `expect 403` 的文案，避免下一个人照着改回状态码断言。
+
+### 真跑时另外踩到的三个坑（也一并修了）
+
+1. **`$VAR，` 在非 UTF-8 locale 下被当成变量名的一部分** → `IMAGE�: unbound variable`，
+   脚本直接死在第 3 步。已把紧跟中文标点的变量全部改成 `${VAR}`。
+2. **docker.io 直连超时**（`registry-1.docker.io ... context deadline exceeded`），
+   会让脚本永远走"拉不到镜像跳过"。已加镜像站回退：
+   `MIHOMO_IMAGE`（默认 `metacubex/mihomo:latest`）→ `MIHOMO_IMAGE_MIRROR`（默认华为 SWR 的 `docker.io/metacubex/mihomo:latest`），
+   两个都拉不到才跳过，并提示可用 `MIHOMO_IMAGE=<本地镜像>` 指定。
+3. **mihomo 对 AAAA 查询会先回 v4-mapped 地址**：`dig +short ... AAAA` 返回两行
+   `::ffff:203.0.113.9` 与 `2001:db8::9`。旧脚本 `head -n1` 取第一条 → 永远判失败。
+   现在保留全部答案再 `grep` 目标地址。这条对产品也算有用信息：hosts 里 v4/v6 混排时，
+   AAAA 查询的**第一条是 `::ffff:` 形式**，客户端要取真正可用的 v6 得看后面的记录。
+
+### 修复后完整输出（本机真跑，docker 29.9.2 + mihomo 镜像）
+
+```bash
+$ ./scripts/verify-clash.sh
+== 1/4 生成 YAML fixture ==
+  fixture 已生成：hosts 1 条 / 地址 2 条
+
+== 2/4 YAML 结构化校验 ==
+[PASS] hosts.yaml 可解析
+[PASS] hosts.yaml 是 域名→地址列表 的映射
+[PASS] hosts.yaml 同时含 v4 与 v6
+[PASS] hosts.yaml 不含屏蔽域名
+[PASS] block.yaml 可解析且 payload 是列表
+[PASS] block.yaml payload 元素均为裸域名（无地址前缀）
+[PASS] ads.yaml 可解析且 payload 是列表
+[PASS] ads.yaml payload 元素均为裸域名（无地址前缀）
+[PASS] proxy.yaml 可解析且 payload 是列表
+[PASS] proxy.yaml payload 元素均为裸域名（无地址前缀）
+[PASS] snippet.yaml 可解析
+[PASS] snippet.yaml 含 hosts / rule-providers / rules 三段
+[PASS] snippet.yaml provider 指向本服务且 interval=7200
+[PASS] snippet.yaml 的 ch-proxy 规则使用自定义策略组
+[PASS] config.example.yaml 可解析
+[PASS] config.example.yaml 开了 dns.enable + use-hosts
+[PASS] config.example.yaml 用 fake-ip 模式
+[PASS] config.example.yaml 有 proxy-groups 占位
+[PASS] mihomo 验证配置可解析
+
+== 3/4 mihomo -t 校验配置 ==
+  docker 与镜像就绪：swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/metacubex/mihomo:latest
+  WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested
+  time="..." level=info msg="Initial configuration complete, total time: 8ms"
+  configuration file /root/.config/mihomo/config.yaml test is successful
+[PASS] 配置被 mihomo 接受（hosts / rule-providers / rules 的语法与 schema 通过）
+
+== 4/4 起容器断言 hosts 与 REJECT ==
+[PASS] hosts 映射生效（A → 203.0.113.9，来源：dig @127.0.0.1:48937（tcp→udp））
+[PASS] hosts 的 IPv6 映射同样生效（AAAA → 2001:db8::9，来源：dig @127.0.0.1:48937（tcp→udp））
+[PASS] REJECT 规则生效（日志：clash-blocked.example:80 match RuleSet(ch-block) using REJECT）
+[PASS] ch-proxy 域名走了策略组而非 REJECT（日志：clash-proxy.example:80 error: dns resolve failed: couldn't find ip）
+
+Clash 规则输出验证通过
+```
+
+> 放行断言里出现的 `dns resolve failed` 是预期的：`clash-proxy.example` 没有 hosts 记录，
+> 验证环境又不通外网 DNS，所以 mihomo 命中 `RuleSet(ch-proxy) → PROXY(DIRECT)` 后卡在解析。
+> 这恰好证明**它没有被 REJECT**（否则会有 `using REJECT` 行）。
+
+不依赖 docker 的三类分支也做了桩测试（桩掉 `docker`/`dig`/`curl`，只验脚本逻辑）：
+
+| 场景 | 期望 | 实际 |
+|---|---|---|
+| REJECT 命中行存在 | exit 0 | exit 0 |
+| 日志里没有 ch-block 命中行 | exit 1 + `REJECT 规则未生效` | exit 1，报错一致 |
+| `ch-proxy` 被误判 REJECT | exit 1 | exit 1，报错一致 |
+| dig 恒为空 | 回退 `/dns/query` 仍能判定 | PASS，来源标为 `GET /dns/query` |
+
+`./scripts/check.sh` 复跑（本次修复只动脚本与报告，未动源码）：
+
+```
+== TypeScript ==            0 error
+== Build (local runtime) == dist-server/index.mjs  111.6kb
+== Console inline JS 语法 == 通过
+== Unit tests ==            # tests 27 / # pass 27 / # fail 0
+全部通过
+```
+
+> 环境说明：为跑这两步我启动了本机的 Docker Desktop（守护进程此前是关的），跑完没有关掉——如果 agent-A 还要用 docker 可以直接用。
