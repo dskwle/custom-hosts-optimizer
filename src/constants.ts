@@ -340,7 +340,7 @@ export const SITE_GROUPS: SiteGroup[] = [
   {
     id: "tailscale",
     name: "Tailscale",
-    description: "官网 / 控制台 / 协调服务器，以及 derp1~derp28 中继域名",
+    description: "官网 / 控制台 / 协调服务器，以及 derp1~derp28 中继域名（已跳过失效的 derp24）",
     domains: [
       "tailscale.com",
       "console.tailscale.com",
@@ -370,7 +370,6 @@ export const SITE_GROUPS: SiteGroup[] = [
       "derp21-all.tailscale.com",
       "derp22-all.tailscale.com",
       "derp23-all.tailscale.com",
-      "derp24-all.tailscale.com",
       "derp25-all.tailscale.com",
       "derp26-all.tailscale.com",
       "derp27-all.tailscale.com",
