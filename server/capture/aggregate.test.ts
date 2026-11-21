@@ -1,7 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-// @ts-ignore TS5097 —— node --experimental-strip-types 只认显式 .ts 后缀；tsconfig 未开 allowImportingTsExtensions
 import { DEFAULT_SLOW_MS, SLOW_MS, aggregate, inferPageHost, isCached, isIpHost, isSlow, isTimeout, median, normalizeHost, percentile, registrableDomain, thirdParty } from './aggregate.ts'
 import type { CapturedRequest, RequestKind } from './types'
 
@@ -192,4 +191,23 @@ test('聚合结果默认 verdict 为 unknown，等待 advice 填充', () => {
   assert.equal(summary.verdict, 'unknown')
   assert.equal(summary.reason, '')
   assert.equal(summary.suggested, false)
+})
+test('timeouts 只统计失败中的超时，且恒为 failures 的子集（v1.1）', () => {
+  const list = [
+    req('ads.example.net', 'script', { failed: true, errorText: 'net::ERR_TIMED_OUT' }),
+    req('ads.example.net', 'script', { failed: true, errorText: 'net::ERR_EMPTY_RESPONSE' }),
+    req('ads.example.net', 'script', { failed: true, errorText: 'net::ERR_CERT_DATE_INVALID' }),
+    req('ads.example.net', 'script', { ttfbMs: 120, totalMs: 200 }),
+  ]
+  const [summary] = aggregate(list, 'example.com')
+  assert.equal(summary.failures, 3)
+  assert.equal(summary.timeouts, 2)
+
+  const [clean] = aggregate([req('ok.example.net', 'script', { ttfbMs: 120 })], 'example.com')
+  assert.equal(clean.failures, 0)
+  assert.equal(clean.timeouts, 0)
+
+  for (const s of [summary, clean]) {
+    assert.ok((s.timeouts ?? 0) <= s.failures, 'timeouts 超过 failures')
+  }
 })

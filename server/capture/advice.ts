@@ -1,7 +1,7 @@
 // 从 HostSummary 生成给用户看的一句话依据 + 建议动作（纯函数，零 IO）。
 //
 // 规则矩阵（按优先级从上到下，命中即返回）：
-//   1. ctx.sniBlocked                     → proxy，suggested=false（改 hosts 无效）
+//   1. SNI 阻断（markSniBlocked 逐域名标记 / ctx.sniBlocked 整站逃生）→ proxy，suggested=false（改 hosts 无效）
 //   2. 第三方 + 有失败                     → block，suggested=true
 //   3. 第三方 + 慢                         → accel，suggested=true
 //   4. 第一方 + 失败/慢                    → ignore，suggested=false（改 hosts 可能无解）
@@ -11,13 +11,15 @@
 // 不做「全选」式建议——用户随便全选会把正常站点也塞进 hosts，反而更慢。
 
 import type { CapturedRequest, HostSummary, RequestKind, Verdict } from './types'
-// @ts-ignore TS5097：node --experimental-strip-types 要求显式 .ts 后缀，本项目 tsconfig 未开 allowImportingTsExtensions
-import { SLOW_MS, aggregate } from './aggregate.ts'
+import { SLOW_MS, aggregate, normalizeHost } from './aggregate.ts'
 
 export interface AdviceContext {
   /** 页面主机，用于 summarize 时的第三方判定 */
   pageHost?: string
-  /** 疑似 SNI 阻断：强制走代理，且不勾选任何 hosts 动作 */
+  /**
+   * 整站 SNI 阻断。仅测试 / 整站不可用的极端场景使用，生产代码走 markSniBlocked()，
+   * 因为 SNI 阻断是按域名判定的（契约 v1.1）。
+   */
   sniBlocked?: boolean
   /** 覆盖 SLOW 阈值（测试与 F2 调参用） */
   slowMs?: number
@@ -50,6 +52,10 @@ function kindLabel(kinds: readonly RequestKind[]): string {
   return '资源'
 }
 
+function sniReason(host: string): string {
+  return `${host} 疑似 SNI 阻断，改 hosts 无效，建议走代理`
+}
+
 /**
  * 综合建议。reason 为一句中文，可直接渲染给用户。
  * 不修改入参 summary。
@@ -59,7 +65,7 @@ export function advise(summary: HostSummary, ctx: AdviceContext = {}): Advice {
   const { requests, failures, thirdParty: isThirdParty } = summary
 
   if (ctx.sniBlocked) {
-    return { verdict: 'proxy', reason: `${summary.host} 疑似 SNI 阻断，改 hosts 无效，建议走代理`, suggested: false }
+    return { verdict: 'proxy', reason: sniReason(summary.host), suggested: false }
   }
 
   if (requests === 0) {
@@ -73,10 +79,12 @@ export function advise(summary: HostSummary, ctx: AdviceContext = {}): Advice {
   const slowText = fmtSec(slowMs, 0)
 
   if (isThirdParty && failures > 0) {
+    const timeouts = summary.timeouts ?? 0
     const tail = slow ? `，p95 ${fmtSec(worst)}` : ''
+    const timeoutText = timeouts > 0 ? `（其中 ${timeouts} 个超时）` : ''
     return {
       verdict: 'block',
-      reason: `第三方域名 ${requests} 个请求中 ${failures} 个失败${tail}`,
+      reason: `第三方域名 ${requests} 个请求中 ${failures} 个失败${timeoutText}${tail}`,
       suggested: true,
     }
   }
@@ -115,6 +123,24 @@ export function advise(summary: HostSummary, ctx: AdviceContext = {}): Advice {
 /** 批量建议，保持输入顺序 */
 export function adviseAll(summaries: readonly HostSummary[], ctx: AdviceContext = {}): HostSummary[] {
   return summaries.map((summary) => ({ ...summary, ...advise(summary, ctx) }))
+}
+
+/**
+ * 按域名标记 SNI 阻断（契约 v1.1）。SNI 阻断是按域名的，不是整站布尔：
+ * 只把命中的域名改成 proxy + 不可勾选，未命中项原样（浅拷贝）返回。
+ * 域名匹配不区分大小写；不修改入参。
+ */
+export function markSniBlocked(summaries: readonly HostSummary[], hosts: Iterable<string>): HostSummary[] {
+  const blocked = new Set<string>()
+  for (const host of hosts) {
+    const normalized = normalizeHost(host)
+    if (normalized) blocked.add(normalized)
+  }
+  return summaries.map((summary) =>
+    blocked.has(normalizeHost(summary.host))
+      ? { ...summary, verdict: 'proxy' as const, suggested: false, reason: sniReason(summary.host) }
+      : { ...summary },
+  )
 }
 
 /**

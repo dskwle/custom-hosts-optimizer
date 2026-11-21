@@ -2,7 +2,6 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-// @ts-ignore TS5097 —— node --experimental-strip-types 只认显式 .ts 后缀；tsconfig 未开 allowImportingTsExtensions
 import { summarize } from './advice.ts'
 import type { CapturedRequest, HostSummary, Verdict } from './types'
 

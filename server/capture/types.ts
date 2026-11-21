@@ -38,6 +38,8 @@ export interface HostSummary {
   host: string
   requests: number
   failures: number
+  /** 其中因超时失败的次数（v1.1 新增，可选；用于把 reason 写具体） */
+  timeouts?: number
   p50TtfbMs?: number
   p95TtfbMs?: number
   p95TotalMs?: number

@@ -151,3 +151,60 @@ const hosts = summarize(requests, { pageHost, sniBlocked })   // HostSummary[]�
 ## 合并建议
 
 可合并，建议顺序在 B 之后（B 的 `/summary` 直接 import `summarize`），但对 A/E 无依赖，也可先合。合并时请注意 `server/capture/types.ts` 与 B 的同名文件冲突——两边内容都应是契约 §1 的逐字复制，若冲突请以契约原文为准。
+
+---
+
+## v1.1 跟进（第 1 轮返工，2026-11-21 11:35）
+
+- **基线**：`feat/C-aggregate` 已 `git rebase integration/capture`（现基 `e813850`，含 tsconfig 与 .gitignore 两个 T0 修复）
+- **状态**：REPORTED（第 2 次提交）
+
+### 改动清单
+
+| 文件 | 增/删 | 说明 |
+|---|---|---|
+| `server/capture/advice.ts` | +38/-14 | block 文案带超时；新增 `markSniBlocked`；`ctx.sniBlocked` 降级为测试用 |
+| `server/capture/aggregate.ts` | +11/-4 | `Bucket.timeouts` 统计 `isTimeout` 命中数，`summary.timeouts` 恒输出 |
+| `server/capture/types.ts` | +2/-0 | `HostSummary.timeouts?: number`（契约 v1.1） |
+| `server/capture/advice.test.ts` | +79/-6 | 新增 4 例（超时文案 2 例、markSniBlocked 2 例） |
+| `server/capture/aggregate.test.ts` | +22/-0 | 新增 1 例（timeouts ≤ failures 子集性质） |
+| `server/capture/fixtures.test.ts` | +0/-1 | 删除 1 行 `@ts-ignore` |
+
+### 逐条对应
+
+1. **删掉 5 处 `@ts-ignore TS5097`**（`advice.ts` 1 + `advice.test.ts` 2 + `aggregate.test.ts` 1 + `fixtures.test.ts` 1），连注释一起删；`tsconfig.json` 的 `allowImportingTsExtensions: true` 生效后 tsc 不再报错，`npx tsc --noEmit` 0 error。
+2. **`HostSummary.timeouts`**：`aggregate.ts` 在 `if (req.failed === true)` 分支内再判 `isTimeout(req)` 累加，天然保证 `timeouts ⊆ failures`；`summary` 恒输出 `timeouts`（无失败时为 `0`，不留 `undefined` 让下游猜）。单测覆盖 3 次失败中 2 次超时、1 次 `ERR_CERT_DATE_INVALID` 不算超时。
+3. **block 文案**：`第三方域名 12 个请求中 3 个失败（其中 2 个超时）`；`timeouts === 0` 时维持原文案（末尾不加括号），有 `p95` 时顺序为「失败 → 超时 → p95」。其它分支（accel / ignore / unknown / proxy）文案一字未改。
+4. **`markSniBlocked(summaries, hosts)`**：`hosts` 走 `normalizeHost` 归一（小写、去端口、去尾部点）后建 Set；命中项 `{verdict:'proxy', suggested:false, reason:'<host> 疑似 SNI 阻断，改 hosts 无效，建议走代理'}`；未命中项返回浅拷贝，入参与原对象均不被修改。`ctx.sniBlocked` 保留，注释已写明「仅测试 / 整站不可用的极端场景用，生产代码走 markSniBlocked」。
+5. **补测试 2 类（实增 5 例）**：`timeouts` 计数与子集性质、`markSniBlocked` 只影响命中域名（含大小写/尾部点匹配、原数组未被改、返回浅拷贝、空集合等价原样）。
+
+### 门禁与测试数变化
+
+```bash
+$ ./scripts/check.sh
+== TypeScript ==            （0 error）
+== Build (local runtime) == dist-server/index.mjs  111.6kb
+== Console inline JS syntax == script[0] 语法 OK（1328 行）
+== Unit tests ==
+1..41
+# tests 41
+# pass 41
+# fail 0
+全部通过
+$ echo $?
+0
+```
+
+- 单测：**36 → 41**（+5），全绿。
+- fixture 建议分布不变（v1.1 不改判定）：normal `unknown 6`/suggested 0；news `accel 5 / block 2 / ignore 1 / unknown 4`/suggested 7；video `accel 2 / ignore 2 / unknown 5`/suggested 2。唯一变化是 block 两条 reason 变成「第三方域名 1 个请求中 1 个失败（其中 1 个超时）」。
+
+### 待确认问题的处理状态（对应上文编号）
+
+| # | 状态 |
+|---|---|
+| 1（tsconfig） | **已关闭**：`e813850` 加了 `allowImportingTsExtensions`，抑制注释全部删除 |
+| 2（缺 timeout 字段） | **已关闭**：契约 v1.1 加 `timeouts?`，block 文案已体现 |
+| 3（sniBlocked 整站语义） | **已关闭**：改为逐域名 `markSniBlocked`，整站布尔降级为测试逃生口 |
+| 4（第一方失败判 ignore） | 维持原实现，理由见上文；v1.1 未涉及 |
+| 5（参与率 58%） | 仍待产品判断（D 侧是否需要二次确认弹层） |
+| 6（排序口径） | 仍待 D 侧确认默认列头 |

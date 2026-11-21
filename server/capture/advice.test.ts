@@ -1,9 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-// @ts-ignore TS5097 —— node --experimental-strip-types 只认显式 .ts 后缀；tsconfig 未开 allowImportingTsExtensions
-import { advise, adviseAll, summarize } from './advice.ts'
-// @ts-ignore TS5097 同上
+import { advise, adviseAll, markSniBlocked, summarize } from './advice.ts'
 import { aggregate } from './aggregate.ts'
 import type { CapturedRequest, HostSummary, RequestKind, Verdict } from './types'
 
@@ -33,6 +31,39 @@ test('第三方 + 失败 → block 且默认勾选', () => {
   assert.equal(advice.verdict, 'block')
   assert.equal(advice.suggested, true)
   assert.match(advice.reason, /第三方域名 1 个请求中 1 个失败/)
+  assert.match(advice.reason, /其中 1 个超时/) // v1.1：超时单独点出来
+})
+
+test('block 文案区分超时与非超时失败（v1.1）', () => {
+  const mixed = aggregate(
+    [
+      req('ads.doubleclick.net', 'script', { failed: true, errorText: 'net::ERR_TIMED_OUT' }),
+      req('ads.doubleclick.net', 'script', { failed: true, errorText: 'net::ERR_CONNECTION_RESET' }),
+      req('ads.doubleclick.net', 'script', { failed: true, errorText: 'net::ERR_CERT_DATE_INVALID' }),
+      req('ads.doubleclick.net', 'script', { ttfbMs: 120, totalMs: 200 }),
+      req('ads.doubleclick.net', 'script', { ttfbMs: 140, totalMs: 220 }),
+      req('ads.doubleclick.net', 'script', { ttfbMs: 160, totalMs: 240 }),
+      req('ads.doubleclick.net', 'script', { ttfbMs: 180, totalMs: 260 }),
+      req('ads.doubleclick.net', 'script', { ttfbMs: 200, totalMs: 280 }),
+      req('ads.doubleclick.net', 'script', { ttfbMs: 220, totalMs: 300 }),
+      req('ads.doubleclick.net', 'script', { ttfbMs: 240, totalMs: 320 }),
+      req('ads.doubleclick.net', 'script', { ttfbMs: 260, totalMs: 340 }),
+      req('ads.doubleclick.net', 'script', { ttfbMs: 280, totalMs: 360 }),
+    ],
+    'www.example.com',
+  )[0]
+  assert.equal(mixed.failures, 3)
+  assert.equal(mixed.timeouts, 2) // ERR_CERT_DATE_INVALID 不是超时
+  const advice = advise(mixed)
+  assert.equal(advice.verdict, 'block')
+  assert.match(advice.reason, /第三方域名 12 个请求中 3 个失败（其中 2 个超时）/)
+})
+
+test('全部失败都不是超时时，block 文案不带超时括号', () => {
+  const advice = advise(one('ads.doubleclick.net', 'script', { failed: true, errorText: 'net::ERR_CERT_DATE_INVALID' }))
+  assert.equal(advice.verdict, 'block')
+  assert.match(advice.reason, /第三方域名 1 个请求中 1 个失败$/)
+  assert.doesNotMatch(advice.reason, /超时/)
 })
 
 test('第三方 + 慢（>5s）→ accel 且默认勾选，reason 带具体秒数', () => {
@@ -68,7 +99,7 @@ test('第三方同时失败又慢 → block 优先于 accel', () => {
     one('ads.doubleclick.net', 'script', { ttfbMs: 9000, totalMs: 9300, failed: true, errorText: 'net::ERR_TIMED_OUT' }),
   )
   assert.equal(advice.verdict, 'block')
-  assert.match(advice.reason, /1 个失败，p95 9\.3s/)
+  assert.match(advice.reason, /1 个失败（其中 1 个超时），p95 9\.3s/)
 })
 
 test('ctx.sniBlocked 强制 proxy，覆盖 block/accel 判定且不勾选', () => {
@@ -152,4 +183,42 @@ test('adviseAll 保持输入顺序，返回新对象', () => {
   assert.equal(advised.length, 2)
   assert.deepEqual(advised.map((s) => s.host), summaries.map((s) => s.host))
   assert.notEqual(advised[0], summaries[0])
+})
+
+test('markSniBlocked 只影响命中域名，且不修改原数组/原对象（v1.1）', () => {
+  const summaries = summarize(
+    [
+      req('www.example.com', 'document', { ttfbMs: 200, totalMs: 400 }),
+      req('ads.doubleclick.net', 'script', { ttfbMs: 8400, totalMs: 8600 }),
+      req('cdn.jsdelivr.net', 'script', { ttfbMs: 180, totalMs: 240 }),
+    ],
+    { pageHost: 'www.example.com' },
+  )
+  const before = JSON.stringify(summaries)
+  // 大小写混写 + 尾部点，验证匹配不区分大小写
+  const marked = markSniBlocked(summaries, ['ADS.DoubleClick.NET.', 'never.example.org'])
+
+  assert.equal(marked.length, summaries.length)
+  assert.notEqual(marked, summaries) // 返回新数组
+  assert.equal(JSON.stringify(summaries), before) // 入参未被修改
+  for (let i = 0; i < summaries.length; i++) assert.notEqual(marked[i], summaries[i]) // 浅拷贝
+
+  const hit = marked.find((s) => s.host === 'ads.doubleclick.net')
+  const originalUntouched = summaries.find((s) => s.host === 'cdn.jsdelivr.net')
+  const untouched = marked.find((s) => s.host === 'cdn.jsdelivr.net')
+  assert.equal(hit?.verdict, 'proxy')
+  assert.equal(hit?.suggested, false)
+  assert.equal(hit?.reason, 'ads.doubleclick.net 疑似 SNI 阻断，改 hosts 无效，建议走代理')
+  // 未命中项保持原判定
+  assert.equal(untouched?.verdict, originalUntouched?.verdict)
+  assert.equal(untouched?.reason, originalUntouched?.reason)
+  // 只有命中的那一个变成 proxy
+  assert.equal(marked.filter((s) => s.verdict === 'proxy').length, 1)
+})
+
+test('markSniBlocked 空集合时等价于原样返回', () => {
+  const summaries = summarize([req('ads.doubleclick.net', 'script', { ttfbMs: 8400 })], { pageHost: 'www.example.com' })
+  const marked = markSniBlocked(summaries, [])
+  assert.deepEqual(marked, summaries)
+  assert.notEqual(marked, summaries)
 })

@@ -154,6 +154,7 @@ interface Bucket {
   host: string
   requests: number
   failures: number
+  timeouts: number
   ttfb: number[]
   total: number[]
   bytes: number
@@ -171,7 +172,7 @@ function slowest(summary: HostSummary): number {
 /**
  * 按 host 聚合请求明细。
  *
- * - 请求数含缓存命中，失败数单独累计
+ * - 请求数含缓存命中，失败数单独累计；timeouts 是 failures 的子集（契约 v1.1）
  * - p50/p95 TTFB 与 p95 总耗时只统计非缓存、且有对应耗时的请求
  * - bytes 累计全部请求（缓存请求也代表真实资源体积）
  * - verdict 默认 'unknown'、reason 空串；建议由 advice.ts 的 advise/summarize 填充
@@ -188,11 +189,14 @@ export function aggregate(requests: readonly CapturedRequest[], pageHost = ''): 
     if (!host) continue // 无法定位的请求无法据此改 hosts，直接丢弃
     let bucket = buckets.get(host)
     if (!bucket) {
-      bucket = { host, requests: 0, failures: 0, ttfb: [], total: [], bytes: 0, kinds: new Set() }
+      bucket = { host, requests: 0, failures: 0, timeouts: 0, ttfb: [], total: [], bytes: 0, kinds: new Set() }
       buckets.set(host, bucket)
     }
     bucket.requests += 1
-    if (req.failed === true) bucket.failures += 1
+    if (req.failed === true) {
+      bucket.failures += 1
+      if (isTimeout(req)) bucket.timeouts += 1 // timeouts 是 failures 的子集
+    }
     if (typeof req.bytes === 'number' && Number.isFinite(req.bytes)) bucket.bytes += req.bytes
     bucket.kinds.add(req.kind)
     if (isCached(req)) continue // 缓存命中：计入请求数，不参与耗时统计
@@ -206,6 +210,7 @@ export function aggregate(requests: readonly CapturedRequest[], pageHost = ''): 
       host: bucket.host,
       requests: bucket.requests,
       failures: bucket.failures,
+      timeouts: bucket.timeouts,
       bytes: bucket.bytes,
       thirdParty: thirdParty(bucket.host, page),
       kinds: KIND_ORDER.filter((kind) => bucket.kinds.has(kind)),
