@@ -1778,9 +1778,8 @@ async function runLookup() {
   el('lookupStatus').textContent = '查询中…'
   try {
     const url = `${API}/local/lookup?q=${encodeURIComponent(q)}&cats=${cats.join(',')}&mode=${mode}`
-    const res = await fetch(url)
-    const d = await res.json()
-    if (!res.ok || d.ok === false) {
+    const d = await apiGet(url)
+    if (!d || d.ok === false) {
       el('lookupStatus').textContent = ''
       el('lookupResult').innerHTML = `<p class="empty">${d.error || '查询失败'}</p>`
       return
@@ -1817,8 +1816,57 @@ async function runLookup() {
       b.addEventListener('click', () => switchDomain(b.dataset.switch, b.dataset.to))
     })
   } catch (e) {
-    el('lookupStatus').textContent = '查询失败：' + e.message
+    el('lookupStatus').textContent = '查询失败：' + apiErrText(e)
+    el('lookupResult').innerHTML = '<p class="empty">请刷新页面后重试</p>'
   }
+}
+
+/**
+ * 带一次重试的 GET。
+ *
+ * "Failed to fetch" 是网络级失败：容器正在重启、或本地预览服务被关掉时都会出现，
+ * 而这类中断通常几百毫秒就恢复。重试一次能挡住大多数"刚好赶上重启"的假失败；
+ * 仍失败时把错误换成可操作的提示，别把浏览器原始英文抛给用户。
+ */
+async function apiGet(url) {
+  let last
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const res = await fetch(url, { cache: 'no-store' })
+      let d = null
+      try {
+        d = await res.json()
+      } catch {
+        d = null
+      }
+      if (!res.ok) {
+        const err = new Error(
+          res.status === 401
+            ? '登录已失效，请刷新页面重新登录'
+            : (d && (d.error || d.message)) || `HTTP ${res.status}`,
+        )
+        err.status = res.status
+        throw err
+      }
+      if (d === null) throw new SyntaxError('服务返回的不是 JSON（可能打到了错误地址）')
+      return d
+    } catch (e) {
+      last = e
+      // 只有网络级错误才重试；JSON 解析失败说明服务在但返回了错误页，别重试
+      if (!(e instanceof TypeError)) throw e
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 600))
+    }
+  }
+  const err = new Error('无法连接服务（可能正在重启，或本地预览服务已关闭）')
+  err.offline = true
+  err.cause = last
+  throw err
+}
+
+function apiErrText(e) {
+  return e && e.offline
+    ? '无法连接服务：请刷新页面重试；如果是本地预览（127.0.0.1:8877），请改用 NAS 地址打开控制台'
+    : (e && e.message ? e.message : String(e))
 }
 
 /* ---------- IP 延迟缓存 ---------- */
