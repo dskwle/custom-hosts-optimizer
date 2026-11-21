@@ -1,7 +1,7 @@
 # 任务看板（唯一事实来源）
 
 > 只有主 agent 能改这张表。状态定义见 `multi-agent-workflow.md` §5。
-> 最后更新：2026-11-21 11:40 · 阶段：A/C/E 已合并，B/D 开发中
+> 最后更新：2026-11-21 11:55 · 阶段：A/C/D/E 已合并，B 开发中
 
 ## 状态图例
 
@@ -60,13 +60,13 @@
 
 | ID | 任务 | Owner | 分支 | 状态 | 轮次 | 依赖 |
 |---|---|---|---|---|---|---|
-| D1 | 「网页诊断」标签页骨架 | agent-D | feat/D-capture-ui | IN_PROGRESS | 0 | T0-1 |
-| D2 | noVNC iframe 区域 | agent-D | feat/D-capture-ui | IN_PROGRESS | 0 | A1 |
-| D3 | 请求表格（筛选/排序/全选） | agent-D | feat/D-capture-ui | IN_PROGRESS | 0 | T0-1 |
-| D4 | SSE 增量渲染 | agent-D | feat/D-capture-ui | IN_PROGRESS | 0 | B5 |
-| D5 | 应用动作（加速/屏蔽） | agent-D | feat/D-capture-ui | IN_PROGRESS | 0 | B7 |
-| D6 | 会话历史 | agent-D | feat/D-capture-ui | IN_PROGRESS | 0 | B4 |
-| D7 | 「规则输出」卡片 | agent-D | feat/D-capture-ui | IN_PROGRESS | 0 | E4 |
+| D1 | 「网页诊断」标签页骨架 | agent-D | feat/D-capture-ui | MERGED | 0 | T0-1 |
+| D2 | noVNC iframe 区域 | agent-D | feat/D-capture-ui | MERGED | 0 | A1 |
+| D3 | 请求表格（筛选/排序/全选） | agent-D | feat/D-capture-ui | MERGED | 0 | T0-1 |
+| D4 | SSE 增量渲染 | agent-D | feat/D-capture-ui | MERGED | 0 | B5 |
+| D5 | 应用动作（加速/屏蔽） | agent-D | feat/D-capture-ui | MERGED | 0 | B7 |
+| D6 | 会话历史 | agent-D | feat/D-capture-ui | MERGED | 0 | B4 |
+| D7 | 「规则输出」卡片 | agent-D | feat/D-capture-ui | MERGED | 0 | E4 |
 
 ## 集成验收
 
@@ -93,3 +93,5 @@
 | 2026-11-21 11:35 | A 第 3 轮通过：NAS 冒烟三条断言全过（noVNC 200 / Chrome 非 Headless / CDP 只绑 loopback），合并 `feat/A-capture-env` |
 | 2026-11-21 11:37 | 挂载 `/local/capture/env` 后发现**鉴权被绕过**（Hono use 只作用于其后注册的路由），已把挂载移到中间件之后并复验 401 |
 | 2026-11-21 11:40 | 启动 Lane B（抓包后端），worktree wt-B |
+| 2026-11-21 11:52 | **D 合并**：控制台第 8 页「网页诊断」，mock 下 21 项断言通过；线上验证降级提示正常（无后端时显示"服务未就绪"） |
+| 2026-11-21 11:54 | 修复 mock-capture.mjs 两处 bug（rec 未定义、请求写错到 session 对象），已复测 10 请求 / 6 域名 |

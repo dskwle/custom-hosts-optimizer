@@ -125,7 +125,8 @@ const server = http.createServer((req, res) => {
         requestCount: 0,
         hostCount: 0,
       }
-      sessions.set(id, { session: s, requests: [] })
+      const rec = { session: s, requests: [] }
+      sessions.set(id, rec)
       clients.set(id, new Set())
       json(res, 200, { session: s })
 
@@ -141,9 +142,10 @@ const server = http.createServer((req, res) => {
           return
         }
         const r = reqs[i++]
-        s.requests = [...s.requests, r]
-        s.requestCount = s.requests.length
-        s.hostCount = new Set(s.requests.map((x) => x.host)).size
+        // 请求明细挂在 rec 上（session 对象只存计数），写错成 s.requests 会直接抛错
+        rec.requests.push(r)
+        s.requestCount = rec.requests.length
+        s.hostCount = new Set(rec.requests.map((x) => x.host)).size
         for (const c of clients.get(id) || []) {
           c.write(`data: ${JSON.stringify({ type: 'request', request: r })}\n\n`)
         }
