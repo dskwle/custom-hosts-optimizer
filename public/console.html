@@ -677,9 +677,20 @@ document.querySelectorAll('.tab-content').forEach((c) => {
 // 必须等整段脚本跑完再点：cap 等状态是后面 const 声明的，
 // 在这里同步 click 会撞上暂时性死区，页签切换了但初始化抛错。
 setTimeout(() => {
-  const want = new URLSearchParams(location.search).get('tab')
+  const qs = new URLSearchParams(location.search)
+  const want = qs.get('tab')
   const target = want && document.querySelector(`.tab[data-tab="${CSS.escape(want)}"]`)
   if (target) target.click()
+  // ?filter=fail 之类：直接带筛选条件打开抓包页，便于复现/分享某一类问题
+  const filter = qs.get('filter')
+  if (filter && el('capFilter')) {
+    const opt = [...el('capFilter').options].some((o) => o.value === filter)
+    if (opt) {
+      el('capFilter').value = filter
+      cap.filter = filter
+      capRebuildView()
+    }
+  }
 }, 0)
 
 /* ---------- 分组下拉 ---------- */
