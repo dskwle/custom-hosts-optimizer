@@ -1,6 +1,7 @@
 import { connect } from "cloudflare:sockets"
 import { ALL_DOMAINS, DNS_PROVIDERS, HOSTS_TEMPLATE, SITE_GROUPS } from "../constants"
 import { Bindings } from "../types"
+import type { BlockEntry } from "./blocklist"
 
 export type HostEntry = [string, string]
 
@@ -351,18 +352,28 @@ export async function updateHostsData(
 // updatedAt 传入数据的真实更新时间（KV 里的 lastUpdated）。
 // 不传则回退到当前时间——但每次请求都会变，无法据此判断数据新旧，
 // 因此调用方应尽量传入。
-export function formatHostsFile(
+
+/** 优选区：说明头 + 「地址 域名」列表。blocked 只用于剔除同名条目，不渲染屏蔽段 */
+export function formatFastHosts(
   entries: HostEntry[],
   updatedAt?: string | number | null,
-  ads?: { content: string; ruleCount: number; fetchedAt?: string } | null
+  blocked?: BlockEntry[] | null
 ): string {
+  const blockedSet = new Set((blocked ?? []).map((b) => b.domain.toLowerCase()))
+
+  // 屏蔽优先级最高：被屏蔽的域名不能留在优选区，
+  // 否则 v4 的优选地址会比 0.0.0.0 先生效，屏蔽形同虚设。
+  const visible = blockedSet.size
+    ? entries.filter(([, domain]) => !blockedSet.has(domain.toLowerCase()))
+    : entries
+
   // 对齐宽度按实际最长地址动态计算。
   // 固定 padEnd(30) 在 IPv4 下够用（最长 15 字符），
   // 但 IPv6 完整形式可达 39 字符，会导致列错位。
-  const maxIpLen = entries.reduce((m, [ip]) => Math.max(m, ip.length), 0)
+  const maxIpLen = visible.reduce((m, [ip]) => Math.max(m, ip.length), 0)
   const pad = Math.max(maxIpLen + 2, 28)
 
-  const content = entries
+  const content = visible
     .map(([ip, domain]) => `${ip.padEnd(pad)}${domain}`)
     .join("\n")
 
@@ -376,24 +387,75 @@ export function formatHostsFile(
 
   const groups = SITE_GROUPS.map((g) => g.name).join(" / ")
 
-  const base = HOSTS_TEMPLATE.replace("{groups}", groups)
+  return HOSTS_TEMPLATE.replace("{groups}", groups)
     .replace("{content}", content)
     .replace("{updateTime}", updateTime)
+}
 
-  if (!ads || !ads.content) return base
+/**
+ * 屏蔽区：广告规则 + 自定义屏蔽。
+ * 两者都是「域名 → 不可用地址」，因此合并成一段输出，
+ * 每条域名固定 v4 + v6 两行，避免双栈机器从另一族绕过去。
+ */
+export function formatBlockHosts(
+  ads?: { content: string; ruleCount: number; fetchedAt?: string } | null,
+  blocked?: BlockEntry[] | null
+): string {
+  const blockedSet = new Set((blocked ?? []).map((b) => b.domain.toLowerCase()))
+  const parts: string[] = []
 
-  // 广告规则单独成段，与优选条目明确分隔，
-  // 方便使用者只取上半部分（优选区）或整体导入。
-  const adsHeader = [
-    "",
-    "# ============================================================",
-    "# 以下为广告拦截规则（AWAvenue-Ads-Rule）",
-    "# 来源：https://github.com/TG-Twilight/AWAvenue-Ads-Rule",
-    `# 规则数：${ads.ruleCount}${ads.fetchedAt ? `，抓取时间：${new Date(ads.fetchedAt).toLocaleString("en-US", { timeZone: "Asia/Shanghai", hour12: false })}` : ""}`,
-    "# ============================================================",
-  ].join("\n")
+  if (ads?.content) {
+    // 与屏蔽清单重叠的域名只保留屏蔽区那一条，避免同一域名出现两次
+    const adsLines = ads.content
+      .split("\n")
+      .filter((line) => {
+        const p = line.trim().split(/\s+/)
+        return !(p[1] && blockedSet.has(p[1].toLowerCase()))
+      })
+    parts.push(
+      [
+        "# ============================================================",
+        "# 广告拦截规则（AWAvenue-Ads-Rule）",
+        "# 来源：https://github.com/TG-Twilight/AWAvenue-Ads-Rule",
+        `# 域名数：${ads.ruleCount}（每条同时写入 IPv4 与 IPv6）${ads.fetchedAt ? `，抓取时间：${new Date(ads.fetchedAt).toLocaleString("en-US", { timeZone: "Asia/Shanghai", hour12: false })}` : ""}`,
+        "# ============================================================",
+        adsLines.join("\n"),
+      ].join("\n")
+    )
+  }
 
-  return `${base}${adsHeader}\n${ads.content}\n`
+  if (blocked?.length) {
+    const blockPad = 10
+    const lines: string[] = []
+    for (const b of blocked) {
+      lines.push(`${"0.0.0.0".padEnd(blockPad)}${b.domain}`)
+      lines.push(`${"::".padEnd(blockPad)}${b.domain}`)
+    }
+    parts.push(
+      [
+        "# ============================================================",
+        "# 自定义屏蔽（0.0.0.0 与 :: 各一条，IPv4/IPv6 均不可达）",
+        `# 域名数：${blocked.length}`,
+        "# ============================================================",
+        lines.join("\n"),
+      ].join("\n")
+    )
+  }
+
+  return parts.length ? parts.join("\n\n") + "\n" : ""
+}
+
+/** 完整 hosts：优选区 + 屏蔽区 */
+export function formatHostsFile(
+  entries: HostEntry[],
+  updatedAt?: string | number | null,
+  ads?: { content: string; ruleCount: number; fetchedAt?: string } | null,
+  blocked?: BlockEntry[] | null
+): string {
+  const fast = formatFastHosts(entries, updatedAt, blocked)
+  const block = formatBlockHosts(ads, blocked)
+  // 空行分隔两个区段，方便使用者只截取上半部分（优选区）
+  return block ? `${fast}\n${block}` : fast
 }
 
 // 读取 KV 中域名数据的更新时间，供 hosts 输出标注。

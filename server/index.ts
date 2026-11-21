@@ -38,7 +38,13 @@ import {
 // 因此不能 route() 挂载，只能直接调用它的 fetch。
 import worker from "../src/index.js"
 import { ALL_DOMAINS, SITE_GROUPS, resolveGroupDomains } from "../src/constants.js"
-import { addCustomDomain } from "../src/services/hosts.js"
+import { addCustomDomain, removeCustomDomain } from "../src/services/hosts.js"
+import {
+  getBlocklist,
+  addBlocked,
+  removeBlocked,
+  clearBlocklist,
+} from "../src/services/blocklist.js"
 
 const PORT = Number(process.env.PORT || 8788)
 const HOST = process.env.HOST || "127.0.0.1"
@@ -90,7 +96,7 @@ root.post("/local/refresh", async (c) => {
 
   // 默认跳过已知 SNI 阻断的域名：这些域名改 hosts 无效，
   // 每轮重测只会白等 TLS 超时。需要复核时传 includeBlocked=true。
-  const { allowed: domains, skipped } = includeBlocked
+  const { allowed: filtered, skipped } = includeBlocked
     ? { allowed: requested, skipped: [] as string[] }
     : await filterBlocked(requested)
 
@@ -98,6 +104,17 @@ root.post("/local/refresh", async (c) => {
     console.log(
       `[local/refresh] 跳过 ${skipped.length} 个已知 SNI 阻断域名: ${skipped.join(", ")}`
     )
+  }
+
+  // 被用户屏蔽的域名不参与优选：测出来也不会写进 hosts，纯粹浪费一轮探测
+  const blocklist = await getBlocklist(env as any)
+  const blockedNames = new Set(blocklist.map((b) => b.domain))
+  const domains = blockedNames.size
+    ? filtered.filter((d) => !blockedNames.has(d.toLowerCase()))
+    : filtered
+
+  if (domains.length < filtered.length) {
+    console.log(`[local/refresh] 跳过 ${filtered.length - domains.length} 个已屏蔽域名`)
   }
 
   const task = taskManager.create("refresh", domains.length)
@@ -377,6 +394,48 @@ root.post("/local/adopt", async (c) => {
   }
 
   return c.json({ ok: true, added, updated, failed })
+})
+
+/** 自定义屏蔽清单：hosts 里同时写 0.0.0.0 与 :: 两条，IPv4/IPv6 都堵死 */
+root.get("/local/blocklist", async (c) => {
+  const entries = await getBlocklist(env as any)
+  return c.json({ count: entries.length, entries })
+})
+
+root.post("/local/blocklist", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as
+    | { domains?: string[] | string; text?: string }
+    | null
+  let inputs: string[] = []
+  if (Array.isArray(body?.domains)) inputs = body!.domains.map(String)
+  else if (typeof body?.domains === "string") inputs = body!.domains.split(/\r?\n/)
+  else if (typeof body?.text === "string") inputs = body!.text.split(/\r?\n/)
+
+  if (!inputs.length) return c.json({ ok: false, error: "domains 为空" }, 400)
+
+  const r = await addBlocked(env as any, inputs)
+
+  // 同一域名如果还在自定义域名里，先摘掉：hosts 只留屏蔽区那一条，
+  // 否则表里会出现「指向优选 IP」和「指向 0.0.0.0」两种互相矛盾的记录。
+  for (const d of r.added) {
+    try {
+      await removeCustomDomain(env as any, d)
+    } catch {
+      /* 不存在就忽略 */
+    }
+  }
+
+  return c.json({ ok: true, ...r })
+})
+
+root.delete("/local/blocklist/:domain", async (c) => {
+  const ok = await removeBlocked(env as any, c.req.param("domain"))
+  return c.json({ ok })
+})
+
+root.post("/local/blocklist/clear", async (c) => {
+  const cleared = await clearBlocklist(env as any)
+  return c.json({ ok: true, cleared })
 })
 
 /** 仅做 SNI 阻断检测，用于快速判断某域名属于哪类问题 */

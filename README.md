@@ -46,7 +46,8 @@ Cloudflare Workers 有两条硬限制，直接决定了能做什么：
 | **稳定性监控** | 按间隔反复采样，绘制多域名趋势曲线 |
 | **服务端缓存** | 按 `IP + 域名` 缓存测量结果，全量刷新从 46s 降到 21s |
 | **网络变化感知** | 出口 IP 变化时自动清空缓存，避免沿用失效数据 |
-| **广告规则拼接** | 可选追加 AWAvenue-Ads-Rule 黑名单，带开关 |
+| **广告规则拼接** | 可选追加 AWAvenue-Ads-Rule 黑名单，带开关；上游只写了单族的条目自动补齐 v4/v6 |
+| **自定义屏蔽** | 批量粘贴域名，同时写 `0.0.0.0` 与 `::`，IPv4/IPv6 一起堵死 |
 | **无鉴权** | 本地控制台不设任何权限校验 |
 
 ---
@@ -190,6 +191,21 @@ curl "http://127.0.0.1:8788/hosts?group=github&ads=false"
 
 批量粘贴添加自有域名，它们会一并出现在 hosts 输出中。
 
+### 屏蔽网站
+
+批量粘贴要屏蔽的域名（可直接贴网址，自动去协议与路径），每行一个。
+
+写入 hosts 时每条域名固定输出两行：
+
+```
+0.0.0.0   example.com
+::        example.com
+```
+
+**只写一族没有意义**——只写 `0.0.0.0` 时，双栈机器仍会通过 AAAA 记录走 IPv6 访问；只写 `::` 时纯 IPv4 网络照样能连。两族都写才真正堵死。
+
+被屏蔽的域名会同时从优选区、广告区、`/hosts.json` 和批量刷新中剔除，避免出现「屏蔽了但 v4 优选地址先生效」这种自相矛盾的结果。AWAvenue 规则里只写单族的条目也会自动补齐另一族。
+
 ---
 
 ## 工作方式
@@ -239,8 +255,12 @@ SNI 阻断归因（仅诊断时）
 
 | 接口 | 说明 |
 |---|---|
-| `GET /hosts` | hosts 文本。`?group=` 过滤分组，`?ads=false` 不含广告规则 |
-| `GET /hosts.json` | 同上的 JSON 结构，含分组归类 |
+| `GET /host` | **全部**：优选区 + 广告规则 + 自定义屏蔽（`/hosts` 同义） |
+| `GET /host_fast` | **仅加速**：只有优选区，不含广告与屏蔽段 |
+| `GET /host_block` | **仅屏蔽**：广告规则 + 自定义屏蔽，每条域名 v4/v6 各一行 |
+| `GET /hosts.json` | 结构化 JSON，含分组归类（已剔除屏蔽域名） |
+
+三个文本接口都支持 `?group=` 过滤分组；`/host` 与 `/host_block` 支持 `?ads=false` 临时去掉广告规则。
 
 数据时间戳取自实际刷新时间，重复请求不会变化，可用于 diff 判断数据是否真的更新。
 
@@ -327,9 +347,10 @@ PORT=9000 ENABLE_IPV6=false npm run local
 ```
 data/
 ├── kv/
-│   ├── domain_data.json      域名优选结果（核心）
-│   ├── ads_rules.json        广告规则缓存
-│   └── ads_config.json       广告开关
+│   ├── domain_data.json       域名优选结果（核心）
+│   ├── ads_rules_v2.json      广告规则缓存（每条域名 v4+v6）
+│   ├── ads_config.json        广告开关
+│   └── custom_blocklist.json  自定义屏蔽清单
 ├── ip-cache.json             IP 延迟缓存（TTL 2 小时）
 ├── blocked-domains.json      SNI 阻断排除清单
 └── network-identity.json     出口 IP 基线

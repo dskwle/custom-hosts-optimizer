@@ -22,8 +22,8 @@ import type { Bindings } from "../types"
 const SOURCE_URL =
   "https://gcore.jsdelivr.net/gh/TG-Twilight/AWAvenue-Ads-Rule@main/Filters/AWAvenue-Ads-Rule-hosts.txt"
 
-/** KV 中的存储键 */
-const KV_KEY = "ads_rules"
+/** KV 中的存储键。v2：内容改为「每条域名固定 v4+v6 两行」，旧缓存不再兼容 */
+const KV_KEY = "ads_rules_v2"
 /** 启用开关的存储键 */
 const KV_CONFIG_KEY = "ads_config"
 
@@ -62,7 +62,7 @@ export async function fetchAdsRules(
   const lines = raw.split(/\r?\n/)
   let version: string | undefined
   let upstreamUpdatedAt: string | undefined
-  const rules: string[] = []
+  const domainSet = new Set<string>()
 
   for (const line of lines) {
     const t = line.trim()
@@ -80,7 +80,7 @@ export async function fetchAdsRules(
     // 只接受「地址 + 域名」两列结构
     const parts = t.split(/\s+/)
     if (parts.length < 2) continue
-    const [addr, domain] = parts
+    const domain = parts[1].toLowerCase()
 
     // 安全阀：hosts 文件里的 localhost 永远不该被这条规则覆盖
     if (/(^|\.)localhost$/i.test(domain) || domain === "localhost.localdomain") continue
@@ -88,13 +88,24 @@ export async function fetchAdsRules(
     if (!domain || !domain.includes(".")) continue
     // 跳过明显是通配或非法字符的行
     if (/[*?\[\]{}]/.test(domain)) continue
+    // 只保留域名：上游 IPv4 / IPv6 行会落到同一个域名上，下面统一补齐
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(domain) || domain.includes(":")) continue
 
-    rules.push(`${addr} ${domain}`)
+    domainSet.add(domain)
+  }
+
+  // 上游有相当一部分条目只写了 v4（0.0.0.0）或只写了 v6（::）。
+  // 只拦一侧等于没拦：双栈机器换另一族地址就绕过去了，所以固定补成两条。
+  const rules: string[] = []
+  for (const domain of [...domainSet].sort()) {
+    rules.push(`0.0.0.0 ${domain}`)
+    rules.push(`:: ${domain}`)
   }
 
   return {
     content: rules.join("\n"),
-    ruleCount: rules.length,
+    // 统计口径是「域名数」，每条域名实际会输出两行（v4 + v6）
+    ruleCount: domainSet.size,
     version,
     upstreamUpdatedAt,
   }

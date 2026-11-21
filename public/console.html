@@ -185,13 +185,15 @@
     <div class="tab" data-tab="refresh">批量刷新</div>
     <div class="tab" data-tab="monitor">稳定性监控</div>
     <div class="tab" data-tab="domains">自定义域名</div>
+    <div class="tab" data-tab="block">屏蔽网站</div>
   </div>
 
   <!-- ========== Hosts ========== -->
   <div class="tab-content" id="hosts-tab">
     <div class="card">
       <h2>Hosts 文件 <span class="badge gray" id="hostsMeta">加载中</span></h2>
-      <p class="hint">本地版直接读取当前 KV 数据生成，无需经过 Cloudflare。可在下方按分组筛选。</p>
+      <p class="hint">本地版直接读取当前 KV 数据生成，无需经过 Cloudflare。可在下方按分组筛选。<br>
+        三个入口：<code>/host</code> 全部（加速 + 屏蔽）、<code>/host_fast</code> 仅加速、<code>/host_block</code> 仅屏蔽。</p>
       <div class="row">
         <select id="hostsGroup">
           <option value="">全部站点</option>
@@ -318,6 +320,26 @@
         <span id="domainsStatus" class="sub"></span>
       </div>
       <div class="domain-tags" id="domainTags"></div>
+    </div>
+  </div>
+
+  <!-- ========== 屏蔽网站 ========== -->
+  <div class="tab-content" id="block-tab">
+    <div class="card">
+      <h2>屏蔽网站 <span class="badge gray" id="blockCount">0</span></h2>
+      <p class="hint">
+        把域名指向不可用地址实现屏蔽。每条域名同时写入 <code>0.0.0.0</code> 与 <code>::</code>，
+        IPv4 与 IPv6 都无法访问——只写一族的话，双栈机器换另一族照样能连。<br>
+        支持批量粘贴（每行一个，也可直接贴网址）。被屏蔽的域名不参与优选，也不会出现在 hosts 的优选区与广告区。
+      </p>
+      <textarea id="blockInput" placeholder="example.com&#10;https://ads.example.net/banner  → 自动取 ads.example.net"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="btnAddBlock">添加屏蔽</button>
+        <button id="btnLoadBlock">刷新列表</button>
+        <button id="btnClearBlock" class="danger">清空全部</button>
+        <span id="blockStatus" class="sub"></span>
+      </div>
+      <div class="domain-tags" id="blockTags"></div>
     </div>
   </div>
 </div>
@@ -1249,6 +1271,73 @@ async function removeDomain(domain) {
   } catch (e) { toast('删除失败') }
 }
 
+/* ---------- 六、屏蔽网站 ---------- */
+async function loadBlocklist() {
+  try {
+    const d = await (await fetch(`${API}/local/blocklist?_t=${Date.now()}`, { cache: 'no-store' })).json()
+    const list = d.entries || []
+    el('blockCount').textContent = list.length
+    if (!list.length) {
+      el('blockTags').innerHTML = '<p class="sub">暂无屏蔽域名</p>'
+      return
+    }
+    el('blockTags').innerHTML = list.map((x) => `<span class="domain-tag">${x.domain}
+      <button data-domain="${x.domain}" title="取消屏蔽">×</button></span>`).join('')
+    el('blockTags').querySelectorAll('button[data-domain]').forEach((b) => {
+      b.addEventListener('click', () => unblockDomain(b.dataset.domain))
+    })
+  } catch (e) {
+    el('blockStatus').textContent = '加载失败：' + e.message
+  }
+}
+
+async function addBlockedSites() {
+  const { list, dropped } = parseTargets(el('blockInput').value)
+  if (!list.length) {
+    toast(dropped ? `没有可识别的域名（忽略 ${dropped} 行）` : '请输入至少一个域名')
+    return
+  }
+  el('blockStatus').textContent = `添加 ${list.length} 个...`
+  try {
+    const d = await (await fetch(`${API}/local/blocklist`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ domains: list }),
+    })).json()
+    if (!d.ok) {
+      el('blockStatus').textContent = '添加失败：' + (d.error || '未知原因')
+      return
+    }
+    el('blockInput').value = ''
+    el('blockStatus').textContent = `新增 ${d.added.length} 个${d.existed.length ? `，已存在 ${d.existed.length} 个` : ''}${d.invalid.length ? `，无效 ${d.invalid.length} 行` : ''}`
+    toast(`已屏蔽 ${d.added.length} 个域名`)
+    loadBlocklist()
+    loadHosts()
+    loadDomains()
+  } catch (e) {
+    el('blockStatus').textContent = '添加失败：' + e.message
+  }
+}
+
+async function unblockDomain(domain) {
+  try {
+    await fetch(`${API}/local/blocklist/${encodeURIComponent(domain)}`, { method: 'DELETE' })
+    toast('已取消屏蔽')
+    loadBlocklist()
+    loadHosts()
+  } catch (e) { toast('操作失败') }
+}
+
+async function clearBlocklist() {
+  if (!confirm('清空全部屏蔽域名？此操作不可撤销。')) return
+  try {
+    const d = await (await fetch(`${API}/local/blocklist/clear`, { method: 'POST' })).json()
+    toast(`已清空 ${d.cleared || 0} 个`)
+    loadBlocklist()
+    loadHosts()
+  } catch (e) { toast('清空失败') }
+}
+
 /* ---------- IP 延迟缓存 ---------- */
 async function loadCacheInfo() {
   try {
@@ -1401,6 +1490,9 @@ el('btnSeriesClear').addEventListener('click', async () => {
 })
 el('btnAddDomains').addEventListener('click', addDomains)
 el('btnLoadDomains').addEventListener('click', loadDomains)
+el('btnAddBlock').addEventListener('click', addBlockedSites)
+el('btnLoadBlock').addEventListener('click', loadBlocklist)
+el('btnClearBlock').addEventListener('click', clearBlocklist)
 el('monitorGroup').addEventListener('change', () => { chartData = {}; startChartPolling() })
 window.addEventListener('resize', () => drawChart())
 
@@ -1409,6 +1501,7 @@ loadGroups()
 loadHosts()
 loadDomains()
 loadBlocked()
+loadBlocklist()
 loadCacheInfo()
 loadAdsInfo()
 fetch(`${API}/local/monitor/status`).then((r) => r.json()).then((s) => {

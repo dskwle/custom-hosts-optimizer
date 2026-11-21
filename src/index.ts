@@ -1,6 +1,9 @@
 import { Hono } from "hono"
+import type { Context } from "hono"
 import {
   formatHostsFile,
+  formatFastHosts,
+  formatBlockHosts,
   getDomainData,
   getCompleteHostsData,
   getHostsData,
@@ -12,9 +15,11 @@ import {
 } from "./services/hosts"
 import { SITE_GROUPS, resolveGroupDomains } from "./constants"
 import { getAdsEnabled, getAdsRules } from "./services/ads"
+import { getBlocklist } from "./services/blocklist"
 import { Bindings } from "./types"
 
 const app = new Hono<{ Bindings: Bindings }>()
+type Ctx = Context<{ Bindings: Bindings }>
 
 // 本地版不做权限控制，也不再需要管理后台页面：
 // 控制台（public/console.html）已取代原内联管理页。
@@ -63,6 +68,11 @@ app.get("/hosts.json", async (c) => {
     const entries = allData.filter(
       ([, domain]) => allowedDomains.has(domain) || customSet.has(domain)
     )
+
+    // 屏蔽清单里的域名不进结构化输出，避免客户端拿到「可用」的假象
+    const blocked = await getBlocklist(c.env)
+    const blockedSet = new Set(blocked.map((b) => b.domain))
+    const visibleEntries = entries.filter(([, domain]) => !blockedSet.has(domain.toLowerCase()))
     
     // 按分组归类输出
     const byGroup: Record<string, Array<[string, string]>> = {}
@@ -71,7 +81,7 @@ app.get("/hosts.json", async (c) => {
     }
     const customData: Array<[string, string]> = []
     
-    for (const entry of entries) {
+    for (const entry of visibleEntries) {
       const groupId = domainToGroup.get(entry[1])
       if (groupId && byGroup[groupId]) {
         byGroup[groupId].push(entry)
@@ -88,8 +98,8 @@ app.get("/hosts.json", async (c) => {
     const updatedAt = await getDataUpdatedAt(c.env)
 
     return c.json({
-      entries,
-      total: entries.length,
+      entries: visibleEntries,
+      total: visibleEntries.length,
       groups: SITE_GROUPS.filter((g) => byGroup[g.id].length > 0).map((g) => ({
         id: g.id,
         name: g.name,
@@ -117,87 +127,128 @@ app.get("/hosts.json", async (c) => {
   }
 })
 
-app.get("/hosts", async (c) => {
+/** 首启动保护：KV 为空时不要回落到慢速抓取路径，直接告诉使用者怎么生成数据 */
+function noDataHint(c: Ctx) {
+  c.header('Content-Type', 'text/plain; charset=utf-8')
+  c.header('Cache-Control', 'no-store')
+  return c.text(
+    [
+      '# custom-hosts 尚未生成数据',
+      '#',
+      '# 请先在控制台点击「开始刷新」，或执行：',
+      '#   curl -X POST http://127.0.0.1:8788/local/refresh',
+      '#',
+      '# 刷新完成后再访问本地址即可获取 hosts 内容。',
+    ].join('\n')
+  )
+}
+
+/** 广告规则：默认跟随全局开关，?ads=false 临时关闭，?ads=true 强制带上 */
+async function readAds(c: Ctx) {
+  const param = c.req.query('ads')
+  if (param === 'false') return null
+  if (param === 'true') return await getAdsRules(c.env)
+  if (!(await getAdsEnabled(c.env))) return null
+  return await getAdsRules(c.env)
+}
+
+/** 取分组过滤后的条目（含自定义域名），/hosts 与 /host_fast 共用 */
+async function collectEntries(
+  c: Ctx,
+  opts: { groupParam?: string; forceRefresh: boolean; includeCustom: boolean }
+): Promise<HostEntry[]> {
+  let allData = opts.includeCustom
+    ? await getCompleteHostsData(c.env, opts.forceRefresh)
+    : await getHostsData(c.env, opts.forceRefresh)
+
+  if (opts.groupParam) {
+    const allowedDomains = new Set(resolveGroupDomains(opts.groupParam))
+    const customSet = new Set((await getCustomDomains(c.env)).map((d) => d.domain))
+    allData = allData.filter(([, domain]) => allowedDomains.has(domain) || customSet.has(domain))
+    console.log(`按分组 [${opts.groupParam}] 过滤后: ${allData.length} 条`)
+  }
+  return allData
+}
+
+function setHostsHeaders(c: Ctx, forceRefresh: boolean) {
+  c.header('Cache-Control', forceRefresh ? 'no-cache' : 'public, max-age=3600')
+  c.header('X-Cache-Status', forceRefresh ? 'MISS' : 'HIT')
+  c.header('Content-Type', 'text/plain; charset=utf-8')
+}
+
+/**
+ * /host 与 /hosts：优选 + 广告 + 自定义屏蔽的完整文件。
+ * 屏蔽优先：同名域名只会出现在屏蔽区，优选区那一条被剔除。
+ */
+const hostsFull = async (c: Ctx) => {
   try {
-    // 获取查询参数
     const forceRefresh = c.req.query('refresh') === 'true'
-    const optimizeParam = c.req.query('optimize')
-    const customParam = c.req.query('custom')
     const groupParam = c.req.query('group')
-    
-    // 默认启用所有功能
-    const enableOptimization = optimizeParam !== 'false'
-    const includeCustomDomains = customParam !== 'false'
-    
-    console.log(`Hosts request - refresh: ${forceRefresh}, optimize: ${enableOptimization}, custom: ${includeCustomDomains}, group: ${groupParam || 'all'}`)
+    const includeCustom = c.req.query('custom') !== 'false'
 
-    // 首启动保护：KV 为空时不要回落到 Workers 的慢速抓取路径
-    // （那条路会串行解析 151 个域名并逐个测速，实测超过 60 秒）。
-    // 本分支的数据只由 /local/refresh 产生，因此直接提示去刷新。
     const dataAt = await getDataUpdatedAt(c.env)
-    if (!dataAt) {
-      c.header('Content-Type', 'text/plain; charset=utf-8')
-      c.header('Cache-Control', 'no-store')
-      return c.text(
-        [
-          '# custom-hosts 尚未生成数据',
-          '#',
-          '# 请先在本地控制台 http://127.0.0.1:8788/ 点击「开始刷新」，',
-          '# 或执行：curl -X POST http://127.0.0.1:8788/local/refresh',
-          '#',
-          '# 刷新完成后再访问本地址即可获取 hosts 内容。',
-        ].join('\n')
-      )
-    }
+    if (!dataAt) return noDataHint(c)
 
-    let allData: HostEntry[]
-    
-    if (includeCustomDomains) {
-      // 包含自定义域名的完整数据
-      allData = await getCompleteHostsData(c.env, forceRefresh)
-      console.log(`合并后总数据 (包含自定义域名): ${allData.length} 条`)
-    } else {
-      // 仅系统域名数据
-      allData = await getHostsData(c.env, forceRefresh)
-      console.log(`系统域名数据: ${allData.length} 条`)
-    }
-    
-    // 站点分组过滤：传了 group 才过滤，自定义域名始终保留
-    if (groupParam) {
-      const allowedDomains = new Set(resolveGroupDomains(groupParam))
-      const customList = await getCustomDomains(c.env)
-      const customSet = new Set(customList.map((d) => d.domain))
-      allData = allData.filter(
-        ([, domain]) => allowedDomains.has(domain) || customSet.has(domain)
-      )
-      console.log(`按分组 [${groupParam}] 过滤后: ${allData.length} 条`)
-    }
-    
-    const updatedAt = await getDataUpdatedAt(c.env)
+    const allData = await collectEntries(c, { groupParam, forceRefresh, includeCustom })
+    const blocked = await getBlocklist(c.env)
+    const ads = await readAds(c)
+    const content = formatHostsFile(allData, dataAt, ads, blocked)
+    console.log(`[hosts] 全部条目 ${allData.length}，屏蔽 ${blocked.length}，长度 ${content.length}`)
 
-    // 广告规则：默认跟随全局开关；?ads=false 可只取优选区（不改全局配置）
-    const adsParam = c.req.query('ads')
-    let ads: { content: string; ruleCount: number; fetchedAt?: string } | null = null
-    if (adsParam !== 'false' && (adsParam === 'true' || (await getAdsEnabled(c.env)))) {
-      const meta = await getAdsRules(c.env)
-      if (meta) ads = meta
-    }
-
-    const hostsContent = formatHostsFile(allData, updatedAt, ads)
-    console.log(`生成的hosts文件长度: ${hostsContent.length} 字符`)
-    
-    // 添加缓存控制头
-    c.header('Cache-Control', forceRefresh ? 'no-cache' : 'public, max-age=3600') // 1小时缓存
-    c.header('X-Cache-Status', forceRefresh ? 'MISS' : 'HIT')
-    c.header('Content-Type', 'text/plain; charset=utf-8')
-    
-    return c.text(hostsContent)
+    setHostsHeaders(c, forceRefresh)
+    return c.text(content)
   } catch (error) {
-    console.error("Error in /hosts:", error)
+    console.error('Error in /hosts:', error)
     return c.text(`# Error generating hosts file: ${error instanceof Error ? error.message : String(error)}`, 500)
   }
-})
+}
 
+/** /host_fast：只有优选区，不含广告与屏蔽段；被屏蔽的域名同样不会出现 */
+const hostsFast = async (c: Ctx) => {
+  try {
+    const forceRefresh = c.req.query('refresh') === 'true'
+    const groupParam = c.req.query('group')
+    const includeCustom = c.req.query('custom') !== 'false'
+
+    const dataAt = await getDataUpdatedAt(c.env)
+    if (!dataAt) return noDataHint(c)
+
+    const allData = await collectEntries(c, { groupParam, forceRefresh, includeCustom })
+    const blocked = await getBlocklist(c.env)
+    const content = formatFastHosts(allData, dataAt, blocked)
+
+    setHostsHeaders(c, forceRefresh)
+    return c.text(content)
+  } catch (error) {
+    console.error('Error in /host_fast:', error)
+    return c.text(`# Error: ${error instanceof Error ? error.message : String(error)}`, 500)
+  }
+}
+
+/** /host_block：只有屏蔽段（广告规则 + 自定义屏蔽），每域名 v4/v6 各一条 */
+const hostsBlock = async (c: Ctx) => {
+  try {
+    const blocked = await getBlocklist(c.env)
+    const ads = await readAds(c)
+    const content = formatBlockHosts(ads, blocked)
+    if (!content) {
+      c.header('Content-Type', 'text/plain; charset=utf-8')
+      c.header('Cache-Control', 'no-store')
+      return c.text('# 暂无屏蔽规则（自定义屏蔽为空，广告规则未启用或尚未抓取）\n')
+    }
+    c.header('Cache-Control', 'public, max-age=600')
+    c.header('Content-Type', 'text/plain; charset=utf-8')
+    return c.text(content)
+  } catch (error) {
+    console.error('Error in /host_block:', error)
+    return c.text(`# Error: ${error instanceof Error ? error.message : String(error)}`, 500)
+  }
+}
+
+app.get('/hosts', hostsFull)
+app.get('/host', hostsFull)
+app.get('/host_fast', hostsFast)
+app.get('/host_block', hostsBlock)
 
 // 自定义域名管理 API
 app.get("/api/custom-domains", async (c) => {
