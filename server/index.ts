@@ -92,12 +92,6 @@ function isPublicPath(pathname: string): boolean {
   )
 }
 
-// Clash 规则输出：与 /host* 同级公开，供 mihomo 的 rule-providers 直接拉取
-root.route("/clash", createClashRoutes(() => env as any))
-
-// 抓包环境自检（CDP 是否可达）。需要鉴权，属于管理面
-root.route("/local/capture", createCaptureEnvRoutes(() => resolveCdpUrl()))
-
 function basicAuthOk(header?: string): boolean {
   if (!header || !header.startsWith("Basic ")) return false
   let decoded = ""
@@ -125,6 +119,13 @@ root.use("*", async (c, next) => {
   c.header("Cache-Control", "no-store")
   return c.text("需要登录：请输入管理密码（用户名随意）", 401)
 })
+
+// 注意：Hono 的中间件只对它之后注册的路由生效。
+// 所以这两个 mount 必须放在上面的鉴权中间件之后——
+// /clash/* 由 isPublicPath 放行，/local/capture/* 则正常要求登录。
+// （踩过一次：放在中间件之前时，未登录访问 /local/capture/env 会直接 200。）
+root.route("/clash", createClashRoutes(() => env as any))
+root.route("/local/capture", createCaptureEnvRoutes(() => resolveCdpUrl()))
 
 root.post("/local/refresh", async (c) => {
   const groupParam = c.req.query("group")
