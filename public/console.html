@@ -403,6 +403,19 @@
         <span id="blockedStatus" class="sub"></span>
       </div>
       <div id="blockedList"><p class="empty">暂无</p></div>
+
+      <div style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px">
+        <h2 style="font-size:15px">
+          后台重试队列 <span class="badge gray" id="failCount">0</span>
+          <span class="sub" style="font-weight:400;font-size:12px">未达阈值，暂不排除</span>
+        </h2>
+        <p class="hint">
+          探测失败的域名每分钟自动重试一次。连续失败达到 <strong>60 次（约 1 小时）</strong>
+          且 SNI 结论为阻断，才会移到上方清单；期间任何一次成功即清零。
+          超时类失败只累计、不判死。
+        </p>
+        <div id="failList"><p class="empty">暂无失败记录</p></div>
+      </div>
     </div>
   </div>
 
@@ -2064,6 +2077,41 @@ async function loadAdsInfo() {
   }
 }
 
+/* ---------- 后台重试队列 ---------- */
+async function loadFailures() {
+  try {
+    const d = await (await fetch(`${API}/local/failures?_t=${Date.now()}`, { cache: 'no-store' })).json()
+    const entries = d.entries || []
+    const threshold = d.threshold || 60
+    el('failCount').textContent = entries.length
+
+    if (!entries.length) {
+      el('failList').innerHTML = '<p class="empty">暂无失败记录，所有域名探测正常</p>'
+      return
+    }
+
+    el('failList').innerHTML = `<table>
+      <thead><tr><th>域名</th><th>连续失败</th><th>最近失败</th><th>最近原因</th><th>进度</th></tr></thead>
+      <tbody>${entries.map((e) => {
+        const pct = Math.min(100, Math.round((e.consecutive / threshold) * 100))
+        return `<tr>
+        <td><code>${e.domain}</code></td>
+        <td class="num">${e.consecutive} / ${threshold}</td>
+        <td class="sub">${new Date(e.lastFailedAt).toLocaleString('zh-CN')}</td>
+        <td class="bad" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="${escAttr(e.lastError || '')}">${escAttr(e.lastError || '—')}</td>
+        <td><span class="sub">${pct}%</span></td>
+      </tr>`
+      }).join('')}</tbody>
+    </table>
+    <p class="sub" style="margin-top:10px">
+      每分钟重试一次；表中域名仍有机会恢复，只有连续失败满 ${threshold} 次且判定为 SNI 阻断才会移入上方清单。
+    </p>`
+  } catch (e) {
+    el('failList').innerHTML = `<p class="empty">加载失败：${e.message}</p>`
+  }
+}
+
 /* ---------- 六、SNI 阻断排除清单 ---------- */
 async function loadBlocked() {
   try {
@@ -2096,6 +2144,7 @@ async function loadBlocked() {
         await fetch(`${API}/local/blocked/${encodeURIComponent(b.dataset.unblock)}`, { method: 'DELETE' })
         toast(`已恢复检测 ${b.dataset.unblock}`)
         loadBlocked()
+        loadFailures()
       })
     })
   } catch (e) {
@@ -3274,6 +3323,7 @@ el('btnBlockedClear').addEventListener('click', async () => {
   const d = await (await fetch(`${API}/local/blocked/clear`, { method: 'POST' })).json()
   toast(`已清空 ${d.cleared} 条`)
   loadBlocked()
+  loadFailures()
 })
 el('btnSeriesClear').addEventListener('click', async () => {
   await fetch(`${API}/local/series/clear`, { method: 'POST' })
@@ -3301,6 +3351,7 @@ loadGroups()
 loadHosts()
 loadDomains()
 loadBlocked()
+loadFailures()
 loadBlocklist()
 loadCacheInfo()
 loadAdsInfo()

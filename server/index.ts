@@ -26,6 +26,8 @@ import {
 } from "./probe.js"
 import { resolveAndMeasure } from "./timing.js"
 import { rankTimingDetails } from "./rank.js"
+import { clearFailure, recordFailure, listFailures, clearAllFailures } from "./failures.js"
+import { startRetrier, retrierStats, runRetryRound } from "./retrier.js"
 import { taskManager, monitor, type TaskItemResult } from "./tasks.js"
 import { cacheStats, clearCache } from "./ipcache.js"
 import { checkNetworkChange } from "./netcheck.js"
@@ -193,7 +195,7 @@ root.post("/local/refresh", async (c) => {
     console.log(`[local/refresh] ${task.taskId} probing ${domains.length} domains`)
 
     const results: TaskItemResult[] = []
-    // 只有「两次判定都阻断」的域名才计入，避免把并发引起的偶发超时算成新发现
+    // 本轮新达到失败阈值、应写入排除清单的域名
     const confirmedBlocked: string[] = []
     let index = 0
 
@@ -211,22 +213,20 @@ root.post("/local/refresh", async (c) => {
 
             // 判定为 SNI 阻断的域名记入排除清单，后续刷新默认跳过。
             // 判定依据是 checkSniBlock 的双 SNI 对照，可靠性较高：
-            // 真实域名握手失败、换无关 SNI 却成功，说明阻断由域名匹配触发。
-            // 批量并发跑的时候，TLS 握手偶尔会因为本机连接数压力超时，
-            // 单次判定容易把正常域名误判成 SNI 阻断（实测一整轮全量刷新后
-            // 32 条阻断里有 23 条是误判）。这里再单独复核一次，
-            // 两次都判定阻断才写进清单——代价只在少数可疑域名上多花一次握手。
-            if (r.sni?.verdict === "sni-blocked") {
-              const confirm = await probeDomain(domain, { checkSni: true, useCache: false })
-              if (confirm.sni?.verdict === "sni-blocked") {
-                confirmedBlocked.push(domain)
-                await markBlocked(domain, {
-                  reason: r.sni.explanation,
-                  withSniError: r.sni.withSni.error,
-                  withoutSniMs: r.sni.withoutSni.ms,
-                })
-              } else {
-                console.log(`[local/refresh] ${domain} 首轮判为 SNI 阻断，复核后为 ${confirm.sni?.verdict}，不计入`)
+            // 不再「一次判定就写清单」。批量并发时 TLS 握手容易因本机连接数压力
+            // 失败，一次性判死会让正常域名永久失去优化机会。
+            // 现在只累计「连续失败次数」，由后台重试器每分钟重测，
+            // 连续失败达到阈值（默认 60 次 ≈ 1 小时）才真正列入排除清单。
+            // 任何一次成功都会把计数清零。
+            if (r.bestIp) {
+              await clearFailure(domain)
+            } else if (r.sni?.verdict === "sni-blocked" || r.sni?.verdict === "unknown") {
+              const consecutive = await recordFailure(domain, {
+                error: r.sni.withSni?.error ?? r.sni.explanation,
+                verdict: r.sni.verdict,
+              })
+              if (consecutive === 1) {
+                console.log(`[local/refresh] ${domain} 首次失败（${r.sni.verdict}），进入后台重试队列`)
               }
             }
 
@@ -385,6 +385,33 @@ root.post("/local/refresh", async (c) => {
 })
 
 /* ---------- SNI 阻断域名排除清单 ---------- */
+
+/**
+ * 失败计数面板：还没判死、正在后台重试的域名。
+ * 与 /local/blocked（已判死）分开展示，避免"到底谁在排队"看不出来。
+ */
+root.get("/local/failures", async (c) => {
+  const [list, stats] = await Promise.all([listFailures(), Promise.resolve(retrierStats())])
+  c.header("Cache-Control", "no-store")
+  return c.json({
+    threshold: 60,
+    count: list.length,
+    retrier: stats,
+    entries: list,
+  })
+})
+
+/** 手动清空失败计数（比如换网络后想全部重来） */
+root.post("/local/failures/clear", async (c) => {
+  await clearAllFailures()
+  return c.json({ ok: true })
+})
+
+/** 手动触发一轮后台重试，便于立即验证而不必等一分钟 */
+root.post("/local/failures/retry", async (c) => {
+  const r = await runRetryRound(env, { intervalMs: 0 })
+  return c.json({ ok: true, ...r })
+})
 
 root.get("/local/blocked", async (c) => {
   const entries = await listBlocked()
@@ -1151,6 +1178,9 @@ const server = serve({ fetch: (req) => root.fetch(req, env), port: PORT, hostnam
   console.log(`    curl "http://${HOST}:${info.port}/local/probe?domain=api.github.com"  探测单个域名`)
   console.log(`    curl "http://${HOST}:${info.port}/local/groups"                  查看分组\n`)
 })
+
+// 后台重试：探测失败的域名每分钟重测，连续失败到阈值才判死
+startRetrier(env)
 
 /**
  * WebSocket 升级：把 /novnc/websockify 原始字节转发到 127.0.0.1:6080/websockify。
