@@ -1,7 +1,7 @@
 # 任务看板（唯一事实来源）
 
 > 只有主 agent 能改这张表。状态定义见 `multi-agent-workflow.md` §5。
-> 最后更新：2026-11-21 11:55 · 阶段：A/C/D/E 已合并，B 开发中
+> 最后更新：2026-11-21 12:10 · 阶段：A/C/D/E 全部合并，仅剩 B
 
 ## 状态图例
 
@@ -25,7 +25,7 @@
 | E3 | `/clash/proxy.yaml`（SNI 阻断清单） | agent-E | feat/E-clash | MERGED | 0 |
 | E4 | `/clash/snippet.yaml` 合并片段 | agent-E | feat/E-clash | MERGED | 0 |
 | E5 | 完整配置模板 | agent-E | feat/E-clash | MERGED | 0 |
-| E7 | `scripts/verify-clash.sh` 自动断言 | agent-E | feat/E-clash | CHANGES_REQUESTED | 0 |
+| E7 | `scripts/verify-clash.sh` 自动断言 | agent-E | feat/E-clash | MERGED | 0 |
 
 ## Lane A（运行环境）
 
@@ -95,3 +95,5 @@
 | 2026-11-21 11:40 | 启动 Lane B（抓包后端），worktree wt-B |
 | 2026-11-21 11:52 | **D 合并**：控制台第 8 页「网页诊断」，mock 下 21 项断言通过；线上验证降级提示正常（无后端时显示"服务未就绪"） |
 | 2026-11-21 11:54 | 修复 mock-capture.mjs 两处 bug（rec 未定义、请求写错到 session 对象），已复测 10 请求 / 6 域名 |
+| 2026-11-21 12:00 | E7 harness 修好并在 NAS 复跑通过（hosts A/AAAA、REJECT 日志命中、ch-proxy 放行四条断言全绿） |
+| 2026-11-21 12:08 | D 追加提交合并（对齐 6080 端口与 C 的 v1.1 口径），控制台已重新部署 |
