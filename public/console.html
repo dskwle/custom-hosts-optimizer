@@ -186,6 +186,7 @@
     <div class="tab" data-tab="monitor">稳定性监控</div>
     <div class="tab" data-tab="domains">自定义域名</div>
     <div class="tab" data-tab="block">屏蔽网站</div>
+    <div class="tab" data-tab="lookup">域名查询</div>
   </div>
 
   <!-- ========== Hosts ========== -->
@@ -325,7 +326,8 @@
       <p class="hint">
         把域名指向不可用地址实现屏蔽。每条域名同时写入 <code>0.0.0.0</code> 与 <code>::</code>，
         IPv4 与 IPv6 都无法访问——只写一族的话，双栈机器换另一族照样能连。<br>
-        支持批量粘贴（每行一个，也可直接贴网址）。被屏蔽的域名不参与优选，也不会出现在 hosts 的优选区与广告区。
+        支持批量粘贴（每行一个，也可直接贴网址）。被屏蔽的域名不参与优选，也不会出现在 hosts 的优选区与广告区。<br>
+        内置屏蔽规则 <strong id="blockBuiltinCount">0</strong> 条随代码生效，不在下方列表里显示；这里只列你手动添加的。
       </p>
       <textarea id="blockInput" placeholder="example.com&#10;https://ads.example.net/banner  → 自动取 ads.example.net"></textarea>
       <div class="row" style="margin-top:10px">
@@ -335,6 +337,29 @@
         <span id="blockStatus" class="sub"></span>
       </div>
       <div class="domain-tags" id="blockTags"></div>
+    </div>
+  </div>
+
+  <!-- ========== 域名查询 ========== -->
+  <div class="tab-content" id="lookup-tab">
+    <div class="card">
+      <h2>域名规则查询</h2>
+      <p class="hint">
+        模糊匹配某个域名落在哪条规则里。输入片段即可，例如 <code>github</code> 会命中 github.com、api.github.com 等；
+        留空则按分类浏览全部。
+      </p>
+      <div class="row">
+        <input type="text" class="mono" id="lookupInput" placeholder="netflix / google-analytics / katabump" style="flex:1;min-width:280px">
+        <button class="primary" id="btnLookup">查询</button>
+        <span id="lookupStatus" class="sub"></span>
+      </div>
+      <div class="row" style="margin-top:12px;gap:14px">
+        <label class="row" style="gap:6px"><input type="checkbox" class="lookupCat" value="builtin-accel" checked> 内置加速</label>
+        <label class="row" style="gap:6px"><input type="checkbox" class="lookupCat" value="builtin-block" checked> 内置屏蔽</label>
+        <label class="row" style="gap:6px"><input type="checkbox" class="lookupCat" value="custom-accel" checked> 手动加速</label>
+        <label class="row" style="gap:6px"><input type="checkbox" class="lookupCat" value="custom-block" checked> 手动屏蔽</label>
+      </div>
+      <div id="lookupResult"><p class="empty">输入关键字开始查询</p></div>
     </div>
   </div>
 </div>
@@ -650,6 +675,15 @@ function adoptNote(d, ip, domain) {
       ✓ 已${verb}自定义域名：<code>${ip}</code> → ${domain}${verb === '更新' ? '（覆盖原有条目）' : ''}
     </p>`
   }
+  const skip = d && d.skipped && d.skipped[0]
+  if (skip) {
+    const msg = skip.reason === '内置加速'
+      ? '该域名已在内置加速列表，无需再加入自定义域名。'
+      : skip.reason === '已屏蔽'
+        ? '该域名已被屏蔽，加入自定义不会生效。'
+        : '该域名已在自定义域名中，未重复添加。'
+    return `<p class="sub" style="margin-top:10px;color:#854f0b">${msg}</p>`
+  }
   const err = d && d.failed && d.failed[0] ? d.failed[0].error : '未知原因'
   return `<p class="sub bad" style="margin-top:10px">加入自定义域名失败：${err}</p>`
 }
@@ -672,6 +706,9 @@ function batchRowView(r, adopt) {
   let action
   if (r.action === 'added') action = '<span class="badge good">已加入</span>'
   else if (r.action === 'updated') action = '<span class="badge good">已更新</span>'
+  else if (r.action === 'builtin') action = '<span class="badge gray">已内置</span>'
+  else if (r.action === 'blocked') action = '<span class="badge bad">已屏蔽</span>'
+  else if (r.action === 'exists') action = '<span class="badge gray">已存在</span>'
   else if (r.action === 'failed') action = '<span class="badge bad">写入失败</span>'
   else if (!v.ok) action = '<span class="badge gray">跳过</span>'
   else action = `<span class="badge gray">${adopt ? '加入中' : '可加入'}</span>`
@@ -756,13 +793,23 @@ async function doTimingBatch(targets) {
       const d = await res.json()
       const added = new Set(d.added || [])
       const updated = new Set(d.updated || [])
+      const skipped = new Map((d.skipped || []).map((s) => [s.domain, s.reason]))
       for (const r of adoptable) {
-        r.action = added.has(r.domain) ? 'added' : updated.has(r.domain) ? 'updated' : 'failed'
+        if (added.has(r.domain)) r.action = 'added'
+        else if (updated.has(r.domain)) r.action = 'updated'
+        else if (skipped.has(r.domain)) {
+          const why = skipped.get(r.domain)
+          r.action = why === '内置加速' ? 'builtin' : why === '已屏蔽' ? 'blocked' : 'exists'
+        }
+        else r.action = 'failed'
       }
       draw()
       loadDomains()
       loadHosts()
-      toast(`已加入 ${added.size} 个${updated.size ? `，更新 ${updated.size} 个` : ''}`)
+      const notes = []
+      if (updated.size) notes.push(`更新 ${updated.size} 个`)
+      if (skipped.size) notes.push(`${skipped.size} 个已存在`)
+      toast(`已加入 ${added.size} 个${notes.length ? `，${notes.join('，')}` : ''}`)
     } catch (e) {
       status.textContent = '写入失败：' + (e && e.message ? e.message : e)
       btn.disabled = false
@@ -814,6 +861,8 @@ async function doTimingSingle(domain) {
         loadDomains()
         loadHosts()
         toast('已加入自定义域名')
+      } else if (d && d.skipped && d.skipped.length) {
+        toast(d.skipped[0].reason === '内置加速' ? '已在内置加速列表，未重复加入' : '已在自定义域名中')
       }
     } catch (e) {
       box.insertAdjacentHTML('beforeend', `<p class="sub bad" style="margin-top:10px">加入自定义域名失败：${e && e.message ? e.message : e}</p>`)
@@ -1243,21 +1292,33 @@ async function addDomains() {
   el('domainsStatus').textContent = `添加 ${domains.length} 个...`
   try {
     if (domains.length === 1) {
-      await fetch(`${API}/api/custom-domains`, {
+      const res = await fetch(`${API}/api/custom-domains`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ domain: domains[0] }),
       })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        el('domainsStatus').textContent = d.error || '添加失败'
+        toast(d.error || '添加失败')
+        return
+      }
+      el('domainInput').value = ''
+      el('domainsStatus').textContent = '已添加'
+      toast('已添加 1 个域名')
     } else {
-      await fetch(`${API}/api/custom-domains/batch`, {
+      const res = await fetch(`${API}/api/custom-domains/batch`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ domains }),
       })
+      const d = await res.json().catch(() => ({}))
+      const added = d.added || 0
+      const errs = d.errors || []
+      el('domainInput').value = added ? '' : el('domainInput').value
+      el('domainsStatus').textContent = `新增 ${added} 个` + (errs.length ? `，${errs.length} 个未加入（${errs[0].error}）` : '')
+      toast(added ? `已添加 ${added} 个域名` : (errs[0] ? errs[0].error : '没有新增'))
     }
-    el('domainInput').value = ''
-    el('domainsStatus').textContent = '已添加'
-    toast(`已添加 ${domains.length} 个域名`)
     loadDomains()
   } catch (e) {
     el('domainsStatus').textContent = '添加失败：' + e.message
@@ -1276,16 +1337,16 @@ async function removeDomain(domain) {
 async function loadBlocklist() {
   try {
     const d = await (await fetch(`${API}/local/blocklist?_t=${Date.now()}`, { cache: 'no-store' })).json()
+    // 接口只返回用户自己加的；内置规则单独给数量，不混进列表
     const list = d.entries || []
     el('blockCount').textContent = list.length
+    el('blockBuiltinCount').textContent = d.builtinCount ?? 0
     if (!list.length) {
-      el('blockTags').innerHTML = '<p class="sub">暂无屏蔽域名</p>'
+      el('blockTags').innerHTML = '<p class="sub">暂无手动屏蔽的域名</p>'
       return
     }
     el('blockTags').innerHTML = list.map((x) => `<span class="domain-tag">${x.domain}
-      ${x.builtin
-        ? '<span class="mono" title="内置规则，需改代码移除">内置</span>'
-        : `<button data-domain="${x.domain}" title="取消屏蔽">×</button>`}</span>`).join('')
+      <button data-domain="${x.domain}" title="取消屏蔽">×</button></span>`).join('')
     el('blockTags').querySelectorAll('button[data-domain]').forEach((b) => {
       b.addEventListener('click', () => unblockDomain(b.dataset.domain))
     })
@@ -1312,8 +1373,14 @@ async function addBlockedSites() {
       return
     }
     el('blockInput').value = ''
-    el('blockStatus').textContent = `新增 ${d.added.length} 个${d.existed.length ? `，已存在 ${d.existed.length} 个` : ''}${d.invalid.length ? `，无效 ${d.invalid.length} 行` : ''}`
-    toast(`已屏蔽 ${d.added.length} 个域名`)
+    const notes = []
+    if (d.existed && d.existed.length) notes.push(`${d.existed.length} 个已在屏蔽列表`)
+    if (d.builtin && d.builtin.length) notes.push(`${d.builtin.length} 个已由内置规则屏蔽`)
+    if (d.invalid && d.invalid.length) notes.push(`${d.invalid.length} 行无效`)
+    el('blockStatus').textContent = `新增 ${d.added.length} 个` + (notes.length ? `，${notes.join('，')}` : '')
+    if (d.added.length) toast(`已屏蔽 ${d.added.length} 个域名`)
+    else if (notes.length) toast(notes.join('，'))
+    else toast('没有新增')
     loadBlocklist()
     loadHosts()
     loadDomains()
@@ -1344,6 +1411,58 @@ async function clearBlocklist() {
     loadBlocklist()
     loadHosts()
   } catch (e) { toast('清空失败') }
+}
+
+/* ---------- 七、域名规则查询 ---------- */
+const LOOKUP_BADGE = {
+  'builtin-accel': 'badge good',
+  'builtin-block': 'badge bad',
+  'custom-accel': 'badge',
+  'custom-block': 'badge gray',
+}
+let lookupTimer = null
+
+function lookupCats() {
+  return [...document.querySelectorAll('.lookupCat:checked')].map((x) => x.value)
+}
+
+async function runLookup() {
+  const q = el('lookupInput').value.trim()
+  const cats = lookupCats()
+  if (!cats.length) {
+    el('lookupStatus').textContent = ''
+    el('lookupResult').innerHTML = '<p class="empty">至少选择一个分类</p>'
+    return
+  }
+  if (!q) {
+    el('lookupStatus').textContent = ''
+    el('lookupResult').innerHTML = '<p class="empty">输入关键字开始查询</p>'
+    return
+  }
+  el('lookupStatus').textContent = '查询中…'
+  try {
+    const url = `${API}/local/lookup?q=${encodeURIComponent(q)}&cats=${cats.join(',')}`
+    const d = await (await fetch(url)).json()
+    el('lookupStatus').textContent = `命中 ${d.total} 条`
+    if (!d.total) {
+      el('lookupResult').innerHTML = `<p class="empty">没有匹配「${q}」的域名</p>`
+      return
+    }
+    const rows = d.results.map((r) => `<tr>
+      <td><code>${r.domain}</code></td>
+      <td><span class="${LOOKUP_BADGE[r.category] || 'badge gray'}">${r.label}</span></td>
+      <td class="sub">${r.detail || '—'}</td>
+      <td class="sub">${r.addedAt ? new Date(r.addedAt).toLocaleString('zh-CN', { hour12: false }) : '—'}</td>
+    </tr>`).join('')
+    el('lookupResult').innerHTML = `
+      <table style="margin-top:14px">
+        <thead><tr><th>域名</th><th>分类</th><th>详情</th><th>添加时间</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${d.truncated ? '<p class="sub">结果过多，只显示前 300 条</p>' : ''}`
+  } catch (e) {
+    el('lookupStatus').textContent = '查询失败：' + e.message
+  }
 }
 
 /* ---------- IP 延迟缓存 ---------- */
@@ -1501,6 +1620,12 @@ el('btnLoadDomains').addEventListener('click', loadDomains)
 el('btnAddBlock').addEventListener('click', addBlockedSites)
 el('btnLoadBlock').addEventListener('click', loadBlocklist)
 el('btnClearBlock').addEventListener('click', clearBlocklist)
+el('btnLookup').addEventListener('click', runLookup)
+el('lookupInput').addEventListener('input', () => {
+  clearTimeout(lookupTimer)
+  lookupTimer = setTimeout(runLookup, 250)
+})
+document.querySelectorAll('.lookupCat').forEach((c) => c.addEventListener('change', runLookup))
 el('monitorGroup').addEventListener('change', () => { chartData = {}; startChartPolling() })
 window.addEventListener('resize', () => drawChart())
 

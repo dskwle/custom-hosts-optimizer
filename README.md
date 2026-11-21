@@ -192,6 +192,8 @@ curl "http://127.0.0.1:8788/hosts?group=github&ads=false"
 
 批量粘贴添加自有域名，它们会一并出现在 hosts 输出中。
 
+已经被内置规则覆盖的域名（例如 `github.com`）、或已经在列表里的域名，添加时会直接提示「已在内置加速列表「GitHub」」/「已在自定义域名中」，不会产生重复条目；测速后自动加入的路径也走同一套判断。
+
 ### 屏蔽网站
 
 批量粘贴要屏蔽的域名（可直接贴网址，自动去协议与路径），每行一个。
@@ -207,12 +209,26 @@ curl "http://127.0.0.1:8788/hosts?group=github&ads=false"
 
 被屏蔽的域名会同时从优选区、广告区、`/hosts.json` 和批量刷新中剔除，避免出现「屏蔽了但 v4 优选地址先生效」这种自相矛盾的结果。AWAvenue 规则里只写单族的条目也会自动补齐另一族。
 
+列表里只显示手动添加的部分；内置规则的数量在上方提示里给出，不混在一起（避免误以为可以删除）。
+
 清单分两个来源，合并输出：
 
 | 来源 | 存放位置 | 能否删除 |
 |---|---|---|
 | 内置规则 | `src/constants.ts` 的 `BUILTIN_BLOCKLIST` | 控制台标「内置」，不可单独删除，只能改代码 |
 | 自己添加 | KV `custom_blocklist` | 标签上的 × 随时取消，或「清空全部」 |
+
+### 域名查询
+
+输入片段即可模糊匹配，看清某个域名到底落在哪条规则里：
+
+```
+github   → github.com / api.github.com / gist.github.com …（内置加速）
+bump     → katabump.com / control.katabump.com …（内置加速）
+```
+
+四个分类可以单独勾选：**内置加速**（`SITE_GROUPS`）、**内置屏蔽**（`BUILTIN_BLOCKLIST`）、
+**手动加速**（自定义域名）、**手动屏蔽**（自己加的屏蔽）。结果会标出所属分组、指向的 IP 与添加时间，精确命中排在最前。
 
 ---
 
@@ -282,7 +298,9 @@ SNI 阻断归因（仅诊断时）
 | `GET /local/timing?domain=x` | 四段延迟分解（可带 `?ip=`） |
 | `GET /local/compare?domain=x&rounds=3` | 候选 IP 多轮对比 |
 | `GET /local/sni?domain=x` | 仅做 SNI 阻断判定 |
-| `POST /local/adopt` | 把 `{items:[{domain,ip}]}` 写成自定义域名（用实测 IP，不再重新解析） |
+| `POST /local/adopt` | 把 `{items:[{domain,ip}]}` 写成自定义域名（用实测 IP，不再重新解析）；已内置/已存在/已屏蔽的会跳过并说明原因 |
+| `GET /local/lookup?q=&cats=` | 模糊查询域名属于哪个规则；`cats` 取 `builtin-accel,builtin-block,custom-accel,custom-block` |
+| `GET /local/blocklist` | 只返回手动添加的屏蔽项，另附 `builtinCount` 内置规则数量 |
 
 刷新参数：
 

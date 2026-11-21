@@ -47,34 +47,45 @@ export function normalizeDomain(input: string): string | null {
   return s
 }
 
-export async function getBlocklist(env: Bindings): Promise<BlockEntry[]> {
-  const builtin: BlockEntry[] = [...BUILTIN].map((domain) => ({ domain, addedAt: "", builtin: true }))
+async function saveBlocklist(env: Bindings, list: BlockEntry[]): Promise<void> {
+  await env.custom_hosts.put(KV_KEY, JSON.stringify(list))
+}
+
+/** 内置屏蔽清单（只读） */
+export function getBuiltinBlocklist(): string[] {
+  return [...BUILTIN]
+}
+
+/** 用户自己加的屏蔽域名（KV），不含内置项 */
+export async function getUserBlocklist(env: Bindings): Promise<BlockEntry[]> {
   try {
     const v = (await env.custom_hosts.get(KV_KEY, { type: "json" })) as BlockEntry[] | null
-    if (!Array.isArray(v)) return builtin
-    const user = v
+    if (!Array.isArray(v)) return []
+    return v
       .filter((e) => e && typeof e.domain === "string" && e.domain)
       .map((e) => ({ domain: e.domain.toLowerCase(), addedAt: e.addedAt || new Date().toISOString() }))
       // 与内置清单重名的不再重复输出
       .filter((e) => !BUILTIN.has(e.domain))
-    return [...builtin, ...user]
   } catch {
-    return builtin
+    return []
   }
 }
 
-async function saveBlocklist(env: Bindings, list: BlockEntry[]): Promise<void> {
-  await env.custom_hosts.put(KV_KEY, JSON.stringify(list))
+/** 内置 + 用户，按域名去重；hosts 输出与刷新跳过都用这份合并结果 */
+export async function getBlocklist(env: Bindings): Promise<BlockEntry[]> {
+  const builtin: BlockEntry[] = [...BUILTIN].map((domain) => ({ domain, addedAt: "", builtin: true }))
+  return [...builtin, ...(await getUserBlocklist(env))]
 }
 
 export async function addBlocked(
   env: Bindings,
   inputs: string[]
-): Promise<{ added: string[]; existed: string[]; invalid: string[] }> {
-  const list = await getBlocklist(env)
-  const known = new Set(list.map((e) => e.domain))
+): Promise<{ added: string[]; existed: string[]; builtin: string[]; invalid: string[] }> {
+  const user = await getUserBlocklist(env)
+  const known = new Set(user.map((e) => e.domain))
   const added: string[] = []
   const existed: string[] = []
+  const builtin: string[] = []
   const invalid: string[] = []
 
   for (const raw of inputs) {
@@ -83,17 +94,22 @@ export async function addBlocked(
       invalid.push(String(raw).trim())
       continue
     }
-    if (known.has(domain) || BUILTIN.has(domain)) {
+    if (BUILTIN.has(domain)) {
+      builtin.push(domain)
+      continue
+    }
+    if (known.has(domain)) {
       existed.push(domain)
       continue
     }
     known.add(domain)
     added.push(domain)
-    list.push({ domain, addedAt: new Date().toISOString() })
+    user.push({ domain, addedAt: new Date().toISOString() })
   }
 
-  if (added.length) await saveBlocklist(env, list)
-  return { added, existed, invalid }
+  // 只写用户清单，内置项不能落进 KV
+  if (added.length) await saveBlocklist(env, user)
+  return { added, existed, builtin, invalid }
 }
 
 export async function removeBlocked(
@@ -104,9 +120,9 @@ export async function removeBlocked(
   if (BUILTIN.has(d)) {
     return { ok: false, reason: "内置屏蔽规则不可单独取消，需要修改 src/constants.ts" }
   }
-  const list = await getBlocklist(env)
-  const next = list.filter((e) => e.domain !== d)
-  if (next.length === list.length) return { ok: false, reason: "不在清单中" }
+  const user = await getUserBlocklist(env)
+  const next = user.filter((e) => e.domain !== d)
+  if (next.length === user.length) return { ok: false, reason: "不在清单中" }
   await saveBlocklist(env, next)
   return { ok: true }
 }

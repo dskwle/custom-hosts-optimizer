@@ -38,9 +38,11 @@ import {
 // 因此不能 route() 挂载，只能直接调用它的 fetch。
 import worker from "../src/index.js"
 import { ALL_DOMAINS, SITE_GROUPS, resolveGroupDomains } from "../src/constants.js"
-import { addCustomDomain, removeCustomDomain } from "../src/services/hosts.js"
+import { addCustomDomain, removeCustomDomain, getCustomDomains } from "../src/services/hosts.js"
 import {
   getBlocklist,
+  getBuiltinBlocklist,
+  getUserBlocklist,
   addBlocked,
   removeBlocked,
   clearBlocklist,
@@ -388,28 +390,50 @@ root.post("/local/adopt", async (c) => {
 
   const added: string[] = []
   const updated: string[] = []
+  const skipped: Array<{ domain: string; reason: string }> = []
   const failed: Array<{ domain: string; error: string }> = []
+
+  // 已在内置加速清单、或已经加过自定义域名的，不再重复写入，交给前端提示
+  const builtinSet = new Set(ALL_DOMAINS.map((d: string) => d.toLowerCase()))
+  const customSet = new Set((await getCustomDomains(env as any)).map((d) => d.domain.toLowerCase()))
+  // 已被屏蔽的域名加进自定义也没有意义：hosts 里会被屏蔽区覆盖
+  const blockedSet = new Set((await getBlocklist(env as any)).map((b) => b.domain.toLowerCase()))
 
   for (const it of items) {
     const domain = it.domain.trim().toLowerCase()
     const ip = typeof it.ip === "string" ? it.ip.trim() : undefined
+    if (builtinSet.has(domain)) {
+      skipped.push({ domain, reason: "内置加速" })
+      continue
+    }
+    if (customSet.has(domain)) {
+      skipped.push({ domain, reason: "已在自定义域名" })
+      continue
+    }
+    if (blockedSet.has(domain)) {
+      skipped.push({ domain, reason: "已屏蔽" })
+      continue
+    }
     try {
       const r = await addCustomDomain(env as any, domain, ip || undefined)
       if (!r) failed.push({ domain, error: "解析或写入失败" })
       else if (r.isUpdate) updated.push(domain)
       else added.push(domain)
+      customSet.add(domain)
     } catch (e) {
       failed.push({ domain, error: e instanceof Error ? e.message : String(e) })
     }
   }
 
-  return c.json({ ok: true, added, updated, failed })
+  return c.json({ ok: true, added, updated, skipped, failed })
 })
 
 /** 自定义屏蔽清单：hosts 里同时写 0.0.0.0 与 :: 两条，IPv4/IPv6 都堵死 */
 root.get("/local/blocklist", async (c) => {
-  const entries = await getBlocklist(env as any)
-  return c.json({ count: entries.length, entries })
+  // 内置项不在「屏蔽网站」列表里展示（避免误以为可删），只返回数量
+  const entries = await getUserBlocklist(env as any)
+  const builtin = getBuiltinBlocklist()
+  return c.json({ count: entries.length, entries, builtinCount: builtin.length, builtin })
 })
 
 root.post("/local/blocklist", async (c) => {
@@ -441,6 +465,75 @@ root.post("/local/blocklist", async (c) => {
 root.delete("/local/blocklist/:domain", async (c) => {
   const r = await removeBlocked(env as any, c.req.param("domain"))
   return c.json(r, r.ok ? 200 : 400)
+})
+
+/**
+ * 域名规则查询：模糊匹配某个域名落在哪条规则里。
+ * 四个来源：内置加速、内置屏蔽、手动加速（自定义域名）、手动屏蔽。
+ * 不传 q 时返回全部（用于按分类浏览），最多返回 300 条。
+ */
+root.get("/local/lookup", async (c) => {
+  const raw = (c.req.query("q") || "").trim().toLowerCase()
+  const cats = new Set(
+    (c.req.query("cats") || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  )
+  const want = (cat: string) => cats.size === 0 || cats.has(cat)
+
+  type Row = {
+    domain: string
+    category: string
+    label: string
+    detail?: string
+    addedAt?: string
+  }
+  const rows: Row[] = []
+
+  if (want("builtin-accel")) {
+    for (const g of SITE_GROUPS) {
+      for (const d of g.domains) {
+        rows.push({ domain: d, category: "builtin-accel", label: "内置加速", detail: g.name })
+      }
+    }
+  }
+  if (want("builtin-block")) {
+    for (const d of getBuiltinBlocklist()) {
+      rows.push({ domain: d, category: "builtin-block", label: "内置屏蔽" })
+    }
+  }
+  if (want("custom-accel")) {
+    for (const x of await getCustomDomains(env as any)) {
+      rows.push({
+        domain: x.domain,
+        category: "custom-accel",
+        label: "手动加速",
+        detail: x.ip ? `指向 ${x.ip}` : undefined,
+        addedAt: x.addedAt,
+      })
+    }
+  }
+  if (want("custom-block")) {
+    for (const x of await getUserBlocklist(env as any)) {
+      rows.push({ domain: x.domain, category: "custom-block", label: "手动屏蔽", addedAt: x.addedAt })
+    }
+  }
+
+  const totalAll = rows.length
+  const matched = raw ? rows.filter((r) => r.domain.includes(raw)) : rows
+  // 精确命中排最前，其次前缀命中，其余按域名长度（越短越可能是主域）
+  const rank = (d: string) => (d === raw ? 0 : d.startsWith(raw) ? 1 : 2)
+  matched.sort((a, b) => rank(a.domain) - rank(b.domain) || a.domain.length - b.domain.length || a.domain.localeCompare(b.domain))
+
+  return c.json({
+    ok: true,
+    query: raw,
+    total: matched.length,
+    totalAll,
+    truncated: matched.length > 300,
+    results: matched.slice(0, 300),
+  })
 })
 
 root.post("/local/blocklist/clear", async (c) => {

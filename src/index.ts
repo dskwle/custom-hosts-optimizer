@@ -280,6 +280,22 @@ app.post("/api/custom-domains", async (c) => {
       return c.json({ error: "Invalid domain format" }, 400)
     }
 
+    const lower = domain.toLowerCase()
+    const builtinGroup = SITE_GROUPS.find((g) => g.domains.includes(lower))
+    if (builtinGroup) {
+      return c.json(
+        { error: `已在内置加速列表「${builtinGroup.name}」，无需重复添加`, reason: "builtin", group: builtinGroup.name },
+        409
+      )
+    }
+    const already = (await getCustomDomains(c.env)).find((x) => x.domain.toLowerCase() === lower)
+    if (already) {
+      return c.json(
+        { error: `已在自定义域名中（${already.ip || "无 IP"}）`, reason: "exists", ip: already.ip },
+        409
+      )
+    }
+
     const result = await addCustomDomain(c.env, domain)
 
     if (result) {
@@ -325,6 +341,18 @@ app.post("/api/custom-domains/batch", async (c) => {
       // 简单的域名格式验证
       if (!/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(domain)) {
         errors.push({ domain, error: "Invalid domain format" })
+        continue
+      }
+
+      const lower = domain.toLowerCase()
+      const builtinGroup = SITE_GROUPS.find((g) => g.domains.includes(lower))
+      if (builtinGroup) {
+        errors.push({ domain, error: `已在内置加速列表「${builtinGroup.name}」`, reason: "builtin" })
+        continue
+      }
+      const already = (await getCustomDomains(c.env)).find((x) => x.domain.toLowerCase() === lower)
+      if (already) {
+        errors.push({ domain, error: "已在自定义域名中", reason: "exists" })
         continue
       }
 
