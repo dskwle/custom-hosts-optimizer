@@ -19,44 +19,44 @@
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; background: var(--bg); color: var(--text); font-size: 14px;
+    margin: 0; background: var(--bg); color: var(--text); font-size: 16px;
     line-height: 1.6;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
   }
-  .wrap { max-width: 1240px; margin: 0 auto; padding: 24px 20px 80px; }
+  .wrap { max-width: 1680px; margin: 0 auto; padding: 24px 32px 80px; }
 
   header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
-  h1 { font-size: 20px; font-weight: 500; margin: 0; }
+  h1 { font-size: 22px; font-weight: 500; margin: 0; }
   .badge {
-    display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px;
+    display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 13px;
     background: #e6f1fb; color: var(--accent);
   }
   .badge.gray { background: #f0efeb; color: var(--muted); }
   .badge.bad { background: #fcebeb; color: var(--bad); }
   .badge.good { background: #eaf3de; color: var(--good); }
-  .sub { color: var(--muted); font-size: 13px; }
+  .sub { color: var(--muted); font-size: 15px; }
 
   .card {
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 12px; padding: 20px; margin-bottom: 16px;
   }
-  .card h2 { font-size: 15px; font-weight: 500; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
-  .card .hint { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  .card h2 { font-size: 17px; font-weight: 500; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
+  .card .hint { color: var(--muted); font-size: 13.5px; line-height: 1.65; margin-bottom: 16px; }
 
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   input[type=text], select {
     padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px;
-    font-size: 13px; background: #fff; color: var(--text); font-family: inherit;
+    font-size: 14.5px; background: #fff; color: var(--text); font-family: inherit;
   }
   input[type=text].mono { font-family: var(--mono); }
   input[type=text] { min-width: 200px; }
   textarea {
     width: 100%; min-height: 90px; padding: 10px; border: 1px solid var(--border);
-    border-radius: 7px; font-size: 13px; font-family: var(--mono); resize: vertical;
+    border-radius: 7px; font-size: 14px; font-family: var(--mono); resize: vertical;
   }
   button {
     padding: 7px 16px; border-radius: 7px; border: 1px solid var(--border);
-    background: #fff; color: var(--text); font-size: 13px; cursor: pointer; font-family: inherit;
+    background: #fff; color: var(--text); font-size: 14px; cursor: pointer; font-family: inherit;
   }
   button:hover:not(:disabled) { background: #f5f4f0; }
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
@@ -72,7 +72,7 @@
     position: relative;
   }
   .tab {
-    padding: 8px 14px 9px; font-size: 13px; cursor: pointer; color: var(--muted);
+    padding: 9px 15px 10px; font-size: 14.5px; cursor: pointer; color: var(--muted);
     border-bottom: 2px solid transparent;
     /* 不换行、不被压缩，避免窄屏下文字被截断 */
     white-space: nowrap; flex: 0 0 auto;
@@ -103,7 +103,7 @@
   .legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-top: 10px; flex-wrap: wrap; }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
 
-  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14.5px; }
   th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #f0efeb; }
   th { color: var(--muted); font-weight: 400; font-size: 12px; background: #faf9f7; }
   td.num { font-variant-numeric: tabular-nums; }
@@ -174,7 +174,7 @@
   /* ---------- 网页诊断 ---------- */
   .cap-layout {
     display: grid; gap: 16px; margin-bottom: 16px; align-items: start;
-    grid-template-columns: minmax(320px, 0.78fr) minmax(600px, 1.62fr);
+    grid-template-columns: minmax(420px, 1fr) minmax(600px, 1.28fr);
   }
   .cap-layout > .card { margin-bottom: 0; }
   .cap-vnc-card, .cap-req-card { display: flex; flex-direction: column; min-width: 0; }
@@ -192,7 +192,7 @@
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     text-align: center; background: #1c1c1a; color: #b9b7ad; font-size: 12px; line-height: 1.5;
   }
-  .cap-vnc-cover .sub { color: #8b897f; word-break: break-all; }
+  .cap-vnc-cover .sub { color: #8b897f; word-break: break-all; font-size: 12.5px; }
   /* ---------- 会话历史面板 ---------- */
   .cap-hist {
     border: 1px solid var(--border);
@@ -200,12 +200,12 @@
   }
   .cap-hist-head {
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-    padding: 8px 12px; background: #faf9f6; border-bottom: 1px solid var(--border);
+    padding: 9px 14px; background: #faf9f6; border-bottom: 1px solid var(--border);
   }
-  .cap-hist-title { font-size: 13px; font-weight: 600; }
+  .cap-hist-title { font-size: 14px; font-weight: 600; }
   .cap-hist-head .spacer { flex: 1; }
-  .cap-hist-pickall { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
-  .cap-hist-list { max-height: 380px; overflow-y: auto; padding-bottom: 6px; }
+  .cap-hist-pickall { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--muted); }
+  .cap-hist-list { max-height: 460px; overflow-y: auto; padding-bottom: 6px; }
   .cap-hist-item {
     display: grid; grid-template-columns: 20px 1fr auto; gap: 10px; align-items: start;
     padding: 9px 12px; border-bottom: 1px solid #f5f4f0;
@@ -215,15 +215,15 @@
   .cap-hist-item:last-child { border-bottom: none; }
   .cap-hist-item.is-current { background: #f7f6f1; }
   .cap-hist-main { min-width: 0; }
-  .cap-hist-l1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+  .cap-hist-l1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14.5px; }
   .cap-hist-time { font-variant-numeric: tabular-nums; }
   .cap-hist-l2 {
-    margin-top: 3px; font-size: 12px; color: var(--muted);
+    margin-top: 4px; font-size: 13px; color: var(--muted);
     font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .cap-hist-scale { font-size: 12px; color: var(--muted); }
+  .cap-hist-scale { font-size: 13px; color: var(--muted); }
   .cap-hist-ops { display: flex; gap: 6px; flex-shrink: 0; }
-  .cap-hist-empty { padding: 20px 12px; margin: 0; text-align: center; color: var(--muted); font-size: 13px; }
+  .cap-hist-empty { padding: 22px 12px; margin: 0; text-align: center; color: var(--muted); font-size: 14px; }
   @media (max-width: 720px) {
     .cap-hist-item { grid-template-columns: 20px 1fr; }
     .cap-hist-ops { grid-column: 2; justify-content: flex-start; }
@@ -242,7 +242,7 @@
     border: 1px solid var(--border); border-radius: 9px;
   }
   .cap-table-wrap table {
-    margin-top: 0; width: 100%; min-width: 560px; font-size: 11.5px; table-layout: fixed;
+    margin-top: 0; width: 100%; min-width: 640px; font-size: 13px; table-layout: fixed;
   }
   .cap-table-wrap th, .cap-table-wrap td { padding: 6px 6px; }
   .cap-table-wrap td.num, .cap-table-wrap th:nth-child(n+4):nth-child(-n+6) { text-align: right; }
@@ -251,14 +251,14 @@
   .cap-table-wrap td { vertical-align: top; }
   .cap-table-wrap td:nth-child(1) { vertical-align: middle; }
   .cap-host {
-    font-family: var(--mono); font-size: 12px;
+    font-family: var(--mono); font-size: 13px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .cap-kinds { color: var(--muted); font-size: 12px; }
+  .cap-kinds { color: var(--muted); font-size: 13px; }
   .cap-advice { white-space: normal !important; min-width: 104px; }
-  .cap-advice .cap-reason { color: var(--muted); font-size: 10.5px; line-height: 1.4; margin-top: 2px; }
+  .cap-advice .cap-reason { color: var(--muted); font-size: 12px; line-height: 1.45; margin-top: 2px; }
   .cap-foot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
-  .cap-count { color: var(--muted); font-size: 12px; }
+  .cap-count { color: var(--muted); font-size: 13px; }
   .cap-rule-row {
     display: flex; gap: 10px; align-items: center; padding: 9px 0;
     border-bottom: 1px solid #f5f4f0; font-size: 13px; flex-wrap: wrap;
@@ -530,14 +530,14 @@
         <div class="cap-table-wrap" id="capTableWrap" style="display:none">
           <table>
             <colgroup>
-              <col style="width:28px">
+              <col style="width:30px">
               <col>
+              <col style="width:86px">
+              <col style="width:74px">
+              <col style="width:88px">
+              <col style="width:50px">
               <col style="width:76px">
-              <col style="width:66px">
-              <col style="width:78px">
-              <col style="width:44px">
-              <col style="width:66px">
-              <col style="width:136px">
+              <col style="width:158px">
             </colgroup>
             <thead><tr>
               <th></th>
@@ -719,10 +719,13 @@ async function loadHosts() {
 
 el('btnLoadHosts').addEventListener('click', loadHosts)
 el('btnCopyHosts').addEventListener('click', async () => {
+  const node = el('hostsContent')
   try {
-    await navigator.clipboard.writeText(el('hostsContent').textContent)
+    await copyText(node.textContent)
     toast('已复制到剪贴板')
-  } catch { toast('复制失败，请手动选择') }
+  } catch {
+    toast(selectNodeText(node) ? '复制被浏览器拒绝，已选中内容，按 Ctrl/⌘+C 复制' : '复制失败，请手动选择')
+  }
 })
 el('btnDownloadHosts').addEventListener('click', () => {
   const blob = new Blob([el('hostsContent').textContent], { type: 'text/plain' })
@@ -940,6 +943,57 @@ function adoptNote(d, ip, domain) {
   }
   const err = d && d.failed && d.failed[0] ? d.failed[0].error : '未知原因'
   return `<p class="sub bad" style="margin-top:10px">加入自定义域名失败：${err}</p>`
+}
+
+/**
+ * 复制文本。
+ *
+ * 这个控制台通常通过 http://<局域网 IP>:8788 打开，属于**非安全上下文**，
+ * 浏览器不提供 navigator.clipboard（它只在 https 或 localhost 下存在），
+ * 所以必须有 execCommand 兜底，否则局域网里点"复制"必然失败。
+ * 两者都不可用时抛错，由调用方把内容选中让用户手动复制。
+ */
+async function copyText(text) {
+  if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return
+    } catch {
+      /* 权限被拒时继续走兜底 */
+    }
+  }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.setAttribute('readonly', '')
+  ta.style.position = 'fixed'
+  ta.style.top = '-1000px'
+  ta.style.left = '-1000px'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  ta.setSelectionRange(0, text.length)
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  document.body.removeChild(ta)
+  if (!ok) throw new Error('浏览器拒绝了复制权限')
+}
+
+/** 复制失败时把目标节点整段选中，用户按 Ctrl/⌘+C 即可 */
+function selectNodeText(node) {
+  try {
+    const range = document.createRange()
+    range.selectNodeContents(node)
+    const sel = window.getSelection()
+    sel.removeAllRanges()
+    sel.addRange(range)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function escAttr(s) {
@@ -2723,11 +2777,18 @@ async function capRuleFetch(path) {
 }
 
 async function capRuleCopy(path, name) {
+  let text = ''
   try {
-    await navigator.clipboard.writeText(await capRuleFetch(path))
+    text = await capRuleFetch(path)
+  } catch (e) {
+    toast(capNotReady(e) ? '规则输出未启用' : `读取失败：${e.message}`)
+    return
+  }
+  try {
+    await copyText(text)
     toast(`已复制 ${name}`)
   } catch (e) {
-    toast(capNotReady(e) ? '规则输出未启用' : `复制失败：${e.message}`)
+    toast(`复制失败：${e.message}`)
   }
 }
 
