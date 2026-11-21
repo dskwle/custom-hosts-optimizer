@@ -107,3 +107,33 @@ test("域名与地址校验的边界", () => {
   assert.equal(isIPv6("fe80::1%en0"), true)
   assert.equal(isIPv6("1.2.3.4"), false)
 })
+
+test("ipv4Only：剔除所有 IPv6 地址，只留 v4", () => {
+  const r = buildClashHosts(
+    [
+      ["203.0.113.11", "api.github.com"],
+      ["2001:db8::1", "api.github.com"],
+      ["203.0.113.12", "raw.githubusercontent.com"],
+      ["2001:db8::2", "raw.githubusercontent.com"],
+    ],
+    { ipv4Only: true },
+  )
+  assert.equal(r.entries.length, 2)
+  assert.deepEqual(
+    r.entries.find((e) => e.domain === "api.github.com")?.ips,
+    ["203.0.113.11"],
+  )
+  assert.deepEqual(
+    r.entries.find((e) => e.domain === "raw.githubusercontent.com")?.ips,
+    ["203.0.113.12"],
+  )
+  assert.equal(r.stats.ips, 2)
+})
+
+test("ipv4Only 时纯 v6 域名不出现", () => {
+  const r = buildClashHosts(
+    [["2001:db8::3", "v6only.example.com"]],
+    { ipv4Only: true },
+  )
+  assert.equal(r.entries.length, 0)
+})

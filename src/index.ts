@@ -184,7 +184,7 @@ function setHostsHeaders(c: Ctx, forceRefresh: boolean) {
  * /host 与 /hosts：优选 + 广告 + 自定义屏蔽的完整文件。
  * 屏蔽优先：同名域名只会出现在屏蔽区，优选区那一条被剔除。
  */
-const hostsFull = async (c: Ctx) => {
+const hostsFull = async (c: Ctx, ipv4Only = false) => {
   try {
     const forceRefresh = c.req.query('refresh') === 'true'
     const groupParam = c.req.query('group')
@@ -196,7 +196,7 @@ const hostsFull = async (c: Ctx) => {
     const allData = await collectEntries(c, { groupParam, forceRefresh, includeCustom })
     const blocked = await getBlocklist(c.env)
     const ads = await readAds(c)
-    const content = formatHostsFile(allData, dataAt, ads, blocked)
+    const content = formatHostsFile(allData, dataAt, ads, blocked, ipv4Only)
     console.log(`[hosts] 全部条目 ${allData.length}，屏蔽 ${blocked.length}，长度 ${content.length}`)
 
     setHostsHeaders(c, forceRefresh)
@@ -208,7 +208,7 @@ const hostsFull = async (c: Ctx) => {
 }
 
 /** /host_fast：只有优选区，不含广告与屏蔽段；被屏蔽的域名同样不会出现 */
-const hostsFast = async (c: Ctx) => {
+const hostsFast = async (c: Ctx, ipv4Only = false) => {
   try {
     const forceRefresh = c.req.query('refresh') === 'true'
     const groupParam = c.req.query('group')
@@ -219,7 +219,7 @@ const hostsFast = async (c: Ctx) => {
 
     const allData = await collectEntries(c, { groupParam, forceRefresh, includeCustom })
     const blocked = await getBlocklist(c.env)
-    const content = formatFastHosts(allData, dataAt, blocked)
+    const content = formatFastHosts(allData, dataAt, blocked, ipv4Only)
 
     setHostsHeaders(c, forceRefresh)
     return c.text(content)
@@ -249,10 +249,13 @@ const hostsBlock = async (c: Ctx) => {
   }
 }
 
-app.get('/hosts', hostsFull)
-app.get('/host', hostsFull)
-app.get('/host_fast', hostsFast)
+app.get('/hosts', (c) => hostsFull(c))
+app.get('/host', (c) => hostsFull(c))
+app.get('/host_fast', (c) => hostsFast(c))
 app.get('/host_block', hostsBlock)
+// 纯 v4 版本：少数环境（老路由器 / 无 IPv6 出口）用，剔除所有 IPv6 行
+app.get('/host_v4', (c) => hostsFull(c, true))
+app.get('/host_fast_v4', (c) => hostsFast(c, true))
 
 // 自定义域名管理 API
 app.get("/api/custom-domains", async (c) => {

@@ -94,7 +94,7 @@ export function isIpAddress(value: string): boolean {
  */
 export function buildClashHosts(
   entries: readonly HostTuple[],
-  options: { blocked?: Iterable<string> } = {}
+  options: { blocked?: Iterable<string>; ipv4Only?: boolean } = {}
 ): ClashHosts {
   const blocked = new Set<string>()
   for (const d of options.blocked ?? []) {
@@ -114,6 +114,7 @@ export function buildClashHosts(
 
   for (const entry of entries) {
     const rawIp = String(entry?.[0] ?? "").trim()
+    if (options.ipv4Only && rawIp.includes(":")) continue
     const domain = normalizeHostDomain(String(entry?.[1] ?? ""))
     if (!domain) {
       stats.invalidDomain++

@@ -89,6 +89,28 @@ export function createClashRoutes(getEnv: () => Bindings): Hono {
     return sendYaml(c, yaml)
   })
 
+  /** 纯 v4 的 hosts 映射：少数环境无 IPv6，剔除所有 IPv6 地址 */
+  app.get("/hosts-v4.yaml", async (c) => {
+    const yaml = await safeYaml(
+      "hosts-v4.yaml",
+      async () => {
+        const env = getEnv()
+        const [entries, blocked, updatedAt] = await Promise.all([
+          getCompleteHostsData(env, false),
+          getBlocklist(env),
+          getDataUpdatedAt(env),
+        ])
+        const hosts = buildClashHosts(entries, {
+          blocked: blocked.map((b) => b.domain),
+          ipv4Only: true,
+        })
+        return formatClashHostsYaml(hosts, { updatedAt })
+      },
+      "# custom-hosts 优选地址（纯 IPv4）· 数据暂不可用\nhosts: {}\n"
+    )
+    return sendYaml(c, yaml)
+  })
+
   /** 屏蔽清单（内置 + 手动），只给域名，behavior: domain */
   app.get("/block.yaml", async (c) => {
     const yaml = await safeYaml(

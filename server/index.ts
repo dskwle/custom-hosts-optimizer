@@ -251,6 +251,7 @@ root.post("/local/refresh", async (c) => {
               domain,
               ok: r.bestIp !== null,
               bestIp: r.bestIp,
+              bestIpV6: r.bestIpV4 && r.bestIpV6 ? r.bestIpV6 : undefined,
               family: r.bestIp ? (r.candidates.find((x) => x.ip === r.bestIp)?.family ?? "v4") : undefined,
               latency: r.latency,
               tlsOk: r.tlsOkCount > 0,
@@ -317,6 +318,8 @@ root.post("/local/refresh", async (c) => {
 
       existing.domain_data[r.domain] = {
         ip: r.bestIp,
+        // v4/v6 双栈都可用时各存一条，输出端据此生成双地址 + 纯 v4 两种形态
+        ...(r.bestIpV6 ? { ipv6: r.bestIpV6 } : {}),
         lastUpdated: now,
         lastChecked: now,
         responseTime: r.latency ?? undefined,

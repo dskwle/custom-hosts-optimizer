@@ -53,8 +53,12 @@ export interface SniCheckResult {
 
 export interface ProbeResult {
   domain: string
-  /** 最优 IP：仅在 TLS 握手成功的候选里挑选 */
+  /** 主地址：有 v4 取 v4，否则取 v6（兼容只认单地址的消费方） */
   bestIp: string | null
+  /** IPv4 族里的最优地址；没有可用 v4 时为 null */
+  bestIpV4?: string | null
+  /** IPv6 族里的最优地址；没有可用 v6 时为 null */
+  bestIpV6?: string | null
   /** 最优 IP 的 TCP 握手延迟（ms） */
   latency: number | null
   /** 最优 IP 的 TLS 握手耗时（ms） */
@@ -935,11 +939,18 @@ export async function probeDomain(
 
   // 只从 TLS 握手成功的候选里挑最优，顺序已经按多轮成功率优先。
   const usable = measured.filter((m) => m.tlsOk && m.latency !== null)
-  if (usable.length > 0) {
-    result.bestIp = usable[0].ip
+  // 双栈：v4 / v6 各取本族最优。两族都没有 SNI 阻断时同时写入 hosts，
+  // 让客户端按自己的网络能力选路；只有一族可用时就只写那一族。
+  const bestV4 = usable.find((m) => m.family === "v4") ?? null
+  const bestV6 = usable.find((m) => m.family === "v6") ?? null
+  result.bestIpV4 = bestV4?.ip ?? null
+  result.bestIpV6 = bestV6?.ip ?? null
+  const primary = bestV4 ?? bestV6
+  if (primary) {
+    result.bestIp = primary.ip
     // 记录完整耗时（TCP+TLS）更能反映真实建立连接的代价
-    result.latency = usable[0].latency
-    result.tlsMs = usable[0].tlsMs
+    result.latency = primary.latency
+    result.tlsMs = primary.tlsMs
   } else {
     // 没有任何 IP 能握手成功：不设 bestIp，让上层跳过这条记录，
     // 而不是塞一个坏地址进 hosts。

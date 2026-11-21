@@ -677,8 +677,11 @@ const FEEDS = [
   { path: '/host', name: 'hosts 全量', desc: '加速 + 屏蔽，路由器 / 手动替换 hosts 用这个' },
   { path: '/host_fast', name: 'hosts 加速', desc: '仅加速条目' },
   { path: '/host_block', name: 'hosts 屏蔽', desc: '仅屏蔽条目（0.0.0.0 / ::）' },
+  { path: '/host_v4', name: 'hosts 纯 IPv4', desc: '剔除 IPv6，给只支持 v4 的环境' },
+  { path: '/host_fast_v4', name: 'hosts 加速纯 IPv4', desc: '仅加速条目，纯 IPv4' },
   { path: '/hosts.json', name: '结构化 JSON', desc: '含分组归类，程序化消费用' },
   { path: '/clash/hosts.yaml', name: 'Clash 加速映射', desc: 'hosts: 段，v4/v6 混排', isClash: true },
+  { path: '/clash/hosts-v4.yaml', name: 'Clash 加速映射（纯 IPv4）', desc: 'hosts: 段，剔除 v6', isClash: true },
   { path: '/clash/block.yaml', name: 'Clash 屏蔽规则', desc: 'rule-provider，behavior: domain', isClash: true },
   { path: '/clash/ads.yaml', name: 'Clash 广告规则', desc: '与屏蔽去重，可单独开关', isClash: true },
   { path: '/clash/proxy.yaml', name: 'Clash SNI 阻断', desc: '只能走代理，改 hosts 无效', isClash: true },
@@ -1513,7 +1516,7 @@ function renderRecent(recent) {
           <tr class="expandable" data-idx="${i}" style="cursor:pointer">
             <td class="good">${r.ok ? '' : '▸'}</td>
             <td>${r.domain}</td>
-            <td><code>${r.bestIp || '—'}</code>${r.family === 'v6' ? ' <span class="badge" style="background:#e8e4f5;color:#534ab7;font-size:10px">6</span>' : ''}</td>
+            <td>${r.bestIp ? `<code>${r.bestIp}</code>${r.bestIp.includes(':') ? ' <span class="badge" style="background:#e8e4f5;color:#534ab7;font-size:10px">6</span>' : ''}` : '—'}${r.bestIpV6 ? `<br><code>${r.bestIpV6}</code> <span class="badge" style="background:#e8e4f5;color:#534ab7;font-size:10px">6</span>` : ''}</td>
             <td class="num ${latencyClass(r.latency)}">${r.latency != null ? r.latency + 'ms' : '—'}</td>
             <td class="num ${r.tlsOk ? 'good' : 'bad'}">${r.tlsOk ? (r.tlsMs != null ? r.tlsMs + 'ms' : '✓') : '✗'}</td>
             <td class="num">${r.candidateCount ?? '—'}/${r.tlsOkCount ?? '—'}</td>

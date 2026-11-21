@@ -14,6 +14,8 @@ export interface ResolvedHost {
 
 interface DomainData {
   ip: string
+  /** IPv6 优选地址；与 ip 同域名的第二族地址。少数环境只支持 v4，输出时按需过滤 */
+  ipv6?: string
   lastUpdated: string
   lastChecked: string
   responseTime?: number
@@ -270,6 +272,10 @@ export async function getHostsData(env: Bindings, forceRefresh: boolean = false)
       const domainData = kvData!.domain_data[domain]
       if (domainData && domainData.isOptimized !== false) {
         entries.push([domainData.ip, domain])
+        // 双栈：v4/v6 都可用时两条都输出，客户端各取所需
+        if (domainData.ipv6 && domainData.ipv6 !== domainData.ip) {
+          entries.push([domainData.ipv6, domain])
+        }
       }
     }
 
@@ -357,15 +363,17 @@ export async function updateHostsData(
 export function formatFastHosts(
   entries: HostEntry[],
   updatedAt?: string | number | null,
-  blocked?: BlockEntry[] | null
+  blocked?: BlockEntry[] | null,
+  ipv4Only = false
 ): string {
   const blockedSet = new Set((blocked ?? []).map((b) => b.domain.toLowerCase()))
 
   // 屏蔽优先级最高：被屏蔽的域名不能留在优选区，
   // 否则 v4 的优选地址会比 0.0.0.0 先生效，屏蔽形同虚设。
+  const v4Filtered = ipv4Only ? entries.filter(([ip]) => !ip.includes(":")) : entries
   const visible = blockedSet.size
-    ? entries.filter(([, domain]) => !blockedSet.has(domain.toLowerCase()))
-    : entries
+    ? v4Filtered.filter(([, domain]) => !blockedSet.has(domain.toLowerCase()))
+    : v4Filtered
 
   // 对齐宽度按实际最长地址动态计算。
   // 固定 padEnd(30) 在 IPv4 下够用（最长 15 字符），
@@ -450,9 +458,10 @@ export function formatHostsFile(
   entries: HostEntry[],
   updatedAt?: string | number | null,
   ads?: { content: string; ruleCount: number; fetchedAt?: string } | null,
-  blocked?: BlockEntry[] | null
+  blocked?: BlockEntry[] | null,
+  ipv4Only = false
 ): string {
-  const fast = formatFastHosts(entries, updatedAt, blocked)
+  const fast = formatFastHosts(entries, updatedAt, blocked, ipv4Only)
   const block = formatBlockHosts(ads, blocked)
   // 空行分隔两个区段，方便使用者只截取上半部分（优选区）
   return block ? `${fast}\n${block}` : fast
@@ -666,21 +675,28 @@ export async function getCompleteHostsData(env: Bindings, forceRefresh: boolean 
       console.log('Custom domains sample:', customEntries.slice(0, 3).map(([ip, domain]) => `${domain} -> ${ip}`))
     }
     
-    // 合并数据，避免重复域名（自定义域名优先）
-    const domainMap = new Map<string, string>()
-    
-    // 先添加 GitHub 域名
-    for (const [ip, domain] of githubEntries) {
-      domainMap.set(domain, ip)
+    // 合并数据，避免重复域名。自定义域名优先覆盖同名 GitHub 域名；
+    // 同一域名可有多条（v4 + v6），所以 value 用数组而非单个字符串。
+    const domainMap = new Map<string, string[]>()
+
+    const push = (ip: string, domain: string) => {
+      const list = domainMap.get(domain) ?? []
+      if (!list.includes(ip)) list.push(ip)
+      domainMap.set(domain, list)
     }
-    
+
+    // 先加 GitHub 域名
+    for (const [ip, domain] of githubEntries) push(ip, domain)
+
     // 自定义域名覆盖同名的 GitHub 域名
     for (const [ip, domain] of customEntries) {
-      domainMap.set(domain, ip)
+      domainMap.set(domain, [ip])
       console.log(`Added custom domain to map: ${domain} -> ${ip}`)
     }
-    
-    const allEntries: HostEntry[] = Array.from(domainMap.entries()).map(([domain, ip]) => [ip, domain])
+
+    const allEntries: HostEntry[] = [...domainMap.entries()].flatMap(([domain, ips]) =>
+      ips.map((ip) => [ip, domain] as HostEntry),
+    )
     console.log(`Total entries after deduplication: ${allEntries.length}`)
     
     return allEntries
