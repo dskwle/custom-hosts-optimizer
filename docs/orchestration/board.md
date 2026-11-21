@@ -1,7 +1,7 @@
 # 任务看板（唯一事实来源）
 
 > 只有主 agent 能改这张表。状态定义见 `multi-agent-workflow.md` §5。
-> 最后更新：2026-11-21 12:10 · 阶段：A/C/D/E 全部合并，仅剩 B
+> 最后更新：2026-11-21 12:25 · 阶段：A/B/C/E 全部合并，D 待改 apply 分批
 
 ## 状态图例
 
@@ -40,12 +40,12 @@
 
 | ID | 任务 | Owner | 分支 | 状态 | 轮次 | 依赖 |
 |---|---|---|---|---|---|---|
-| B1 | CDP 客户端封装 | agent-B | feat/B-capture | IN_PROGRESS | 0 | T0-1 |
-| B2 | target attach + navigate | agent-B | feat/B-capture | IN_PROGRESS | 0 | B1 |
-| B3 | 事件采集与耗时计算 | agent-B | feat/B-capture | IN_PROGRESS | 0 | B2 |
-| B4 | 会话管理与落盘 | agent-B | feat/B-capture | IN_PROGRESS | 0 | B2 |
-| B5 | SSE 推送 | agent-B | feat/B-capture | IN_PROGRESS | 0 | B3 |
-| B7 | `/local/capture/apply` | agent-B | feat/B-capture | IN_PROGRESS | 0 | T0-1 |
+| B1 | CDP 客户端封装 | agent-B | feat/B-capture | MERGED | 0 | T0-1 |
+| B2 | target attach + navigate | agent-B | feat/B-capture | MERGED | 0 | B1 |
+| B3 | 事件采集与耗时计算 | agent-B | feat/B-capture | MERGED | 0 | B2 |
+| B4 | 会话管理与落盘 | agent-B | feat/B-capture | MERGED | 0 | B2 |
+| B5 | SSE 推送 | agent-B | feat/B-capture | MERGED | 0 | B3 |
+| B7 | `/local/capture/apply` | agent-B | feat/B-capture | MERGED | 0 | T0-1 |
 
 ## Lane C（聚合与判定）
 
@@ -97,3 +97,5 @@
 | 2026-11-21 11:54 | 修复 mock-capture.mjs 两处 bug（rec 未定义、请求写错到 session 对象），已复测 10 请求 / 6 域名 |
 | 2026-11-21 12:00 | E7 harness 修好并在 NAS 复跑通过（hosts A/AAAA、REJECT 日志命中、ch-proxy 放行四条断言全绿） |
 | 2026-11-21 12:08 | D 追加提交合并（对齐 6080 端口与 C 的 v1.1 口径），控制台已重新部署 |
+| 2026-11-21 12:22 | **B 合并**并挂载 /local/capture（+退出清理）；NAS 真实 headed 浏览器端到端通过 |
+| 2026-11-21 12:25 | 发现 /apply 单次上限 50，前端"全选"会 400 → 交 D 改分批提交 |
