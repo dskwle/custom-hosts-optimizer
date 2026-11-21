@@ -95,6 +95,48 @@ docker inspect --format '{{index .RepoDigests 0}}' theasp/novnc:latest
 # CAPTURE_NOVNC_IMAGE=theasp/novnc@sha256:xxxx
 ```
 
+### 必须清空 entrypoint（否则是 headless，noVNC 里看不见浏览器）
+
+`zenika/alpine-chrome` 的镜像 entrypoint 是 `["chromium-browser", "--headless"]`。
+只写 `command:` 只会把参数**追加**在 `--headless` 后面，结果容器起得来、CDP 也通，
+但 `/json/version` 返回 `HeadlessChrome/...`，noVNC 画面里什么都没有。compose 里是这样绕过的：
+
+```yaml
+entrypoint: []
+command:
+  - "/bin/sh"
+  - "-c"
+  - >-
+    until nc -z -w1 novnc 6000; do sleep 1; done;
+    exec /usr/lib/chromium/chromium --remote-debugging-port=9222 ...
+```
+
+两处关键：`entrypoint: []` 清掉镜像自带的 `--headless`；`until nc -z novnc 6000` 等 X 就绪
+（否则 chromium 可能比 Xvfb 先起来，报 `cannot open display` 后反复重启）。
+
+**改完/换镜像后一定要跑冒烟脚本**，它把"必须有头"固化成断言：
+
+```bash
+./scripts/orch/capture-smoke.sh          # 起容器 → 验 noVNC 200 → 断言不是 HeadlessChrome → 清理
+./scripts/orch/capture-smoke.sh --keep   # 跑完保留容器，方便人工看画面
+```
+
+输出示例：
+
+```
+· 启动 novnc + chromium
+✓ 容器已创建
+✓ noVNC 网页 200（:6080/vnc.html）
+· CDP "Browser": "Chrome/124.0.6367.78"
+✓ CDP 返回 Chrome 系浏览器
+✓ 不是 headless 模式
+
+冒烟通过
+```
+
+> 脚本只清理 `chromium`/`novnc` 两个容器，**不会**执行 `docker compose down`——那条命令会把
+> `app` 一起停掉，在 NAS 上等同于短暂宕机。
+
 ---
 
 ## 3. 内存与资源
@@ -179,6 +221,7 @@ cron 示例（群晖/威联通的任务计划里加一条）：
 | `/local/capture/env` 返回 `{cdp:false,error:"connect ECONNREFUSED..."}` | `docker compose --profile capture ps` | 没带 profile 启动，或 chromium 正在重启；`up -d` 后重试 |
 | 同上，`error` 是 `CDP 探测超时` | `docker logs custom-hosts-chromium \| tail -30` | 容器内 Chromium 卡死/在等 X；重启 chromium |
 | noVNC 页面能打开但黑屏 | `docker logs custom-hosts-novnc` | X 未起来；`docker compose --profile capture restart novnc` |
+| noVNC 打开是黑屏/空桌面，且 `/json/version` 返回 `HeadlessChrome/...` | `docker inspect custom-hosts-chromium --format '{{json .Config.Entrypoint}}'` | entrypoint 又带上了 `--headless`；见 §2「必须清空 entrypoint」，跑 `./scripts/orch/capture-smoke.sh` 复验 |
 | 浏览器里没有窗口 | `docker logs custom-hosts-chromium` 里找 `cannot open display` | chromium 比 novnc 先起来导致；`restart chromium` |
 | 页面中文变方块 | — | 精简 chromium 镜像不带 CJK 字体，抓包（请求列表）不受影响；需要看中文就换带字体的镜像 |
 | 内存持续 > 900MB | `docker stats custom-hosts-chromium` | 关掉不用的标签页；或调小 `IDLE_MINUTES` |

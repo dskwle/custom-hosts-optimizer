@@ -150,23 +150,28 @@ services:
       - "127.0.0.1:${CAPTURE_CDP_PORT:-9222}:9222"
     networks:
       - capture
+    # 镜像自带的 entrypoint 是 ["chromium-browser", "--headless"]，只写 command
+    # 会变成在后面「追加」参数，--headless 永远在 —— 那样 /json/version 返回的是
+    # HeadlessChrome，noVNC 里也不会有任何画面。必须清空 entrypoint 自己 exec。
+    entrypoint: []
     command:
-      - "--remote-debugging-port=9222"
-      # 不写这行 Chromium 只监听容器内 127.0.0.1，宿主机的端口映射会连不上；
-      # 真正的隔离靠上面 ports 的 127.0.0.1 前缀，而不是靠这里。
-      - "--remote-debugging-address=0.0.0.0"
-      # 抓包后端从 Node 侧建立 WebSocket，Origin 不是 devtools://，必须放开
-      - "--remote-allow-origins=*"
-      - "--no-sandbox"
-      - "--disable-dev-shm-usage"
-      - "--user-data-dir=/tmp/chrome"
-      - "--no-first-run"
-      - "--no-default-browser-check"
-      # Xvfb 没有 GPU，关掉硬件加速省内存也避免渲染异常
-      - "--disable-gpu"
-      - "--window-size=1600,968"
-      - "--start-maximized"
-      - "about:blank"
+      - "/bin/sh"
+      - "-c"
+      - >-
+        until nc -z -w1 novnc 6000; do sleep 1; done;
+        exec /usr/lib/chromium/chromium
+        --remote-debugging-port=9222
+        --remote-debugging-address=0.0.0.0
+        --remote-allow-origins=*
+        --no-sandbox
+        --disable-dev-shm-usage
+        --user-data-dir=/tmp/chrome
+        --no-first-run
+        --no-default-browser-check
+        --disable-gpu
+        --window-size=1600,968
+        --start-maximized
+        about:blank
     logging:
       driver: json-file
       options:

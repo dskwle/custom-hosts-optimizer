@@ -148,3 +148,82 @@ docker stats --no-stream custom-hosts-chromium custom-hosts-novnc
 
 可合并。建议顺序上仍按 `E → A → B`：A 合并后 B 才有真实 CDP 可联调。
 唯一前置是主 agent 在 NAS 上跑一遍上面那三条补验命令（本机 registry 不通，我无法完成 up 级验证）。
+
+---
+
+# v2：headless 修复（回应 CHANGES_REQUESTED）
+
+- **状态**：REPORTED（第 2 轮）
+- **变更**：`docker-compose.yml` 的 `chromium` service 改为 `entrypoint: []` + `sh -c "until nc -z novnc 6000; exec /usr/lib/chromium/chromium ..."`；
+  新增 `scripts/orch/capture-smoke.sh`；`docs/deploy-capture.md` 增加「必须清空 entrypoint」与排障条目。
+- **未触碰**：其余文件与第 1 轮一致，无新增越界。
+
+## P0 根因与修复
+
+镜像 entrypoint 是 `["chromium-browser", "--headless"]`，我原来只写了 `command:`，
+参数被**追加**在 `--headless` 之后，`/json/version` 因此返回 `HeadlessChrome/124.0.6367.78`，
+noVNC 里没有窗口。修法两层：
+
+1. `entrypoint: []` 清掉镜像自带的 `--headless`；
+2. `until nc -z -w1 novnc 6000; do sleep 1; done` 等 X（Xvfb）就绪再 `exec`，避免 `cannot open display` 后反复重启。
+
+渲染后的配置（本机 `docker compose config` 校验）：
+
+```yaml
+chromium:
+  entrypoint: []
+  command:
+    - /bin/sh
+    - -c
+    - until nc -z -w1 novnc 6000; do sleep 1; done; exec /usr/lib/chromium/chromium
+      --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --remote-allow-origins=*
+      --no-sandbox --disable-dev-shm-usage --user-data-dir=/tmp/chrome --no-first-run
+      --no-default-browser-check --disable-gpu --window-size=1600,968 --start-maximized
+      about:blank
+```
+
+未加 `--ozone-platform=x11`（实测不需要），`--headless` 在 compose 里已不出现（`grep -c headless docker-compose.yml` 只剩注释说明）。
+
+## P1：冒烟脚本固化断言
+
+`scripts/orch/capture-smoke.sh`：起 `novnc`+`chromium` → 等 `:6080/vnc.html` 200 → 断言 CDP 是 `Chrome/` 且**不含 `Headless`** → 只清理这两个容器。
+
+- 无 docker / daemon 不可用 → 打印跳过并 `exit 0`（Mac 上不阻塞）。
+- 断言逻辑单测（同一段 grep 跑两个样本）：
+
+```
+{"Browser": "Chrome/124.0.6367.78"}         → isChrome headed(OK)
+{"Browser": "HeadlessChrome/124.0.6367.78"} → isChrome HEADLESS(FAIL)
+无 docker 分支：· 未安装 docker，跳过冒烟  exit=0
+```
+
+- 与你给的写法有一处刻意不同：清理用 `stop` + `rm -f chromium novnc`，**不用 `docker compose --profile capture down`**——
+  `down` 会把 `app` 一起停掉，在 NAS 上等于短暂宕机。
+
+## 验收自测（v2）
+
+```bash
+$ git log --oneline -1        # 基于 e813850 rebase，无冲突
+$ ./scripts/check.sh
+== TypeScript ==
+== Build (local runtime) ==
+  dist-server/index.mjs  111.6kb
+== Console inline JS syntax ==
+script[0] 语法 OK（1328 行）
+== Unit tests ==
+（暂无测试文件，跳过）
+
+全部通过
+
+$ docker compose config --services        → app / refresher
+$ docker compose --profile capture config → exit 0（chromium entrypoint: [] 已确认）
+$ bash -n scripts/orch/capture-smoke.sh   → 语法 OK
+```
+
+> 仍然没在本机跑 `up -d` 级验证（registry 不可达）；按你的要求，NAS 上复验请跑
+> `./scripts/orch/capture-smoke.sh --keep`，期望看到 `CDP "Browser": "Chrome/124.0.6367.78"` 与 `✓ 不是 headless 模式`。
+
+## 待确认项回复
+
+1. **CJK 字体**：按你的意见**先不换镜像**，记 backlog（页面中文可能显示方块，抓包请求列表不受影响）。
+2. **noVNC 反代**：按你的意见**先直连 `:6080`**，F3 再评估，记 backlog（文档 §4 已备 nginx + Basic Auth 片段）。
