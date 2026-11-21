@@ -1,4 +1,4 @@
-# 接口契约：抓包诊断（T0-1，已冻结）
+# 接口契约：抓包诊断（T0-1，v1.1）
 
 > 变更流程：任何字段增删改，必须先改本文件并由主 agent 批准，再广播给受影响的 lane。
 > 子 agent 不得在实现里"顺手"改字段名——契约不一致一律 P0。
@@ -47,6 +47,8 @@ export interface HostSummary {
   host: string
   requests: number
   failures: number
+  /** 其中因超时失败的次数（v1.1 新增，可选；用于把 reason 写具体） */
+  timeouts?: number
   p50TtfbMs?: number
   p95TtfbMs?: number
   p95TotalMs?: number
@@ -65,6 +67,14 @@ export interface CaptureEnv {
   error?: string
 }
 ```
+
+### SNI 阻断的传递方式（v1.1 补充）
+
+SNI 阻断是**按域名**的，不是一个整站布尔值。约定：
+
+- B 拿到探测结果后调用 `markSniBlocked(summaries, hosts)`（C 提供），只把命中的域名叫成 `proxy`
+- `ctx.sniBlocked = true` 仅保留给测试/整站不可用的极端场景，**生产代码不要用**
+- 被标记为 `proxy` 的条目 `suggested` 必须为 false（改 hosts 无效，不能勾选）
 
 ### 判定口径（C 实现，D 只展示）
 
