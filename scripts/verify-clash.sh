@@ -6,8 +6,9 @@
 #   2) YAML 结构化校验：能解析、类型对（hosts 是映射、payload 是列表、片段有三段）
 #   3) `mihomo -t` 校验：证明 hosts / rule-providers / rules 的 schema 被 mihomo 接受
 #   4) 起临时容器断言两件事：
-#      · hosts 映射生效 —— 通过 /dns/query 拿到写死的 A 与 AAAA
-#      · REJECT 规则生效 —— 命中 ch-block 的域名经代理返回 403
+#      · hosts 映射生效 —— 用 dig +tcp 查容器内 DNS（1053），拿到写死的 A 与 AAAA
+#      · REJECT / 放行生效 —— 看 mihomo 日志里的规则命中行，**不看 HTTP 状态码**
+#        （mihomo 的 REJECT 对 HTTP 代理请求返回 502，目标不可达也是 502，状态码区分不了）
 #
 # 第 3/4 步为什么用 file 型 provider：验证不应依赖本服务在跑。
 # type/behavior/format 与 /clash/snippet.yaml 里的 http 型完全一致，
@@ -21,13 +22,20 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-IMAGE="${MIHOMO_IMAGE:-metacubex/mihomo:latest}"
+# 镜像候选：Docker Hub 优先，失败再走国内镜像站（本机实测 docker.io 直连会超时）。
+# 想指定自己的镜像：MIHOMO_IMAGE=xxx ./scripts/verify-clash.sh
+IMAGE_CANDIDATES=(
+  "${MIHOMO_IMAGE:-metacubex/mihomo:latest}"
+  "${MIHOMO_IMAGE_MIRROR:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/metacubex/mihomo:latest}"
+)
+IMAGE=""
 NAME="mihomo-verify-$$"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/clash-verify.XXXXXX")"
 CONF_DIR="$TMP/mihomo"
 OUT_DIR="$TMP/out"
 API_PORT=$((20000 + RANDOM % 10000))
 MIXED_PORT=$((30000 + RANDOM % 10000))
+DNS_PORT=$((40000 + RANDOM % 10000))
 FAIL=0
 STARTED=0
 
@@ -103,14 +111,20 @@ const config = `# 由 scripts/verify-clash.sh 生成，仅用于验证，不要�
 mixed-port: 7890
 allow-lan: true
 mode: rule
-log-level: warning
+# 必须是 info：下面靠日志里的 "match RuleSet(...) using REJECT" 判定规则命中，
+# warning 级别不会打印这些行。
+log-level: info
 external-controller: 0.0.0.0:9090
 
 dns:
   enable: true
+  # listen 是必须的：只写 enable: true 时 mihomo 不会起 DNS 服务，
+  # /dns/query 会返回 "DNS section is disabled"，也就没法断言 hosts 映射。
+  listen: 0.0.0.0:1053
   ipv6: true
   use-hosts: true
-  enhanced-mode: normal
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
   nameserver:
     - 223.5.5.5
 
@@ -163,7 +177,6 @@ if ! node --experimental-strip-types "$TMP/gen.mts" "$OUT_DIR" "$PWD" >"$TMP/gen
   exit 1
 fi
 grep -vE 'MODULE_TYPELESS_PACKAGE_JSON|Reparsing as ES module|eliminate this warning|trace-warnings' "$TMP/gen.log" | sed 's/^/  /'
-``
 # mihomo 配置由 gen 写到 out/mihomo，挪到 CONF_DIR 下，挂载路径更直观
 cp "$OUT_DIR/mihomo/config.yaml" "$CONF_DIR/config.yaml"
 cp "$OUT_DIR/mihomo/rules/"*.yaml "$CONF_DIR/rules/"
@@ -242,11 +255,24 @@ fi
 if ! docker info >/dev/null 2>&1; then
   skip "docker 守护进程不可用，跳过 mihomo 断言（YAML 结构与单测已覆盖）"
 fi
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "  本地没有 $IMAGE，尝试拉取…"
-  if ! docker pull "$IMAGE" >/dev/null 2>&1; then
-    skip "拉取 $IMAGE 失败（离线或被墙），跳过 mihomo 断言"
+# 选镜像：先用本地已有的，没有再依次尝试候选（含国内镜像站）
+for cand in "${IMAGE_CANDIDATES[@]}"; do
+  if docker image inspect "$cand" >/dev/null 2>&1; then
+    IMAGE="$cand"
+    break
   fi
+done
+if [ -z "$IMAGE" ]; then
+  for cand in "${IMAGE_CANDIDATES[@]}"; do
+    echo "  本地没有 ${cand}，尝试拉取…"
+    if docker pull "$cand" >/dev/null 2>&1; then
+      IMAGE="$cand"
+      break
+    fi
+  done
+fi
+if [ -z "$IMAGE" ]; then
+  skip "拉不到 mihomo 镜像（离线或被墙），跳过 mihomo 断言；可用 MIHOMO_IMAGE=<镜像> 指定本地镜像"
 fi
 echo "  docker 与镜像就绪：$IMAGE"
 
@@ -257,13 +283,14 @@ printf '%s\n' "$TEST_OUT" | sed 's/^/  /'
 if [ "$TEST_RC" = "0" ] && printf '%s' "$TEST_OUT" | grep -qi "test is successful"; then
   pass "配置被 mihomo 接受（hosts / rule-providers / rules 的语法与 schema 通过）"
 else
-  fail "配置未被 mihomo 接受（退出码 $TEST_RC）"
+  fail "配置未被 mihomo 接受（退出码 ${TEST_RC}）"
   exit 1
 fi
 
 printf '\n== 4/4 起容器断言 hosts 与 REJECT ==\n'
 if ! docker run -d --rm --name "$NAME" \
   -p "127.0.0.1:${API_PORT}:9090" -p "127.0.0.1:${MIXED_PORT}:7890" \
+  -p "127.0.0.1:${DNS_PORT}:1053/tcp" -p "127.0.0.1:${DNS_PORT}:1053/udp" \
   -v "$CONF_DIR:/root/.config/mihomo" "$IMAGE" \
   -d /root/.config/mihomo -f /root/.config/mihomo/config.yaml >/dev/null 2>&1; then
   skip "容器启动失败（多为端口占用），跳过断言"
@@ -283,34 +310,91 @@ if [ "$READY" != "1" ]; then
 fi
 
 # --- hosts 映射：A / AAAA 都要拿到我们写死的地址 ---
-A_OUT="$(curl -s -m 5 "$API/dns/query?name=clash-verify.example&type=A")"
+# 三种取法依次尝试（不同环境各有坑）：
+#   1) dig +tcp：UDP 在部分 Docker 端口映射下会被吞
+#   2) dig（UDP）：少数 mihomo 构建没实现 DoTCP
+#   3) /dns/query：dig 不可用时兜底（要求配置里有 dns.listen，否则会返回 DNS section is disabled）
+dig_query() { # $1=域名 $2=类型
+  local out=""
+  if command -v dig >/dev/null 2>&1; then
+    # 不取 head -1：mihomo 对 AAAA 查询会先回 v4-mapped 地址（::ffff:x.x.x.x），
+    # 真正的 v6 在第二条。断言用 grep 在整个结果里找，避免被第一条带偏。
+    out="$(dig +tcp +short -p "$DNS_PORT" @127.0.0.1 "$1" "$2" 2>/dev/null | grep -v '^;;' | grep -v '^$' | tr '\n' ' ')"
+    [ -n "$out" ] || out="$(dig +short -p "$DNS_PORT" @127.0.0.1 "$1" "$2" 2>/dev/null | grep -v '^;;' | grep -v '^$' | tr '\n' ' ')"
+  fi
+  printf '%s' "$out"
+}
+
+# 先探测一次，决定后面用 dig 还是 /dns/query（函数在 $() 子 shell 里跑，
+# 所以"来源"不能在函数里写回变量，必须先定好模式）
+DNS_MODE="api"
+if command -v dig >/dev/null 2>&1 && [ -n "$(dig_query clash-verify.example A)" ]; then
+  DNS_MODE="dig"
+fi
+if [ "$DNS_MODE" = "dig" ]; then
+  DNS_SRC="dig @127.0.0.1:${DNS_PORT}（tcp→udp）"
+  A_OUT="$(dig_query clash-verify.example A)"
+  AAAA_OUT="$(dig_query clash-verify.example AAAA)"
+else
+  DNS_SRC="GET /dns/query"
+  A_OUT="$(curl -s -m 5 "$API/dns/query?name=clash-verify.example&type=A")"
+  AAAA_OUT="$(curl -s -m 5 "$API/dns/query?name=clash-verify.example&type=AAAA")"
+fi
+
 if printf '%s' "$A_OUT" | grep -q '203\.0\.113\.9'; then
-  pass "hosts 映射生效（A → 203.0.113.9）"
+  pass "hosts 映射生效（A → 203.0.113.9，来源：${DNS_SRC}）"
 else
-  fail "hosts 映射未生效，/dns/query 返回：$A_OUT"
+  fail "hosts 映射未生效（${DNS_SRC} 返回：${A_OUT:-空}）"
 fi
 
-AAAA_OUT="$(curl -s -m 5 "$API/dns/query?name=clash-verify.example&type=AAAA")"
 if printf '%s' "$AAAA_OUT" | grep -q '2001:db8::9'; then
-  pass "hosts 的 IPv6 映射同样生效（AAAA → 2001:db8::9）"
+  pass "hosts 的 IPv6 映射同样生效（AAAA → 2001:db8::9，来源：${DNS_SRC}）"
 else
-  fail "hosts 的 IPv6 映射未生效，/dns/query 返回：$AAAA_OUT"
+  fail "hosts 的 IPv6 映射未生效（${DNS_SRC} 返回：${AAAA_OUT:-空}）"
 fi
 
-# --- REJECT：命中 ch-block 的域名必须被本地拒绝（403），不能去连 203.0.113.9 ---
-CODE="$(curl -s -o /dev/null -w '%{http_code}' -m 8 -x "http://127.0.0.1:${MIXED_PORT}" http://clash-blocked.example/ 2>/dev/null)"
-if [ "$CODE" = "403" ]; then
-  pass "REJECT 规则生效（命中 ch-block 返回 403）"
+# --- REJECT / 放行：只看 mihomo 日志里的规则命中行 ---
+# 状态码在这里没有意义：REJECT 经 HTTP 代理返回 502，目标不可达也是 502。
+# 命中日志形如（mihomo 把整行塞进 msg="..."，所以要容忍结尾引号）：
+#   [TCP] ... --> clash-blocked.example:80 match RuleSet(ch-block) using REJECT
+#   [TCP] dial PROXY (match RuleSet/ch-proxy) ... --> clash-proxy.example:80 error: ...
+curl -s -o /dev/null -m 8 -x "http://127.0.0.1:${MIXED_PORT}" http://clash-blocked.example/ 2>/dev/null
+curl -s -o /dev/null -m 8 -x "http://127.0.0.1:${MIXED_PORT}" http://clash-proxy.example/ 2>/dev/null
+
+# 日志异步刷盘，轮询等（最多约 9 秒），不写死 sleep
+BLOCK_HIT=""
+PROXY_HIT=""
+LOG=""
+for _ in $(seq 1 30); do
+  LOG="$(docker logs "$NAME" 2>&1)"
+  BLOCK_HIT="$(printf '%s\n' "$LOG" | grep -F -- '--> clash-blocked.example:80' | grep -F 'RuleSet(ch-block) using REJECT' | tail -n1)"
+  PROXY_HIT="$(printf '%s\n' "$LOG" | grep -F -- '--> clash-proxy.example:80' \
+    | grep -E '(match RuleSet\(ch-proxy\)|using (PROXY|DIRECT)|dial (PROXY|DIRECT))' \
+    | grep -vF 'using REJECT' | tail -n1)"
+  if [ -n "$BLOCK_HIT" ] && [ -n "$PROXY_HIT" ]; then break; fi
+  sleep 0.3
+done
+
+show_line() { printf '%s' "$1" | sed -e 's/^.*--> //' -e 's/"$//'; }
+
+if [ -n "$BLOCK_HIT" ]; then
+  pass "REJECT 规则生效（日志：$(show_line "$BLOCK_HIT")）"
 else
-  fail "REJECT 规则未生效（期望 403，实际 ${CODE:-无响应}）"
+  fail "REJECT 规则未生效（日志里没有 ch-block 命中行）"
 fi
 
-# --- ch-proxy：命中后交给 PROXY 组（这里指向 DIRECT），不该是 REJECT ---
-PCODE="$(curl -s -o /dev/null -w '%{http_code}' -m 8 -x "http://127.0.0.1:${MIXED_PORT}" http://clash-proxy.example/ 2>/dev/null)"
-if [ -n "$PCODE" ] && [ "$PCODE" != "403" ]; then
-  pass "ch-proxy 域名未被 REJECT（实际 ${PCODE}，说明已交给策略组）"
+PROXY_REJECT="$(printf '%s\n' "$LOG" | grep -F -- '--> clash-proxy.example:80' | grep -F 'using REJECT' | tail -n1)"
+if [ -n "$PROXY_REJECT" ]; then
+  fail "ch-proxy 域名被 REJECT 了（应当交给策略组）：$(show_line "$PROXY_REJECT")"
+elif [ -n "$PROXY_HIT" ]; then
+  pass "ch-proxy 域名走了策略组而非 REJECT（日志：$(show_line "$PROXY_HIT")）"
 else
-  note "ch-proxy 断言无法判定（实际 ${PCODE:-无响应}）"
+  note "ch-proxy 没有命中日志（目标不可达时 mihomo 可能先卡在解析），但确认未被 REJECT"
+fi
+
+if [ "$FAIL" -ne 0 ]; then
+  echo "  --- 容器日志（尾部 15 行，用于定位）---"
+  docker logs "$NAME" 2>&1 | tail -15 | sed 's/^/    /'
 fi
 
 printf '\n'
