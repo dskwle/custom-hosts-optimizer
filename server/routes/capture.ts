@@ -369,7 +369,9 @@ async function applyAccel(env: Bindings, hosts: string[]): Promise<ApplyResult> 
 
   await pool(pending, PROBE_CONCURRENCY, async (domain) => {
     try {
-      const probe = await probeDomain(domain, { checkSni: true })
+      // 交互式批量（最多 50 个域名），用 2 轮质量测量区分稳定与否；
+      // 批量刷新那一路走默认 3 轮。都不再是"一次握手成功就算可用"。
+      const probe = await probeDomain(domain, { checkSni: true, qualityRounds: 2 })
       if (probe.sni?.verdict === 'sni-blocked') {
         result.failed.push({ domain, error: '疑似 SNI 阻断，改 hosts 无效，建议走代理' })
         return

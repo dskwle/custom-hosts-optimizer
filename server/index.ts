@@ -788,9 +788,10 @@ root.get("/local/compare", async (c) => {
   const roundRaw = Number(c.req.query("rounds") || 3)
   const rounds = Math.min(Math.max(roundRaw, 1), 5)
 
-  // probeDomain 内部已用 Set 对所有 DNS 源去重，
-  // 每个唯一 IP 只做一次 TCP + TLS 检测，结果通过 candidates 返回。
-  const probe = await probeDomain(domain, { checkSni: true })
+  // probeDomain 内部已用 Set 对所有 DNS 源去重。
+  // 本接口后面会对前 5 个候选各跑 rounds 轮完整计时，所以这里关掉 probe 层的
+  // 多轮质量测量，避免同一个 IP 被连测两遍、把接口耗时拖成两倍。
+  const probe = await probeDomain(domain, { checkSni: true, qualityRounds: 1 })
 
   // 只对 TLS 握手成功的候选做多轮完整计时：
   // TLS 都握不上的 IP 本来就不能用，测它的 TTFB 没有意义。

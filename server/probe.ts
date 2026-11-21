@@ -13,6 +13,7 @@ import dns from "node:dns/promises"
 import net from "node:net"
 import tls from "node:tls"
 import { getCachedMany, setCached, cacheKey } from "./ipcache.js"
+import { measureQuality, type QualityResult } from "./probe-quality.js"
 
 /** 单家 DNS 服务商的查询结果 */
 export interface DohProviderResult {
@@ -58,7 +59,9 @@ export interface ProbeResult {
   latency: number | null
   /** 最优 IP 的 TLS 握手耗时（ms） */
   tlsMs: number | null
-  /** 全部候选 IP 的检测结果，按 TCP 延迟升序。tlsOk=false 的不可用于 hosts */
+  /** 多轮连接质量明细（成功率 / 平均耗时），仅在 qualityRounds>1 且候选>1 时存在 */
+  quality?: QualityResult[]
+  /** 全部候选 IP 的检测结果：TLS 成功的按多轮成功率优先，其余按 TCP 延迟；tlsOk=false 不可用于 hosts */
   candidates: ProbeCandidate[]
   /** 每家 DoH 分别返回了什么，按配置顺序 */
   providers: DohProviderResult[]
@@ -732,7 +735,12 @@ export async function checkSniBlock(
  */
 export async function probeDomain(
   domain: string,
-  options: { checkSni?: boolean; useCache?: boolean } = {}
+  options: {
+    checkSni?: boolean
+    useCache?: boolean
+    /** 多轮连接质量测量轮数；默认 3，传 1 关闭（延迟诊断页自己做了多轮，避免重复测） */
+    qualityRounds?: number
+  } = {}
 ): Promise<ProbeResult> {
   const result: ProbeResult = {
     domain,
@@ -895,9 +903,27 @@ export async function probeDomain(
   // 但它们 tlsOk=false，不会被选为 bestIp，也不会写进 hosts。
   const measured: ProbeCandidate[] = [...probed]
 
-  // 排序：TLS 成功的排前面（按 TCP 延迟），其余靠后
+  // 多轮质量测量：TLS 成功过的候选再各跑几轮完整 HTTPS 计时。
+  // 只有一次握手成功不代表稳定——33% 成功率的 IP 即使更快也不该写进 hosts。
+  // 延迟诊断页 (/local/compare) 自己已经做了多轮，传 qualityRounds:1 关掉这里避免重复。
+  let qualityRank = new Map<string, number>()
+  const rounds = options.qualityRounds ?? 3
+  if (rounds > 1) {
+    const usable = measured.filter((m) => m.tlsOk && m.latency !== null)
+    if (usable.length > 1) {
+      const quality = await measureQuality(domain, usable, { rounds })
+      result.quality = quality
+      qualityRank = new Map(quality.map((q, i) => [q.ip, i]))
+    }
+  }
+
+  // 排序：TLS 成功的排前面。有质量数据时按成功率优先，
+  // 否则退化为原来的 TCP 延迟升序。TLS 失败的永远在最后。
   measured.sort((a, b) => {
     if (a.tlsOk !== b.tlsOk) return a.tlsOk ? -1 : 1
+    const ra = qualityRank.get(a.ip)
+    const rb = qualityRank.get(b.ip)
+    if (ra !== undefined || rb !== undefined) return (ra ?? Infinity) - (rb ?? Infinity)
     if (a.latency === null && b.latency === null) return 0
     if (a.latency === null) return 1
     if (b.latency === null) return -1
@@ -907,9 +933,7 @@ export async function probeDomain(
   result.candidates = measured
   result.tlsOkCount = measured.filter((m) => m.tlsOk).length
 
-  // 只从 TLS 握手成功的候选里挑最优。
-  // 之前只按 TCP 延迟挑，会把「TCP 快但 TLS 被重置」的 IP 选为 bestIp，
-  // 写进 hosts 后该域名反而彻底打不开。
+  // 只从 TLS 握手成功的候选里挑最优，顺序已经按多轮成功率优先。
   const usable = measured.filter((m) => m.tlsOk && m.latency !== null)
   if (usable.length > 0) {
     result.bestIp = usable[0].ip
