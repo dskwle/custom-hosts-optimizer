@@ -236,6 +236,21 @@
   }
   .cap-vnc-card.cap-fs .cap-vnc-box { height: auto; flex: 1; }
 
+  /*
+   * 回看历史时会把左侧浏览器卡片隐藏。网格仍是两列的话，请求卡会落到**第一列**
+   * （较窄的那列），域名列被挤成 "cdn.jsde..." 这种省略号——历史数据恰恰最需要看全域名。
+   * 所以历史模式强制单列全宽，并放宽表格高度与域名换行。
+   */
+  .cap-layout.cap-hist-mode { grid-template-columns: 1fr; }
+  .cap-layout.cap-hist-mode .cap-table-wrap { max-height: 560px; }
+  .cap-layout.cap-hist-mode .cap-table-wrap table { font-size: 14px; }
+  .cap-layout.cap-hist-mode .cap-table-wrap th,
+  .cap-layout.cap-hist-mode .cap-table-wrap td { padding: 8px 8px; }
+  .cap-layout.cap-hist-mode .cap-host {
+    font-size: 14px;
+    white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere;
+  }
+
   .cap-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
   .cap-table-wrap {
     overflow: auto; max-height: 420px; margin-top: 12px;
@@ -487,7 +502,7 @@
       <p class="sub" id="capSessionInfo" style="margin:8px 0 0"></p>
     </div>
 
-    <div class="cap-layout">
+    <div class="cap-layout" id="capLayout">
       <div class="card cap-vnc-card" id="capVncCard">
         <h2 style="margin-bottom:8px">内嵌浏览器 <span class="badge gray" id="capVncBadge">未连接</span>
           <span style="flex:1"></span>
@@ -2256,6 +2271,7 @@ function capAttach(session) {
   cap.esTries = 0
   el('capVncCard').style.display = ''
   el('capHistoryNote').style.display = 'none'
+  capSetHistoryMode(false)
   el('btnCapStop').disabled = cap.status !== 'running'
   el('capSessionInfo').textContent = `当前会话开始于 ${capTime(session.startedAt)}`
   if (session.url) el('capUrl').value = session.url
@@ -2265,6 +2281,12 @@ function capAttach(session) {
   capConnect()
   capScheduleSummary(0)
   capLoadSessions(session.id)
+}
+
+/** 历史回看时把两栏切成单栏全宽，避免请求表被挤到窄列 */
+function capSetHistoryMode(on) {
+  const layout = el('capLayout')
+  if (layout) layout.classList.toggle('cap-hist-mode', on)
 }
 
 async function capAttachLatest() {
@@ -2786,6 +2808,7 @@ async function capViewHistory(id) {
   cap.limit = CAP_CHUNK
   el('capVncCard').style.display = 'none'
   el('capHistoryNote').style.display = 'block'
+  capSetHistoryMode(true)
   el('btnCapStop').disabled = true
   capRebuildView()
   capRefreshStatus()
@@ -2809,6 +2832,7 @@ async function capBackToLive() {
   cap.history = false
   el('capVncCard').style.display = ''
   el('capHistoryNote').style.display = 'none'
+  capSetHistoryMode(false)
   capRenderSessions()
   await capAttachLatest()
 }
