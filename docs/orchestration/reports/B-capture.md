@@ -2,7 +2,7 @@
 
 - **结论**：可合并（新增 7 个端点，契约零字段偏差；仅剩主 agent 的挂载行与 NAS 真实环境验收）
 - **Lane / Owner**：B / agent-B
-- **分支 / 基线**：`feat/B-capture` @ `713ecfd`（从 `integration/capture@9a3796d` 切出）
+- **分支 / 基线**：`feat/B-capture` @ `7ca3a5e`（从 `integration/capture@9a3796d` 切出，已 rebase 到含 A/C/D/E 的最新基线）
 - **状态**：REPORTED
 - **报告时间**：2026-11-21 11:29
 
@@ -83,6 +83,15 @@ $ node scripts/orch/capture-selftest.mjs --launch --url https://github.com --wai
 
 == SSE 帧 ==
 · 收到帧：{"state":2,"request":100,"end":1}
+✓ 有 state 帧
+✓ 有 request 帧
+✓ 有 end 帧
+✓ end 帧后保持约 5s 再关（5001ms）
+
+== SSE 重连到已结束的会话 ==
+✓ 重连先补一帧 state
+✓ 重连收到 end 帧
+✓ 重连后立即关闭（3ms）
 
 == 列表与落盘 ==
 ✓ 列表包含本次会话
@@ -141,6 +150,8 @@ error 帧: {"type":"error","message":"CDP 连接断开（重连失败：CDP WebS
 2. **会话自动停止**：`CAPTURE_MAX_MS`（默认 180s）。用户点了开始就关页面是常态，没有这条会一直占着浏览器窗口。
 3. **`cached` 额外接受 `Network.requestServedFromCache`**：契约只写了 `fromDiskCache`/`fromMemoryCache`，但 `setCacheDisabled(true)` 之后这两者很少出现，该事件是同一语义的补充信号（仍不给 ttfb/total）。
 4. **`/local/capture/`（带尾斜杠）返回 404**：Hono 路由的默认行为，契约路径本身不带尾斜杠（`/?limit=20`）。前端按 `API + '/local/capture?limit=20'` 调用即可。
+5. **`skipped[].reason` 文案统一为 `内置加速` / `已在自定义域名` / `已屏蔽`**（按主 agent 在前端合并时的要求）：block 方向的内置项也报「已屏蔽」，不自创「内置屏蔽」。前端按关键字（内置/屏蔽/存在）映射标签，三处保持一致。
+6. **`GET /local/capture` 返回 `{sessions: []}`**（契约形状），不迁就前端的裸数组兜底。
 
 ## 待确认问题
 
@@ -157,6 +168,8 @@ error 帧: {"type":"error","message":"CDP 连接断开（重连失败：CDP WebS
 2. **可选一行**：`process.on('SIGINT', ...)` 里调 `shutdownCaptureSessions()`。不接也能跑，但重启后在 noVNC 里会留下一个 about:blank 页签。要不要接由主 agent 定（我不改 index.ts）。
 
 3. **`apply` 的 50 上限**是否需要和 D 的「全选」交互对齐（若 D 一次提交超 50，需要前端分批或加提示）。
+4. **CDP 端口口径不一致**：A lane 的消息里写的是 `http://127.0.0.1:9222`，但仓库里 `docker-compose.yml`（`CAPTURE_CDP_PORT:-9223`）与 `server/routes/capture-env.ts` 的 `DEFAULT_CDP_URL` 都是 **9223**。我这边全部走 `getCdpUrl()` 动态取值、没有硬编码，所以不影响实现；但 NAS 上以哪个为准需要在验收前确认（否则 `/env` 会报 cdp:false）。
+5. **`stop` 之后 SSE 仍保持 5s**：如果前端在 stop 响应后立刻 abort 掉 EventSource，看不到副作用；如果它重连，会收到 state+end 并立即关闭（已实测）。
 
 ## 风险与回滚
 
@@ -182,8 +195,10 @@ error 帧: {"type":"error","message":"CDP 连接断开（重连失败：CDP WebS
 
 ### 3) SSE 断线重连语义
 
+- **end 帧后保持 5s 再关（主 agent 选定的方案 A）**。立刻关会有个实际窗口：前端刚收到 end 就断线，浏览器把这次断线当成网络抖动触发重连，于是又多一次 `/summary` 请求。留 5s 足够把最后一帧送出去。自测实测 `5001ms`。
+- `end` 帧在 `stop` **返回之前**发出（`stop` 里先 `publish(state)` + `publish(end)`，再 `dispose` 落盘，最后才返回），不会出现「已停止但又来一条请求」。
 - 连接进来先补一帧当前 `state`，然后**只推增量**，不重放历史（一次抓包上千条，重放既慢又会让前端出现重复行）；明细由前端调 `/:id` 与 `/:id/summary` 补全——这正是契约 §3 的约定。
-- 已结束的会话：补 `state` + `end` 后立即关流，不让前端挂着一个永远没数据的连接。
+- **重连到一个已结束的会话**：补 `state` + `end` 后**直接关**（不复用 5s 保持，反正没有后续数据）。自测实测关闭耗时 3ms。
 - 15s 一条 `: ping` 注释行保活（反代/浏览器会掐掉静默连接）。
 - 客户端断开（关页面/刷新）由 `stream.onAbort` + `c.req.raw.signal` 双路捕获，退订 + 清定时器；`CaptureStreamHub.publish` 对单个 sink 的异常做隔离，一个死连接不会让整场抓包丢帧。
 - `stop` 里先把在途请求 `flush()` 结账、再发 `end`——顺序反了前端会看到「结束后又冒出新请求」。
