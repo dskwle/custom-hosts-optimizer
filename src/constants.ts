@@ -275,6 +275,7 @@ export const SITE_GROUPS: SiteGroup[] = [
       "katabump.com",
       "www.katabump.com",
       "dashboard.katabump.com",
+      "control.katabump.com",
     ],
   },
   {
