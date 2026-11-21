@@ -606,6 +606,31 @@ function batchVerdict(p) {
   return { ok: true, label: '无阻断', cls: 'good', note: (p.sni && p.sni.explanation) || '' }
 }
 
+/** 能否写入 hosts：有可用 IP，且未判定为 SNI / TCP 层阻断 */
+function canAdopt(verdict, ip) {
+  return !!ip && verdict !== 'sni-blocked' && verdict !== 'tcp-blocked'
+}
+
+async function adoptDomains(items) {
+  const res = await fetch(`${API}/local/adopt`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ items }),
+  })
+  return res.json()
+}
+
+function adoptNote(d, ip, domain) {
+  if (d && ((d.added && d.added.length) || (d.updated && d.updated.length))) {
+    const verb = d.added && d.added.length ? '加入' : '更新'
+    return `<p class="sub" style="margin-top:10px;color:#0f6e56">
+      ✓ 已${verb}自定义域名：<code>${ip}</code> → ${domain}${verb === '更新' ? '（覆盖原有条目）' : ''}
+    </p>`
+  }
+  const err = d && d.failed && d.failed[0] ? d.failed[0].error : '未知原因'
+  return `<p class="sub bad" style="margin-top:10px">加入自定义域名失败：${err}</p>`
+}
+
 function escAttr(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
@@ -755,6 +780,23 @@ async function doTimingSingle(domain) {
   status.textContent = all ? '正在对比候选 IP 与 SNI...' : '测量中...'
   box.innerHTML = ''
 
+  // 单域名检测成功后同样自动加入自定义域名，与批量模式保持一致
+  const tryAdopt = async (ip, verdict) => {
+    if (!el('timingAdopt').checked) return
+    if (!canAdopt(verdict, ip)) return
+    try {
+      const d = await adoptDomains([{ domain, ip }])
+      box.insertAdjacentHTML('beforeend', adoptNote(d, ip, domain))
+      if (d && ((d.added && d.added.length) || (d.updated && d.updated.length))) {
+        loadDomains()
+        loadHosts()
+        toast('已加入自定义域名')
+      }
+    } catch (e) {
+      box.insertAdjacentHTML('beforeend', `<p class="sub bad" style="margin-top:10px">加入自定义域名失败：${e && e.message ? e.message : e}</p>`)
+    }
+  }
+
   try {
     if (!all) {
       const r = await (await fetch(`${API}/local/timing?domain=${encodeURIComponent(domain)}`)).json()
@@ -769,7 +811,11 @@ async function doTimingSingle(domain) {
       if (withSni) {
         status.textContent = '检测 SNI...'
         const sd = await (await fetch(`${API}/local/sni?domain=${encodeURIComponent(domain)}`)).json()
-        if (sd.verdict) box.innerHTML += renderSni(sd)
+        if (sd.verdict) {
+          box.innerHTML += renderSni(sd)
+          // 用 SNI 检测实际握手的 IP（探测出的最优地址），而不是本机解析地址
+          await tryAdopt(sd.ip, sd.verdict)
+        }
       }
       status.textContent = r.ok ? '完成' : '未能完成请求'
     } else {
@@ -849,6 +895,8 @@ async function doTimingSingle(domain) {
         ${excludedHtml}
         ${renderProviders(d.providers, d.systemIps, d.inconsistent, d.systemDiffers, { upstreamIps: d.upstreamIps, hostsOverride: d.hostsOverride })}
         ${renderSni(d.sni)}`
+      // 推荐 IP 已通过多轮 TLS 校验，SNI 无阻断时直接写入自定义域名
+      await tryAdopt(d.recommended, d.sni && d.sni.verdict)
       status.textContent = `完成，推荐 ${d.recommended}`
     }
   } catch (e) {
