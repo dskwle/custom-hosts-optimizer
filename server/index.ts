@@ -12,6 +12,7 @@
 import { serve } from "@hono/node-server"
 import { Hono } from "hono"
 import { readFile } from "node:fs/promises"
+import { timingSafeEqual } from "node:crypto"
 import path from "node:path"
 import { FileKV } from "./kv.js"
 import {
@@ -65,6 +66,56 @@ const env = {
 
 // 外层路由：先处理本地专有接口，其余原样转交给 Workers 应用
 const root = new Hono()
+
+/* ---------- 访问控制 ----------
+ * /host、/host_fast、/host_block（含 /hosts 别名与 /hosts.json）公开，
+ * 方便路由器、脚本、手机直接订阅；其余页面与接口（控制台、/local/*、/api/*）
+ * 一律要求认证，避免局域网里谁都能改配置。
+ *
+ * 密码通过环境变量 ADMIN_PASSWORD 覆盖，docker-compose.yml 里可直接改；
+ * ADMIN_AUTH=off 可整体关闭（不建议）。用户名随意，只校验密码。
+ */
+/** 默认管理密码，可用环境变量 ADMIN_PASSWORD 覆盖（docker-compose.yml 里改） */
+const DEFAULT_ADMIN_PASSWORD = "123456"
+const ADMIN_PASSWORD = (process.env.ADMIN_PASSWORD || "").trim() || DEFAULT_ADMIN_PASSWORD
+const AUTH_DISABLED = /^(off|false|0|no)$/i.test((process.env.ADMIN_AUTH || "").trim())
+
+/** 公开路径：三个 hosts 文本入口 + 结构化导出 + 容器健康检查 */
+function isPublicPath(pathname: string): boolean {
+  return (
+    pathname.startsWith("/host") ||
+    pathname === "/hosts.json" ||
+    pathname === "/local/health"
+  )
+}
+
+function basicAuthOk(header?: string): boolean {
+  if (!header || !header.startsWith("Basic ")) return false
+  let decoded = ""
+  try {
+    decoded = Buffer.from(header.slice(6), "base64").toString("utf8")
+  } catch {
+    return false
+  }
+  // 用户名不参与校验，只比对密码，避免用户还要记用户名
+  const idx = decoded.indexOf(":")
+  const pass = idx >= 0 ? decoded.slice(idx + 1) : decoded
+  const a = Buffer.from(pass)
+  const b = Buffer.from(ADMIN_PASSWORD)
+  if (a.length !== b.length) return false
+  return timingSafeEqual(a, b)
+}
+
+root.use("*", async (c, next) => {
+  if (AUTH_DISABLED) return next()
+  const { pathname } = new URL(c.req.url)
+  if (isPublicPath(pathname)) return next()
+  if (basicAuthOk(c.req.header("authorization"))) return next()
+  // realm 只能是 ASCII，写中文会让 undici 抛 ByteString 错误
+  c.header("WWW-Authenticate", 'Basic realm="custom-hosts admin", charset="UTF-8"')
+  c.header("Cache-Control", "no-store")
+  return c.text("需要登录：请输入管理密码（用户名随意）", 401)
+})
 
 root.post("/local/refresh", async (c) => {
   const groupParam = c.req.query("group")

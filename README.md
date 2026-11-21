@@ -153,6 +153,39 @@ docker compose exec app curl -fsS -X POST "http://127.0.0.1:8788/local/refresh?w
 
 ---
 
+## 访问控制
+
+| 路径 | 是否需要密码 |
+|---|---|
+| `/host`、`/host_fast`、`/host_block`、`/hosts`、`/hosts.json` | 否，任何人都能订阅 |
+| `/`（控制台）、`/local/*`、`/api/*` | **是**，HTTP Basic Auth |
+| `/local/health` | 否（容器健康检查用，只返回 `{ok,port}`） |
+
+默认密码随镜像内置，用户名不校验（填什么都行），改密码只需在 `docker-compose.yml` 里设：
+
+```yaml
+environment:
+  ADMIN_PASSWORD: "你的新密码"
+  # 设为 off 可整体关闭鉴权（不建议：控制台能直接改 hosts 配置）
+  ADMIN_AUTH: "on"
+```
+
+或者用 `.env` / 命令行临时覆盖：
+
+```bash
+ADMIN_PASSWORD='新密码' docker compose up -d
+```
+
+验证：
+
+```bash
+curl -I http://127.0.0.1:8788/host            # 200，无需密码
+curl -I http://127.0.0.1:8788/               # 401，带 WWW-Authenticate
+curl -I -u admin:密码 http://127.0.0.1:8788/  # 200
+```
+
+> Basic Auth 的密码在 HTTP 下是 base64 明文传输。局域网自用问题不大，若要放到公网请在前面加一层 HTTPS 反代。
+
 ## Web 控制台
 
 首页即控制台（`/`），五个标签页。

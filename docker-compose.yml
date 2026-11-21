@@ -25,6 +25,11 @@ services:
       ENABLE_IPV6: "true"
       # 国际 DoH 在国内不可达，保持关闭
       ENABLE_INTL_DOH: "false"
+      # 管理界面密码：控制台、/local/*、/api/* 需要 Basic Auth（用户名随意）；
+      # /host、/host_fast、/host_block 不鉴权，方便直接订阅
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-123456}"
+      # 设为 off 可整体关闭鉴权（不建议，控制台能直接改 hosts 配置）
+      ADMIN_AUTH: "${ADMIN_AUTH:-on}"
       TZ: Asia/Shanghai
     volumes:
       # KV 快照、IP 缓存、阻断清单都在这里，容器重建不丢
@@ -49,13 +54,21 @@ services:
       APP_PORT: ${APP_PORT:-8788}
       REFRESH_INTERVAL: ${REFRESH_INTERVAL:-7200}
       TZ: Asia/Shanghai
+      # 刷新接口现在需要认证，这里跟着主服务的密码走
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-123456}"
+      ADMIN_AUTH: "${ADMIN_AUTH:-on}"
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         echo "[refresher] 已启动，间隔 $${REFRESH_INTERVAL}s"
+        if [ "$${ADMIN_AUTH}" = "off" ]; then
+          AUTH=""
+        else
+          AUTH="-u admin:$${ADMIN_PASSWORD}"
+        fi
         while true; do
-          if curl -fsS -m 600 -X POST "http://127.0.0.1:$${APP_PORT}/local/refresh?wait=true" -o /tmp/result.json; then
-            echo "[refresher] $(date '+%F %T') 刷新成功 $(cat /tmp/result.json)"
+          if curl -fsS -m 600 $$AUTH -X POST "http://127.0.0.1:$${APP_PORT}/local/refresh?wait=true" -o /tmp/result.json; then
+            echo "[refresher] $(date '+%F %T') 刷新成功 $(head -c 160 /tmp/result.json)"
           else
             echo "[refresher] $(date '+%F %T') 刷新失败，保留上一份数据"
           fi
