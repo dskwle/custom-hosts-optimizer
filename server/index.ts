@@ -28,6 +28,7 @@ import { taskManager, monitor, type TaskItemResult } from "./tasks.js"
 import { cacheStats, clearCache } from "./ipcache.js"
 import { checkNetworkChange } from "./netcheck.js"
 import { createClashRoutes } from "./routes/clash.js"
+import { createCaptureEnvRoutes, resolveCdpUrl } from "./routes/capture-env.js"
 import { refreshAdsRules, getAdsEnabled, setAdsEnabled, getAdsRules } from "../src/services/ads.js"
 import {
   filterBlocked,
@@ -93,6 +94,9 @@ function isPublicPath(pathname: string): boolean {
 
 // Clash 规则输出：与 /host* 同级公开，供 mihomo 的 rule-providers 直接拉取
 root.route("/clash", createClashRoutes(() => env as any))
+
+// 抓包环境自检（CDP 是否可达）。需要鉴权，属于管理面
+root.route("/local/capture", createCaptureEnvRoutes(() => resolveCdpUrl()))
 
 function basicAuthOk(header?: string): boolean {
   if (!header || !header.startsWith("Basic ")) return false
