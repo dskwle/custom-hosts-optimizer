@@ -1516,7 +1516,7 @@ function renderRecent(recent) {
           <tr class="expandable" data-idx="${i}" style="cursor:pointer">
             <td class="good">${r.ok ? '' : '▸'}</td>
             <td>${r.domain}</td>
-            <td>${r.bestIp ? `<code>${r.bestIp}</code>${r.bestIp.includes(':') ? ' <span class="badge" style="background:#e8e4f5;color:#534ab7;font-size:10px">6</span>' : ''}` : '—'}${r.bestIpV6 ? `<br><code>${r.bestIpV6}</code> <span class="badge" style="background:#e8e4f5;color:#534ab7;font-size:10px">6</span>` : ''}</td>
+            <td>${r.bestIp ? `<code>${r.bestIp}</code>${r.bestIp.includes(':') ? ' <span class="badge" style="background:#e8e4f5;color:#534ab7;font-size:10px">6</span>' : ''}` : '—'}${r.bestIpV6 ? `<br><code>${r.bestIpV6}</code> <span class="badge" style="background:#e8e4f5;color:#534ab7;font-size:10px">6</span>` : ''}${r.v6OnlyBroken ? '<br><span class="sub" style="font-size:11px">v6 不可用，已写屏蔽</span>' : ''}</td>
             <td class="num ${latencyClass(r.latency)}">${r.latency != null ? r.latency + 'ms' : '—'}</td>
             <td class="num ${r.tlsOk ? 'good' : 'bad'}">${r.tlsOk ? (r.tlsMs != null ? r.tlsMs + 'ms' : '✓') : '✗'}</td>
             <td class="num">${r.candidateCount ?? '—'}/${r.tlsOkCount ?? '—'}</td>

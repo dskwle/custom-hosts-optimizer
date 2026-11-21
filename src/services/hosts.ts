@@ -3,6 +3,8 @@ import { ALL_DOMAINS, DNS_PROVIDERS, HOSTS_TEMPLATE, SITE_GROUPS } from "../cons
 import { Bindings } from "../types"
 import type { BlockEntry } from "./blocklist"
 
+import { filterByFamily, formatV6OnlySection } from "./dualstack.ts"
+
 export type HostEntry = [string, string]
 
 // 解析结果：IP + 域名 + TCP 握手延迟（ms）。latency 为 null 表示连不通，仅保留解析结果兜底。
@@ -16,6 +18,11 @@ interface DomainData {
   ip: string
   /** IPv6 优选地址；与 ip 同域名的第二族地址。少数环境只支持 v4，输出时按需过滤 */
   ipv6?: string
+  /**
+   * v4 可用但 v6 解析出的地址全都不通。
+   * 为 true 时输出 `::  域名` 到屏蔽区，阻止客户端回落到坏 v6 地址。
+   */
+  v6Broken?: boolean
   lastUpdated: string
   lastChecked: string
   responseTime?: number
@@ -268,6 +275,7 @@ export async function getHostsData(env: Bindings, forceRefresh: boolean = false)
     // 历史上有一批只测了 DNS 就写入、TLS 实际握不上手的记录（isOptimized=false），
     // 把它们输出到 hosts 会让对应域名彻底不可用，必须过滤掉。
     const entries: HostEntry[] = []
+    const v6BrokenDomains: string[] = []
     for (const domain of ALL_DOMAINS) {
       const domainData = kvData!.domain_data[domain]
       if (domainData && domainData.isOptimized !== false) {
@@ -276,6 +284,7 @@ export async function getHostsData(env: Bindings, forceRefresh: boolean = false)
         if (domainData.ipv6 && domainData.ipv6 !== domainData.ip) {
           entries.push([domainData.ipv6, domain])
         }
+        if (domainData.v6Broken) v6BrokenDomains.push(domain)
       }
     }
 
@@ -370,7 +379,7 @@ export function formatFastHosts(
 
   // 屏蔽优先级最高：被屏蔽的域名不能留在优选区，
   // 否则 v4 的优选地址会比 0.0.0.0 先生效，屏蔽形同虚设。
-  const v4Filtered = ipv4Only ? entries.filter(([ip]) => !ip.includes(":")) : entries
+  const v4Filtered = filterByFamily(entries, ipv4Only)
   const visible = blockedSet.size
     ? v4Filtered.filter(([, domain]) => !blockedSet.has(domain.toLowerCase()))
     : v4Filtered
@@ -407,9 +416,12 @@ export function formatFastHosts(
  */
 export function formatBlockHosts(
   ads?: { content: string; ruleCount: number; fetchedAt?: string } | null,
-  blocked?: BlockEntry[] | null
+  blocked?: BlockEntry[] | null,
+  v6Broken?: readonly string[] | null
 ): string {
   const blockedSet = new Set((blocked ?? []).map((b) => b.domain.toLowerCase()))
+  // 只屏蔽 v6：v4 那条优选记录照常输出，所以不能整域名放进 blocked
+  const v6Only = (v6Broken ?? []).filter((d) => !blockedSet.has(d.toLowerCase()))
   const parts: string[] = []
 
   if (ads?.content) {
@@ -450,6 +462,9 @@ export function formatBlockHosts(
     )
   }
 
+  const v6Section = formatV6OnlySection(v6Only, { blocked: blockedSet })
+  if (v6Section) parts.push(v6Section)
+
   return parts.length ? parts.join("\n\n") + "\n" : ""
 }
 
@@ -459,12 +474,37 @@ export function formatHostsFile(
   updatedAt?: string | number | null,
   ads?: { content: string; ruleCount: number; fetchedAt?: string } | null,
   blocked?: BlockEntry[] | null,
-  ipv4Only = false
+  ipv4Only = false,
+  v6Broken?: readonly string[] | null
 ): string {
   const fast = formatFastHosts(entries, updatedAt, blocked, ipv4Only)
-  const block = formatBlockHosts(ads, blocked)
+  const block = formatBlockHosts(ads, blocked, v6Broken)
   // 空行分隔两个区段，方便使用者只截取上半部分（优选区）
   return block ? `${fast}\n${block}` : fast
+}
+
+/**
+ * 取出「v4 可用但 v6 全废」的域名清单。
+ *
+ * 这些域名要在屏蔽区补一条 `::  域名`，否则客户端自己解析 AAAA 时
+ * 仍会拿到坏地址、等待超时才回落 v4。读不到就返回空数组：
+ * 少一条屏蔽不至于让整份 hosts 不可用。
+ */
+export async function getV6BrokenDomains(env: Bindings): Promise<string[]> {
+  try {
+    const kvData = (await env.custom_hosts.get("domain_data", {
+      type: "json",
+    })) as KVData | null
+    if (!kvData?.domain_data) return []
+    const out: string[] = []
+    for (const domain of ALL_DOMAINS) {
+      if (kvData.domain_data[domain]?.v6Broken) out.push(domain)
+    }
+    return out
+  } catch (error) {
+    console.error("Error reading v6Broken domains:", error)
+    return []
+  }
 }
 
 // 读取 KV 中域名数据的更新时间，供 hosts 输出标注。

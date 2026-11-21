@@ -8,6 +8,7 @@ import {
   getCompleteHostsData,
   getHostsData,
   getDataUpdatedAt,
+  getV6BrokenDomains,
   getCustomDomains,
   addCustomDomain,
   removeCustomDomain,
@@ -196,7 +197,9 @@ const hostsFull = async (c: Ctx, ipv4Only = false) => {
     const allData = await collectEntries(c, { groupParam, forceRefresh, includeCustom })
     const blocked = await getBlocklist(c.env)
     const ads = await readAds(c)
-    const content = formatHostsFile(allData, dataAt, ads, blocked, ipv4Only)
+    // v4 通、v6 全废的域名：v4 照常加速，v6 写进屏蔽区
+    const v6Broken = ipv4Only ? [] : await getV6BrokenDomains(c.env)
+    const content = formatHostsFile(allData, dataAt, ads, blocked, ipv4Only, v6Broken)
     console.log(`[hosts] 全部条目 ${allData.length}，屏蔽 ${blocked.length}，长度 ${content.length}`)
 
     setHostsHeaders(c, forceRefresh)
@@ -234,6 +237,8 @@ const hostsBlock = async (c: Ctx) => {
   try {
     const blocked = await getBlocklist(c.env)
     const ads = await readAds(c)
+    // 纯屏蔽端点在语义上是"只要 v4/v6 都不可达"，
+    // 把仅 v6 坏的域名也带上会让只跑 v4 的环境误伤，所以这里不传
     const content = formatBlockHosts(ads, blocked)
     if (!content) {
       c.header('Content-Type', 'text/plain; charset=utf-8')

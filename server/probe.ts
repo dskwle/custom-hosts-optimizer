@@ -59,6 +59,14 @@ export interface ProbeResult {
   bestIpV4?: string | null
   /** IPv6 族里的最优地址；没有可用 v6 时为 null */
   bestIpV6?: string | null
+  /**
+   * 有 v4 可用、但 v6 解析出了地址却全都用不了。
+   *
+   * 这种情况必须把 v6 显式屏蔽掉（::  域名），不能只是"不输出"：
+   * 客户端仍会自己去查 AAAA，拿到被污染的地址后照样连不上，
+   * 表现为"偶尔卡住、有时要等超时才回落 v4"。
+   */
+  v6OnlyBroken?: boolean
   /** 最优 IP 的 TCP 握手延迟（ms） */
   latency: number | null
   /** 最优 IP 的 TLS 握手耗时（ms） */
@@ -945,6 +953,9 @@ export async function probeDomain(
   const bestV6 = usable.find((m) => m.family === "v6") ?? null
   result.bestIpV4 = bestV4?.ip ?? null
   result.bestIpV6 = bestV6?.ip ?? null
+  // v4 通、v6 有记录但全废 → 调用方需要把 v6 写进屏蔽区
+  const v6Candidates = measured.filter((m) => m.family === "v6" && m.latency !== null)
+  result.v6OnlyBroken = !!bestV4 && !bestV6 && v6Candidates.length > 0
   const primary = bestV4 ?? bestV6
   if (primary) {
     result.bestIp = primary.ip

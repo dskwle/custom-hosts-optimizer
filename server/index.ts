@@ -252,6 +252,7 @@ root.post("/local/refresh", async (c) => {
               ok: r.bestIp !== null,
               bestIp: r.bestIp,
               bestIpV6: r.bestIpV4 && r.bestIpV6 ? r.bestIpV6 : undefined,
+              v6OnlyBroken: r.v6OnlyBroken,
               family: r.bestIp ? (r.candidates.find((x) => x.ip === r.bestIp)?.family ?? "v4") : undefined,
               latency: r.latency,
               tlsOk: r.tlsOkCount > 0,
@@ -320,6 +321,8 @@ root.post("/local/refresh", async (c) => {
         ip: r.bestIp,
         // v4/v6 双栈都可用时各存一条，输出端据此生成双地址 + 纯 v4 两种形态
         ...(r.bestIpV6 ? { ipv6: r.bestIpV6 } : {}),
+        // v4 通但 v6 全废：输出时给该域名补一条 :: 屏蔽，避免客户端等超时
+        ...(r.v6OnlyBroken ? { v6Broken: true } : {}),
         lastUpdated: now,
         lastChecked: now,
         responseTime: r.latency ?? undefined,

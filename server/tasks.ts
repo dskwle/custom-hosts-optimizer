@@ -32,6 +32,8 @@ export interface TaskItemResult {
   bestIp: string | null
   /** 双栈时第二族（IPv6）的优选地址；仅 v4/v6 都可用时存在 */
   bestIpV6?: string
+  /** v4 可用但 v6 全废，输出时会补一条 :: 屏蔽 */
+  v6OnlyBroken?: boolean
   /** 最优 IP 的地址族 */
   family?: "v4" | "v6"
   latency: number | null
