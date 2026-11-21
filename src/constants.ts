@@ -36,7 +36,7 @@ export const GITHUB_URLS = [
   "private-user-images.githubusercontent.com",
 ]
 
-export const HOSTS_TEMPLATE = `# custom-hosts 自动生成
+export const HOSTS_TEMPLATE = `# custom-hosts 自动生成 · {updateTime}
 # 覆盖：{groups}
 # 原理：绕开 DNS 污染，直连可用 IP
 
