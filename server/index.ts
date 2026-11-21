@@ -25,6 +25,7 @@ import {
   IPV6_ENABLED,
 } from "./probe.js"
 import { resolveAndMeasure } from "./timing.js"
+import { rankTimingDetails } from "./rank.js"
 import { taskManager, monitor, type TaskItemResult } from "./tasks.js"
 import { cacheStats, clearCache } from "./ipcache.js"
 import { checkNetworkChange } from "./netcheck.js"
@@ -826,12 +827,9 @@ root.get("/local/compare", async (c) => {
     })
   )
 
-  details.sort((a, b) => {
-    if (a.avgTotalMs === null && b.avgTotalMs === null) return 0
-    if (a.avgTotalMs === null) return 1
-    if (b.avgTotalMs === null) return -1
-    return a.avgTotalMs - b.avgTotalMs
-  })
+  // 质量优先：成功率低的即使平均耗时更短也排后面，否则会把"快但经常连不上"
+  // 的地址写进 hosts，反而让域名时好时坏。
+  const ranked = rankTimingDetails(details)
 
   return c.json({
     domain,
@@ -854,8 +852,8 @@ root.get("/local/compare", async (c) => {
     systemDiffers: probe.systemDiffers,
     providers: probe.providers,
     sni: probe.sni,
-    recommended: details[0]?.ip ?? null,
-    details,
+    recommended: ranked[0]?.ip ?? null,
+    details: ranked,
   })
 })
 
