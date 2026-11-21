@@ -2547,8 +2547,24 @@ function capAppendMore() {
   capRenderFoot()
 }
 
+/**
+ * 当前筛选结果里被勾选、且可操作的域名。
+ *
+ * 筛选前的勾选集合是全量的（默认按服务端 suggested 预选），但用户看到的表格
+ * 只有筛选后的行。按钮数字和真正提交的列表必须都取这个交集，
+ * 否则会出现"表格 2 行、按钮写着 5、点下去把看不见的 3 个也改了"。
+ * proxy 判定改 hosts 无效，不参与。
+ */
+function capVisibleSelected() {
+  return cap.view
+    .filter((h) => h.verdict !== 'proxy' && cap.selected.has(h.host))
+    .map((h) => h.host)
+}
+
 function capSyncActions() {
-  const n = cap.selected.size
+  const visible = capVisibleSelected()
+  const n = visible.length
+  const total = cap.selected.size
   const accel = el('btnCapAccel')
   const block = el('btnCapBlock')
   accel.textContent = `测速并加速(${n})`
@@ -2556,9 +2572,11 @@ function capSyncActions() {
   const off = n === 0 || cap.history
   accel.disabled = off
   block.disabled = off
-  el('capSelInfo').textContent = cap.history
-    ? '历史会话只读'
-    : (n ? `已选 ${n} 个` : '')
+  let info = ''
+  if (cap.history) info = '历史会话只读'
+  else if (n) info = total > n ? `已选 ${n} 个（全部共 ${total} 个）` : `已选 ${n} 个`
+  else if (total) info = `当前筛选无勾选项（全部共 ${total} 个）`
+  el('capSelInfo').textContent = info
 }
 
 /* ---------- 应用动作 ---------- */
@@ -2575,8 +2593,12 @@ async function capApply(action) {
     toast('历史会话只读，切回当前会话后再应用')
     return
   }
-  const hosts = [...cap.selected]
-  if (!hosts.length) return
+  // 只提交当前筛选结果里勾选的域名，与按钮上显示的数字保持一致
+  const hosts = capVisibleSelected()
+  if (!hosts.length) {
+    toast('当前筛选下没有勾选的域名')
+    return
+  }
   const label = action === 'accel' ? '加速' : '屏蔽'
   const status = el('capApplyStatus')
 
