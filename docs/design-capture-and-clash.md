@@ -46,7 +46,7 @@
 | Electron `BrowserView` | ✓ | ✓✓ | **大** | 要把整个控制台换成 Electron 壳，Web 部署形态作废 |
 | Playwright/Puppeteer 接管**本机 Chrome** | ✓ | ✗（独立窗口） | 中 | 需用户以 `--remote-debugging-port` 启动浏览器；只能本机用 |
 | 容器内 Chromium + **CDP screencast** | ✓ | ✓（帧流） | 中 | 视频/音频体验差、有输入延迟；实现输入回传（鼠标/键盘） |
-| 容器内 Chromium + **noVNC** | ✓ | ✓✓ | 中 | 镜像大、延迟高；但 NAS 上已经有 `novnc` 容器在跑（8888 端口） |
+| 容器内 Chromium + **noVNC** | ✓ | ✓✓ | 中 | 镜像大、延迟高；本项目自建一套（发布 6080，与 NAS 上既有的另一个 novnc 容器 8888 无关） |
 
 **建议路线**：
 
@@ -183,7 +183,7 @@ interface CapturedRequest {
 | 容器 Chromium + screencast | +Chromium（约 400MB 镜像） | 300–500MB | 想在任何设备上用 |
 | 容器 Chromium + noVNC | +Xvfb + novnc | 500MB–1GB | 要完整交互（含视频） |
 
-NAS 上已有 `novnc`（`theasp/novnc`，8888），所以第三条腿是现成的。要注意 NAS 是长期低负载设备，跑 Chromium 会明显吃内存，建议做成"用时启动、闲置自动退出"的可选 profile（`docker compose --profile capture up -d`）。
+NAS 上另有一个用途不同的 `novnc` 容器（8888），**不复用它**——本项目用 `theasp/novnc:latest` 自建，发布在 6080，避免两套用途互相干扰。要注意 NAS 是长期低负载设备，跑 Chromium 会明显吃内存，建议做成"用时启动、闲置自动退出"的可选 profile（`docker compose --profile capture up -d`）。
 
 ### 2.8 风险与已知坑
 
