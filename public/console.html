@@ -522,6 +522,9 @@
         勾选右侧表格里的域名，可以一键「测速并加速」或「加入屏蔽」，与其它标签页的数据是同一份。<br>
         <strong>注意</strong>：加速与屏蔽只作用于导出的 hosts / Clash 配置；内嵌浏览器本身走容器网络，
         不读这些规则，所以屏蔽之后重新抓包仍然会看到对应请求，这不代表规则没生效。
+        <br>想先验证效果？勾选域名后点<strong>「预览验证」</strong>——会用 CDP 域名映射把这些 IP
+        注入内嵌浏览器（系统 hosts 不受影响），页面自动重载，并给出映射前后的实测耗时对比。
+        确认变快再「确认写入」。
       </p>
       <div class="row">
         <input type="text" class="mono" id="capUrl" placeholder="https://example.com" value="https://" style="flex:1;min-width:260px">
@@ -606,10 +609,30 @@
           <span class="cap-count" id="capTableFoot"></span>
           <span class="cap-count" id="capSelInfo"></span>
           <span style="flex:1"></span>
-          <button class="primary" id="btnCapAccel" disabled>测速并加速(0)</button>
+          <button id="btnCapPreview" disabled title="把候选 IP 映射进抓包浏览器，先看实际效果，不影响系统 hosts">预览验证(0)</button>
+          <button class="primary" id="btnCapAccel" disabled>直接加速(0)</button>
           <button class="danger" id="btnCapBlock" disabled>加入屏蔽(0)</button>
         </div>
         <p class="sub" id="capApplyStatus"></p>
+      </div>
+
+      <div id="capPreviewPanel" style="display:none;margin-top:16px;border-top:1px solid var(--border);padding-top:14px">
+        <h3 style="font-size:14px;margin:0 0 8px">
+          预览结果
+          <span class="badge" id="capPreviewBadge">进行中</span>
+        </h3>
+        <p class="hint" style="margin-top:0">
+          候选 IP 已注入<strong>抓包浏览器</strong>（CDP 域名映射），系统 hosts 完全没动。
+          下面是把候选 IP 映射进去之后，同一批域名的实测耗时对比。
+          <br>确认没问题再点「确认写入」，才会真正改动规则。
+        </p>
+        <div class="row" style="margin-bottom:10px">
+          <button id="btnCapPreviewCompare">刷新对比</button>
+          <button class="primary" id="btnCapPreviewCommit" disabled>确认写入</button>
+          <button class="danger" id="btnCapPreviewCancel">撤销预览</button>
+          <span id="capPreviewStatus" class="sub"></span>
+        </div>
+        <div id="capPreviewList"></div>
       </div>
     </div>
 
@@ -3015,16 +3038,230 @@ function capSyncActions() {
   const total = cap.selected.size
   const accel = el('btnCapAccel')
   const block = el('btnCapBlock')
-  accel.textContent = `测速并加速(${n})`
+  const preview = el('btnCapPreview')
+  accel.textContent = `直接加速(${n})`
   block.textContent = `加入屏蔽(${n})`
+  preview.textContent = `预览验证(${n})`
   const off = n === 0 || cap.history
   accel.disabled = off
   block.disabled = off
+  preview.disabled = off
   let info = ''
   if (cap.history) info = '历史会话只读'
   else if (n) info = total > n ? `已选 ${n} 个（全部共 ${total} 个）` : `已选 ${n} 个`
   else if (total) info = `当前筛选无勾选项（全部共 ${total} 个）`
   el('capSelInfo').textContent = info
+}
+
+/* ---------- 预览验证（先试后写） ---------- */
+
+/**
+ * 预览流程：
+ *   1. 探测勾选的域名，拿到候选最优 IP
+ *   2. 用 CDP 把映射注入抓包浏览器，页面自动重载
+ *   3. 抓一会儿，对比映射前后的实测耗时
+ *   4. 用户确认后才写真实规则
+ *
+ * 系统 hosts 全程不动，所以随时可以撤销，没有副作用。
+ */
+let capPreview = {
+  /** 当前应用了哪些映射 */
+  mappings: {},
+  /** 进行中的轮询 */
+  timer: null,
+  /** 用户确认要写入的域名（默认只勾变快且无失败的） */
+  picked: new Set(),
+}
+
+function capPreviewSyncBtns() {
+  const n = capPreview.picked.size
+  const btn = el('btnCapPreviewCommit')
+  if (!btn) return
+  btn.textContent = `确认写入(${n})`
+  btn.disabled = n === 0
+}
+
+function capPreviewShow(show) {
+  el('capPreviewPanel').style.display = show ? '' : 'none'
+}
+
+function renderPreviewCompare(rows) {
+  if (!rows || !rows.length) {
+    el('capPreviewList').innerHTML = '<p class="empty">还没有可对比的数据，等页面加载完再点「刷新对比」</p>'
+    return
+  }
+
+  const badge = {
+    faster: '<span class="badge good">变快</span>',
+    slower: '<span class="badge bad">变慢</span>',
+    same: '<span class="badge gray">持平</span>',
+    failed: '<span class="badge bad">失败</span>',
+    insufficient: '<span class="badge gray">样本不足</span>',
+  }
+
+  const rowsHtml = rows.map((r) => {
+    // 只有「变快」才默认勾选：变慢/失败/样本不足都不该被采纳
+    const pickable = r.verdict === 'faster'
+    const checked = pickable && capPreview.picked.has(r.host) ? ' checked' : ''
+    const box = pickable
+      ? `<input type="checkbox" data-preview-pick="${escAttr(r.host)}"${checked}>`
+      : ''
+    const before = r.before?.p95TotalMs != null ? `${r.before.p95TotalMs}ms` : '—'
+    const after = r.after?.p95TotalMs != null ? `${r.after.p95TotalMs}ms` : '—'
+    const delta = r.deltaMs == null
+      ? '—'
+      : `<span class="${r.deltaMs < 0 ? 'good' : 'bad'}">${r.deltaMs > 0 ? '+' : ''}${r.deltaMs}ms</span>`
+    return `<tr>
+      <td>${box}</td>
+      <td><code>${escAttr(r.host)}</code></td>
+      <td class="num">${before}</td>
+      <td class="num">${after}</td>
+      <td class="num">${delta}</td>
+      <td>${badge[r.verdict] || ''}</td>
+      <td class="sub" style="max-width:300px">${escAttr(r.note)}</td>
+    </tr>`
+  }).join('')
+
+  el('capPreviewList').innerHTML = `<table>
+    <thead><tr><th style="width:26px"></th><th>域名</th><th>预览前</th><th>预览后</th><th>变化</th><th>结论</th><th>说明</th></tr></thead>
+    <tbody>${rowsHtml}</tbody>
+  </table>
+  <p class="sub" style="margin-top:10px">
+    默认勾选「变快」且无失败的域名。变慢、失败、样本不足的都不建议写入——
+    映射后出现失败的说明该 IP 反而不能用。
+  </p>`
+
+  el('capPreviewList').querySelectorAll('input[data-preview-pick]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const h = cb.dataset.previewPick
+      if (cb.checked) capPreview.picked.add(h)
+      else capPreview.picked.delete(h)
+      capPreviewSyncBtns()
+    })
+  })
+  capPreviewSyncBtns()
+}
+
+async function capDoPreview() {
+  if (!cap.sessionId) {
+    toast('先在线上抓包，或从历史里选一个运行中的会话')
+    return
+  }
+  if (cap.history) {
+    toast('历史会话只读，不能预览')
+    return
+  }
+  const hosts = capVisibleSelected()
+  if (!hosts.length) {
+    toast('当前筛选下没有勾选的域名')
+    return
+  }
+
+  const status = el('capPreviewStatus')
+  capPreviewShow(true)
+  el('capPreviewBadge').textContent = '探测中'
+  status.textContent = `正在探测 ${hosts.length} 个域名…`
+  renderPreviewCompare([])
+
+  try {
+    const res = await fetch(`${API}/local/capture/${encodeURIComponent(cap.sessionId)}/preview/probe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ hosts }),
+    })
+    const d = await res.json()
+    if (!res.ok || d.ok === false) {
+      status.textContent = d.error || `HTTP ${res.status}`
+      el('capPreviewBadge').textContent = '失败'
+      return
+    }
+
+    capPreview.mappings = d.mappings || {}
+    capPreview.picked = new Set()
+    const mapped = Object.keys(capPreview.mappings).length
+    el('capPreviewBadge').textContent = `已映射 ${mapped} 个`
+    status.textContent = `已注入 ${mapped} 个映射，页面正在重载…`
+    if (d.skipped && d.skipped.length) {
+      status.textContent += `（${d.skipped.length} 个跳过：${d.skipped.map((x) => x.domain).join(', ')}）`
+    }
+    toast(`已映射 ${mapped} 个域名到抓包浏览器`)
+
+    // 页面重载需要时间，等一会儿再拉对比
+    setTimeout(() => void capPreviewCompare(true), 6000)
+  } catch (e) {
+    status.textContent = `预览失败：${e.message}`
+    el('capPreviewBadge').textContent = '失败'
+  }
+}
+
+async function capPreviewCompare(autoPick = false) {
+  if (!cap.sessionId) return
+  const status = el('capPreviewStatus')
+  try {
+    const res = await fetch(`${API}/local/capture/${encodeURIComponent(cap.sessionId)}/preview?_t=${Date.now()}`, {
+      cache: 'no-store',
+    })
+    if (!res.ok) {
+      status.textContent = '当前没有进行中的预览'
+      return
+    }
+    const d = await res.json()
+    const rows = d.rows || []
+    if (autoPick) {
+      // 自动勾选"变快"的，用户再逐个确认
+      capPreview.picked = new Set(rows.filter((r) => r.verdict === 'faster').map((r) => r.host))
+    }
+    renderPreviewCompare(rows)
+    const faster = rows.filter((r) => r.verdict === 'faster').length
+    const slower = rows.filter((r) => r.verdict === 'slower').length
+    status.textContent = `${rows.length} 个可对比，其中 ${faster} 个变快、${slower} 个变慢`
+  } catch (e) {
+    status.textContent = `获取对比失败：${e.message}`
+  }
+}
+
+/** 确认写入：只写用户勾选的域名 */
+async function capPreviewCommit() {
+  const picked = [...capPreview.picked]
+  if (!picked.length) return
+  const status = el('capPreviewStatus')
+  status.textContent = `正在写入 ${picked.length} 个…`
+
+  try {
+    const res = await fetch(`${API}/local/capture/${encodeURIComponent(cap.sessionId)}/apply`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ hosts: picked, action: 'accel' }),
+    })
+    const d = await res.json()
+    if (!res.ok) {
+      status.textContent = d.error || `HTTP ${res.status}`
+      return
+    }
+    const added = (d.added || []).length
+    status.textContent = `已写入 ${added} 个` + ((d.skipped || []).length ? `，${d.skipped.length} 个跳过` : '')
+    toast(`已写入 ${added} 个加速规则`)
+    capPreview.picked = new Set()
+    capPreviewSyncBtns()
+    if (typeof loadDomains === 'function') loadDomains()
+    if (typeof loadHosts === 'function') loadHosts()
+  } catch (e) {
+    status.textContent = `写入失败：${e.message}`
+  }
+}
+
+/** 撤销：清掉浏览器里的映射，系统一直没被改动过 */
+async function capPreviewCancel() {
+  if (!cap.sessionId) return
+  try {
+    await fetch(`${API}/local/capture/${encodeURIComponent(cap.sessionId)}/preview`, { method: 'DELETE' })
+    capPreview.mappings = {}
+    capPreview.picked = new Set()
+    capPreviewShow(false)
+    toast('已撤销预览，浏览器恢复正常解析')
+  } catch (e) {
+    toast(`撤销失败：${e.message}`)
+  }
 }
 
 /* ---------- 应用动作 ---------- */
@@ -3585,6 +3822,10 @@ el('btnCapStop').addEventListener('click', capStop)
 el('btnCapVncFs').addEventListener('click', capVncFullscreen)
 el('btnCapVncRetry').addEventListener('click', () => capVncLoad(true))
 el('btnCapReloadSessions').addEventListener('click', () => capLoadSessions(cap.sessionId))
+el('btnCapPreview').addEventListener('click', capDoPreview)
+el('btnCapPreviewCompare').addEventListener('click', () => capPreviewCompare(false))
+el('btnCapPreviewCommit').addEventListener('click', capPreviewCommit)
+el('btnCapPreviewCancel').addEventListener('click', capPreviewCancel)
 el('btnCapAccel').addEventListener('click', () => capApply('accel'))
 el('btnCapBlock').addEventListener('click', () => capApply('block'))
 el('btnCapSelectAds').addEventListener('click', capSelectAds)

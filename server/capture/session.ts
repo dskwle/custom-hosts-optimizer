@@ -37,6 +37,7 @@ import { CaptureStreamHub, type CaptureFrame } from './stream.ts'
 import { listStoredSessions, loadSession, saveSession, type StoredSession } from './store.ts'
 import { inferPageHost, normalizeHost } from './aggregate.ts'
 import { markSniBlocked, summarize } from './advice.ts'
+import { comparePreview } from './preview-compare.ts'
 import { listBlocked } from '../blocked.ts'
 
 /** 默认最长采集时长：3 分钟。再长基本是用户忘了关，占着浏览器窗口没意义 */
@@ -117,6 +118,29 @@ interface LiveSession {
   disposed: boolean
   sweepTimer: ReturnType<typeof setInterval> | null
   maxTimer: ReturnType<typeof setTimeout> | null
+  /**
+   * 预览模式（v1.2）：用 CDP 的 Network.setHostMapping 在浏览器内临时改写解析，
+   * 只影响这个标签页，不动系统 hosts。
+   *
+   * 有了它就能「先试后写」：把候选 IP 映射进去重载页面，
+   * 用真实抓包数字验证效果，确认无误再落成 rules。
+   */
+  preview: PreviewState | null
+}
+
+/** 一次预览：映射了哪些域名、从哪条记录开始算"预览后" */
+export interface PreviewState {
+  /** 域名 → IP，仅浏览器内生效 */
+  mappings: Record<string, string>
+  /**
+   * entries 分界索引：小于它的是"预览前"（基线），大于等于的是"预览后"。
+   *
+   * 为什么不用时间戳切分：CapturedRequest 没有起始时间字段，
+   * 而 CDP 的 monotonic 时间戳与墙钟不在一个时基上，换算容易出错。
+   * 索引是严格追加的，天然可靠。
+   */
+  fromIndex: number
+  appliedAt: number
 }
 
 export class CaptureManager {
@@ -267,6 +291,97 @@ export class CaptureManager {
     return markSniBlocked(summaries, blocked)
   }
 
+  /**
+   * 应用一组域名映射（预览），只影响当前抓包标签页。
+   *
+   * 实现用 CDP 的 Network.setHostMapping：它改的是浏览器内部的解析表，
+   * 系统 hosts 与其它程序完全不受影响。重载页面后即按新映射访问，
+   * 于是能拿到「换 IP 之后」的真实耗时。
+   *
+   * @returns 应用后的映射；会话不在运行时抛错
+   */
+  async applyPreview(id: string, mappings: Record<string, string>): Promise<PreviewState> {
+    const rec = this.live.get(id)
+    if (!rec) throw new CaptureHttpError(409, '会话未在运行，无法预览')
+    if (!rec.client) throw new CaptureHttpError(409, 'CDP 连接已断开')
+    if (rec.closing || rec.disposed) throw new CaptureHttpError(409, '会话正在结束')
+
+    const clean: Record<string, string> = {}
+    for (const [rawHost, rawIp] of Object.entries(mappings)) {
+      const host = String(rawHost || '').trim().toLowerCase()
+      const ip = String(rawIp || '').trim()
+      // 只接受合法域名 + IP：非法值会让 setHostMapping 整批失败
+      if (!host || !ip) continue
+      if (!/^[a-z0-9.-]+$/.test(host)) continue
+      if (!/^[0-9a-fA-F:.]+$/.test(ip)) continue
+      clean[host] = ip
+    }
+    if (!Object.keys(clean).length) {
+      throw new CaptureHttpError(400, '没有合法的域名到 IP 映射')
+    }
+
+    // 分界点必须在重载之前取：重载会立刻产生新请求
+    const fromIndex = rec.tracker.entries.length
+    await rec.client.send('Network.setHostMapping', { hosts: clean }, 5000)
+    rec.preview = { mappings: clean, fromIndex, appliedAt: Date.now() }
+    // 重载页面，让新映射立即生效（CDP 的映射对已建立的连接不追溯）
+    await this.navigate(rec, rec.session.url)
+    return rec.preview
+  }
+
+  /** 撤销预览：清空浏览器内映射并重载回原始状态 */
+  async clearPreview(id: string): Promise<boolean> {
+    const rec = this.live.get(id)
+    if (!rec?.client) return false
+    await rec.client.send('Network.setHostMapping', { hosts: {} }, 5000)
+    rec.preview = null
+    await this.navigate(rec, rec.session.url)
+    return true
+  }
+
+  /** 当前预览状态；没有则为 null */
+  getPreview(id: string): PreviewState | null {
+    return this.live.get(id)?.preview ?? null
+  }
+
+  /**
+   * 预览对比：把"预览前"和"预览后"的同一批域名并排比。
+   *
+   * 用 tracker.entries 的索引切分，而不是时间戳——CapturedRequest
+   * 没有起始时间字段，索引严格追加更可靠。
+   */
+  async previewCompare(id: string): Promise<{
+    preview: PreviewState
+    rows: import('./preview-compare.ts').CompareRow[]
+  } | null> {
+    const rec = this.live.get(id)
+    if (!rec?.preview) return null
+
+    const all = rec.tracker.entries
+    const before = all.slice(0, rec.preview.fromIndex)
+    const after = all.slice(rec.preview.fromIndex)
+
+    const startUrl = rec.session.url
+    const pageHost = hostOfUrl(startUrl) || inferPageHost(all)
+
+    const toTiming = (reqs: CapturedRequest[]) =>
+      summarize(reqs, { pageHost }).map((h) => ({
+        host: h.host,
+        requests: h.requests,
+        p95TotalMs: h.p95TotalMs,
+        failures: h.failures,
+      }))
+
+    return {
+      preview: rec.preview,
+      rows: comparePreview(
+        toTiming(before),
+        toTiming(after),
+        Object.keys(rec.preview.mappings),
+      ),
+    }
+  }
+
   /** 进程退出时用：不留悬空标签页 */
   async shutdown(): Promise<void> {
     for (const rec of [...this.live.values()]) {
@@ -316,6 +431,7 @@ export class CaptureManager {
       disposed: false,
       sweepTimer: null,
       maxTimer: null,
+      preview: null,
     }
     return rec
   }

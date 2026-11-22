@@ -155,6 +155,106 @@ export function createCaptureRoutes(getEnv: () => Bindings, getCdpUrl: () => str
     return c.json({ sessionId: id, hosts: withAds })
   })
 
+  /**
+   * 预览：把候选 IP 映射进抓包浏览器，只影响该标签页。
+   *
+   * 这是「先试后写」的关键一步——系统 hosts 完全不动，
+   * 页面按新映射重载后，用真实抓包数字判断这个 IP 到底值不值得写。
+   */
+  routes.post('/:id/preview', async (c) => {
+    const body = (await c.req.json().catch(() => null)) as
+      | { mappings?: Record<string, string> | Array<{ domain: string; ip: string }> }
+      | null
+
+    // 两种入参都收：前端从表格勾选时是数组，手填时是对象
+    const mappings: Record<string, string> = {}
+    if (Array.isArray(body?.mappings)) {
+      for (const m of body.mappings) {
+        if (m && typeof m.domain === 'string' && typeof m.ip === 'string') {
+          mappings[m.domain] = m.ip
+        }
+      }
+    } else if (body?.mappings && typeof body.mappings === 'object') {
+      Object.assign(mappings, body.mappings)
+    }
+    if (!Object.keys(mappings).length) {
+      return c.json({ error: 'mappings 为空' }, 400)
+    }
+
+    try {
+      const preview = await manager.applyPreview(c.req.param('id'), mappings)
+      return c.json({ ok: true, preview })
+    } catch (err) {
+      return fail(c, err)
+    }
+  })
+
+  /**
+   * 探测 + 应用预览：一步到位。
+   *
+   * 用户勾选的通常是一批域名，前端如果自己先逐个 probe 再调 preview，
+   * 要写两套轮询逻辑。这里合并：后端探出每个域名的最优 IP，直接映射进去。
+   *
+   * 只映射「能握手成功」的，探不通的直接跳过并在 skipped 里说明，
+   * 避免把一个不可用的 IP 映射进去让页面白屏。
+   */
+  routes.post('/:id/preview/probe', async (c) => {
+    const body = (await c.req.json().catch(() => null)) as { hosts?: unknown } | null
+    const hosts = Array.isArray(body?.hosts)
+      ? body.hosts.map((x) => String(x).trim().toLowerCase()).filter(Boolean)
+      : []
+    if (!hosts.length) return c.json({ error: 'hosts 为空' }, 400)
+    if (hosts.length > APPLY_MAX_HOSTS) {
+      return c.json({ error: `一次最多预览 ${APPLY_MAX_HOSTS} 个域名` }, 400)
+    }
+
+    const env = getEnv()
+    const mappings: Record<string, string> = {}
+    const skipped: Array<{ domain: string; reason: string }> = []
+
+    await pool(hosts, PROBE_CONCURRENCY, async (domain) => {
+      try {
+        const probe = await probeDomain(domain, { checkSni: true, qualityRounds: 2 })
+        if (probe.sni?.verdict === 'sni-blocked') {
+          skipped.push({ domain, reason: 'SNI 阻断，改 hosts 无效' })
+          return
+        }
+        if (!probe.bestIp) {
+          skipped.push({ domain, reason: '没有能完成 TLS 握手的 IP' })
+          return
+        }
+        mappings[domain] = probe.bestIp
+      } catch (err) {
+        skipped.push({ domain, reason: `探测失败：${(err as Error).message}` })
+      }
+    })
+
+    if (!Object.keys(mappings).length) {
+      return c.json({ error: '勾选的域名全部无法探测到可用 IP', skipped }, 400)
+    }
+
+    try {
+      const preview = await manager.applyPreview(c.req.param('id'), mappings)
+      return c.json({ ok: true, preview, mappings, skipped })
+    } catch (err) {
+      return fail(c, err)
+    }
+  })
+
+  /** 预览对比：同一域名在映射前后的耗时并排比 */
+  routes.get('/:id/preview', async (c) => {
+    const r = await manager.previewCompare(c.req.param('id'))
+    if (!r) return c.json({ ok: false, error: '当前没有进行中的预览' }, 404)
+    c.header('Cache-Control', 'no-store')
+    return c.json({ ok: true, ...r })
+  })
+
+  /** 撤销预览，恢复正常解析 */
+  routes.delete('/:id/preview', async (c) => {
+    const ok = await manager.clearPreview(c.req.param('id'))
+    return c.json({ ok })
+  })
+
   routes.post('/:id/stop', async (c) => {
     try {
       const session = await manager.stop(c.req.param('id'))
