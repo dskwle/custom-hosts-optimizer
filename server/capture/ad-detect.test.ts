@@ -146,3 +146,33 @@ test('Cloudflare 统计不判（轻量、站点主动加，拦了没意义）', 
   const r = detectAd({ host: 'static.cloudflareinsights.com', thirdParty: true })
   assert.equal(r.isAd, false)
 })
+
+test('代理模式：国内统计 SDK 靠内置表识别（这些曾漏判）', () => {
+  // 浏览器抓包里少见，App 流量里量极大，必须在表里
+  for (const h of [
+    'app-measurement.com',
+    'umeng.com',
+    'talkingdata.com',
+    'growingio.com',
+    'sensorsdata.cn',
+    'jpush.cn',
+    'appsflyer.com',
+    'adjust.com',
+  ]) {
+    const r = detectAd({ host: h, thirdParty: true })
+    assert.equal(r.isAd, true, `${h} 应识别为追踪`)
+    assert.equal(r.strength, 'high')
+  }
+})
+
+test('代理模式不误伤正常业务域名', () => {
+  for (const h of [
+    'weatherapi.market.xiaomi.com',
+    'api.github.com',
+    'static.licdn.com',
+    'cdn.jsdelivr.net',
+    'yt4.ggpht.com',
+  ]) {
+    assert.equal(detectAd({ host: h, thirdParty: true }).isAd, false, `${h} 不该判广告`)
+  }
+})

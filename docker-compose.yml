@@ -30,6 +30,17 @@ services:
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-123456}"
       # 设为 off 可整体关闭鉴权（不建议，控制台能直接改 hosts 配置）
       ADMIN_AUTH: "${ADMIN_AUTH:-on}"
+      # ---- 代理观察（走 mihomo 连接数据，覆盖 App/客户端流量）----
+      # mihomo 控制接口。app 用 host 网络，所以直接走 loopback。
+      MIHOMO_API: "${MIHOMO_API:-http://127.0.0.1:9090}"
+      MIHOMO_SECRET: "${MIHOMO_SECRET:-}"
+      PROXY_POLL_MS: "${PROXY_POLL_MS:-5000}"
+      # 本地 AI 判定服务（llama.cpp + OpenAI 兼容）
+      AI_BASE_URL: "${AI_BASE_URL:-http://192.168.6.195:8080}"
+      AI_MODEL: "${AI_MODEL:-qwen35-4b}"
+      # 批量与并发：实测并发 8 会有连接被拒，靠批量提吞吐
+      AI_BATCH_SIZE: "${AI_BATCH_SIZE:-8}"
+      AI_CONCURRENCY: "${AI_CONCURRENCY:-2}"
       TZ: Asia/Shanghai
     volumes:
       # KV 快照、IP 缓存、阻断清单都在这里，容器重建不丢

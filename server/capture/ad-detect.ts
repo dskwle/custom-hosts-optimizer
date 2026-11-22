@@ -84,6 +84,45 @@ const TRACKER_VENDORS = [
   'analytics.tiktok.com',
   'static.ads-twitter.com',
   'analytics.twitter.com',
+
+  // ---- 移动端归因与统计（代理模式的主力来源）----
+  // 这些在浏览器抓包里很少见，但 App 流量里量极大，且归属高度确定，
+  // 不该交给模型猜。实测代理模式漏判 umeng/talkingdata/app-measurement，
+  // 就是从这份表缺失开始的。
+  'app-measurement.com',        // Firebase Analytics
+  'firebase.com',               // Firebase 旧域名
+  'firebaseio.com',
+  'crashlytics.com',            // Firebase Crashlytics
+  'appsflyer.com',              // AppsFlyer 归因
+  'adjust.com',                 // Adjust 归因
+  'branch.io',                  // Branch 深度链接/归因
+  'kochava.com',
+  'singular.net',
+  'tenjin.io',
+  'umeng.com',                  // 友盟
+  'umengcloud.com',
+  'umeng.co',
+  'talkingdata.com',            // TalkingData
+  'talkingdata.net',
+  'growingio.com',              // GrowingIO
+  'sensorsdata.cn',             // 神策
+  'sensorsdata.com',
+  'jpush.cn',                   // 极光推送
+  'jiguang.cn',
+  'getui.com',                  // 个推
+  'getui.net',
+  'igexin.com',
+  'mob.com',                    // MobTech ShareSDK
+  'bugly.qq.com',               // 腾讯 Bugly
+  'beacon.qq.com',              // 腾讯灯塔
+  'pingjs.qq.com',
+  'hm.baidu.com',               // 百度统计
+  'pos.baidu.com',
+  'cnzz.com',                   // CNZZ
+  'mc.yandex.ru',               // Yandex Metrica
+  'statcounter.com',
+  'matomo.cloud',
+  'plausible.io',
 ]
 
 /** 追踪/分析类词：单独出现不够，需配合第三方身份 */

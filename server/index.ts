@@ -47,6 +47,7 @@ import { checkNetworkChange } from "./netcheck.js"
 import { createClashRoutes } from "./routes/clash.js"
 import { createCaptureEnvRoutes, resolveCdpUrl } from "./routes/capture-env.js"
 import { createCaptureRoutes, shutdownCaptureSessions } from "./routes/capture.js"
+import { createProxyRoutes } from "./routes/proxy.ts"
 import { refreshAdsRules, getAdsEnabled, setAdsEnabled, getAdsRules } from "../src/services/ads.js"
 import {
   filterBlocked,
@@ -146,6 +147,8 @@ root.route("/clash", createClashRoutes(() => env as any))
 root.route("/local/capture", createCaptureEnvRoutes(() => resolveCdpUrl()))
 // 抓包会话接口（同一前缀多次 route，Hono 按子路径分发）
 root.route("/local/capture", createCaptureRoutes(() => env as any, () => resolveCdpUrl()))
+// 代理观察：走 mihomo 的连接数据，覆盖 App/客户端等非网页流量
+root.route("/local/proxy", createProxyRoutes({ env: () => env as any }))
 
 root.post("/local/refresh", async (c) => {
   const groupParam = c.req.query("group")
