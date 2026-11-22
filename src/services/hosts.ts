@@ -4,6 +4,7 @@ import { Bindings } from "../types"
 import type { BlockEntry } from "./blocklist"
 
 import { filterByFamily, formatV6OnlySection } from "./dualstack.ts"
+import { pickLatest } from "./timestamp.ts"
 
 export type HostEntry = [string, string]
 
@@ -518,13 +519,37 @@ export async function getV6BrokenDomains(env: Bindings): Promise<string[]> {
   }
 }
 
-// 读取 KV 中域名数据的更新时间，供 hosts 输出标注。
+/**
+ * 自定义域名内容最后变更时间。
+ *
+ * 为什么不直接改 domain_data.lastUpdated：那个字段身兼两职——
+ * 既是"数据更新时间"，也是「缓存是否有效」的判据（getHostsData 里
+ * 3 小时窗口）。手动加个域名就把它推到当前时间，会让本该回源的旧数据
+ * 被当成新鲜的，反而掩盖问题。
+ *
+ * 所以单独存一个时间戳，读取时取两者中较新的那个。
+ */
+const CUSTOM_TOUCHED_KEY = "custom_touched_at"
+
+/** 标记自定义域名内容发生了变化 */
+export async function touchCustomChanged(env: Bindings): Promise<void> {
+  try {
+    await env.custom_hosts.put(CUSTOM_TOUCHED_KEY, new Date().toISOString())
+  } catch (error) {
+    console.error("Error touching custom changedAt:", error)
+  }
+}
+
+// 读取 hosts 内容的更新时间，供文件头部标注。
+// 取「全量刷新时间」与「自定义域名最后变更时间」中较新的那个：
+// 手动加/删域名也算内容变化，头部时间应该跟着走，否则用户会以为没生效。
 export async function getDataUpdatedAt(env: Bindings): Promise<string | null> {
   try {
-    const kvData = (await env.custom_hosts.get("domain_data", {
-      type: "json",
-    })) as { lastUpdated?: string } | null
-    return kvData?.lastUpdated ?? null
+    const [kvData, customTouched] = await Promise.all([
+      env.custom_hosts.get("domain_data", { type: "json" }) as Promise<{ lastUpdated?: string } | null>,
+      env.custom_hosts.get(CUSTOM_TOUCHED_KEY) as Promise<string | null>,
+    ])
+    return pickLatest(kvData?.lastUpdated, customTouched)
   } catch {
     return null
   }
@@ -646,7 +671,9 @@ export async function addCustomDomain(
     }
 
     await env.custom_hosts.put("custom_domains", JSON.stringify(existing))
-    
+    // 自定义域名也是 hosts 内容的一部分，加了就该体现在头部时间上
+    await touchCustomChanged(env)
+
     console.log(`Custom domain ${domain} -> ${resolvedIp} saved successfully`)
     // 返回结果，包含是否为更新操作的信息
     return {
@@ -677,6 +704,7 @@ export async function removeCustomDomain(env: Bindings, domain: string): Promise
     
     if (filtered.length < existing.length) {
       await env.custom_hosts.put("custom_domains", JSON.stringify(filtered))
+      await touchCustomChanged(env)
       console.log(`Removed custom domain: ${domain}`)
       return true
     }
