@@ -128,7 +128,7 @@ export function createProxyRoutes(deps: ProxyRouteDeps) {
    */
   routes.post('/judge', async (c) => {
     const body = (await c.req.json().catch(() => null)) as
-      | { useAi?: boolean; limit?: number }
+      | { useAi?: boolean; limit?: number; deep?: boolean }
       | null
     const col = getCollector()
     const hosts = col.hostNames()
@@ -137,11 +137,14 @@ export function createProxyRoutes(deps: ProxyRouteDeps) {
     }
 
     const useAi = body?.useAi === true
+    // 深度重判依赖 AI，没开 AI 时忽略
+    const deep = useAi && body?.deep === true
     const limit = Number(body?.limit)
     const knownAds = await readKnownAds(deps.env())
 
     const summary = await judgeHosts(hosts, knownAds, useAi ? getAi() : null, {
       useAi,
+      deep,
       limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 2000) : undefined,
     })
 
@@ -157,6 +160,7 @@ export function createProxyRoutes(deps: ProxyRouteDeps) {
       stats: summary.stats,
       aiUsed: summary.aiUsed,
       aiError: summary.aiError,
+      deepCount: summary.deepCount ?? 0,
     })
   })
 

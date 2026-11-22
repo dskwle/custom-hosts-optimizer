@@ -19,6 +19,21 @@
  *    内置表命中就不调模型（省钱且确定）。
  *
  * 降级：模型不可达时返回 null，调用方退化为仅规则判定，不阻塞。
+ *
+ * ── 关于联网检索（web_search，2026-11-22 服务新增）──
+ *
+ * 实测结论：**批量判定时开检索是纯浪费**。
+ *   - 批量 8 个 + 笼统检索词：7.5s → 12.9s，结果零变化
+ *   - 原因：检索词对不上具体域名，模型拿不到有用材料
+ *
+ * 但**逐个用域名本身当检索词**时确实有效：
+ *   - adjoe.io：无检索判 normal（错）→ 带检索纠正为 ad（对）
+ *   - moloco.com：仍判 normal（未纠正），说明不是万能
+ *   - 成本约 5s/域名
+ *
+ * 所以设计成两条路径：
+ *   judge()     — 批量、无检索，覆盖大多数（默认）
+ *   judgeDeep() — 逐个带域名检索，只对那些"判为正常但可疑"的重判
  */
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
@@ -30,6 +45,8 @@ export interface AiVerdict {
   domain: string
   category: AiCategory
   confidence: number
+  /** 是否实际执行了联网检索（仅 judgeDeep 会设置） */
+  searched?: boolean
 }
 
 export interface AiJudgeConfig {
@@ -256,6 +273,132 @@ export class AiJudge {
     const content = d.choices?.[0]?.message?.content || ''
     return parseVerdicts(content)
   }
+
+  /**
+   * 深度重判：逐个域名带联网检索再问一次。
+   *
+   * 只在用户显式要求时调用，且只传"可疑"的域名（判为 normal/sdk、
+   * 或置信度低于阈值）。每个约 5s，全量跑会很慢，所以要卡住范围。
+   */
+  async judgeDeep(domains: readonly string[]): Promise<Map<string, AiVerdict>> {
+    const out = new Map<string, AiVerdict>()
+    if (!domains.length) return out
+
+    let cursor = 0
+    const worker = async () => {
+      while (cursor < domains.length) {
+        const host = domains[cursor]
+        cursor += 1
+        try {
+          const r = await this.judgeDeepOne(host)
+          if (!r) continue
+          out.set(host, r)
+          this.cache?.set(host, {
+            category: r.category,
+            confidence: r.confidence,
+            at: new Date().toISOString(),
+          })
+          this.cacheDirty = true
+        } catch (err) {
+          this.lastError = err instanceof Error ? err.message : String(err)
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(this.cfg.concurrency, domains.length) }, worker))
+    await this.flushCache()
+    return out
+  }
+
+  /** 单个域名的联网重判。检索词用域名本身——这是实测有效的关键 */
+  private async judgeDeepOne(host: string): Promise<AiVerdict | null> {
+    const body = {
+      model: this.cfg.model,
+      messages: [
+        {
+          role: 'system',
+          content:
+            '判断域名用途：ad=广告投放 track=数据统计/追踪 sdk=功能SDK normal=业务/CDN。' +
+            '可参考检索结果，但只依据确实相关的信息，不要臆断。只输出 JSON 对象。',
+        },
+        { role: 'user', content: `域名：${host}\n它属于哪类？` },
+      ],
+      temperature: 0,
+      max_tokens: 200,
+      chat_template_kwargs: { enable_thinking: false },
+      // 用域名本身检索：批量时用笼统词无效，实测过
+      web_search: `${host} 是什么 公司 业务 广告 追踪 SDK`,
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'ad_judge_one',
+          strict: true,
+          schema: {
+            type: 'object',
+            properties: {
+              category: { type: 'string', enum: ['ad', 'track', 'sdk', 'normal'] },
+              confidence: { type: 'number' },
+            },
+            required: ['category', 'confidence'],
+            additionalProperties: false,
+          },
+        },
+      },
+    }
+
+    const res = await fetch(`${this.cfg.baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.cfg.timeoutMs),
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(`HTTP ${res.status} ${text.slice(0, 120)}`)
+    }
+    const searched = res.headers.get('X-Web-Search')
+    const d = (await res.json()) as { choices?: { message?: { content?: string } }[] }
+    const content = d.choices?.[0]?.message?.content || ''
+    const parsed = parseVerdicts(content)
+    // 单项返回的是对象不是数组，补一层对象解析
+    const one = parsed[0] || parseSingleVerdict(content)
+    if (!one) return null
+    return {
+      domain: host,
+      category: one.category,
+      confidence: one.confidence,
+      // 检索失败时（failed）标注出来，避免用户误以为查过了
+      searched: searched === '1',
+    }
+  }
+}
+
+/** 解析单个对象的输出（depth 重判返回的是对象而非数组） */
+export function parseSingleVerdict(raw: string): AiVerdict | null {
+  const text = (raw || '').trim()
+  if (!text) return null
+  const cands = [text]
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+  if (fence) cands.push(fence[1].trim())
+  const a = text.indexOf('{')
+  const b = text.lastIndexOf('}')
+  if (a >= 0 && b > a) cands.push(text.slice(a, b + 1))
+
+  for (const c of cands) {
+    try {
+      const o = JSON.parse(c) as { category?: unknown; confidence?: unknown }
+      const cat = o.category
+      if (cat !== 'ad' && cat !== 'track' && cat !== 'sdk' && cat !== 'normal') continue
+      const conf = typeof o.confidence === 'number' ? o.confidence : Number(o.confidence)
+      return {
+        domain: '',
+        category: cat,
+        confidence: Number.isFinite(conf) ? Math.max(0, Math.min(1, conf)) : 0.5,
+      }
+    } catch {
+      /* 换下一个候选 */
+    }
+  }
+  return null
 }
 
 /**

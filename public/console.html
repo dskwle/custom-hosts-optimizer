@@ -724,12 +724,16 @@
       与「网页诊断」互补：那边能拿到 URL 和资源路径，这边只有域名，但覆盖面更广。
       <br>采集只读 mihomo 的接口，不修改任何代理配置；识别结果也只给建议，
       <strong>勾选后点「加入屏蔽」才写入</strong>。
+      <br><strong>AI 识别</strong>批量判定，快；<strong>AI 深度识别</strong>会对可疑域名逐个联网核实，
+      约 5 秒/个。实测联网能纠正部分误判（如 adjoe.io 从"正常"纠正为"广告"），
+      但并非万能，且批量开检索无效——所以只对可疑项逐个查。
     </p>
     <div class="row" style="margin-bottom:10px">
       <button class="primary" id="btnProxyStart">开始采集</button>
       <button id="btnProxyStop" disabled>停止</button>
       <button id="btnProxyJudge">规则识别</button>
       <button id="btnProxyJudgeAi">AI 识别</button>
+      <button id="btnProxyJudgeDeep" title="对可疑域名逐个联网核实，约 5 秒/个，较慢但更准">AI 深度识别</button>
       <button id="btnProxyClear">清空</button>
       <span id="proxyStatus" class="sub"></span>
     </div>
@@ -3777,17 +3781,19 @@ async function proxyClear() {
   void proxyLoadStatus()
 }
 
-async function proxyJudge(useAi) {
-  const btn = useAi ? el('btnProxyJudgeAi') : el('btnProxyJudge')
+async function proxyJudge(useAi, deep = false) {
+  const btn = deep ? el('btnProxyJudgeDeep') : useAi ? el('btnProxyJudgeAi') : el('btnProxyJudge')
   btn.disabled = true
-  el('proxyStatus').textContent = useAi
-    ? '正在识别（本地规则 + AI，首次较慢，之后走缓存）…'
-    : '正在按规则库识别…'
+  el('proxyStatus').textContent = deep
+    ? '正在深度识别：对可疑域名逐个联网核实，约 5 秒/个，请稍候…'
+    : useAi
+      ? '正在识别（本地规则 + AI，首次较慢，之后走缓存）…'
+      : '正在按规则库识别…'
   try {
     const d = await (await fetch(`${API}/local/proxy/judge`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ useAi }),
+      body: JSON.stringify({ useAi, deep }),
     })).json()
     if (!d.ok) {
       el('proxyStatus').textContent = d.error || '识别失败'
@@ -3798,6 +3804,7 @@ async function proxyJudge(useAi) {
       const s = d.stats
       parts.push(`规则 ${s.rule} / 内置 ${s.vendor} / AI ${s.ai} / 未定 ${s.none}`)
     }
+    if (d.deepCount) parts.push(`联网核实 ${d.deepCount} 个`)
     if (useAi && !d.aiUsed) parts.push('⚠ AI 未生效，仅本地判定')
     if (d.aiError) parts.push(`AI 错误：${d.aiError}`)
     el('proxyStatus').textContent = parts.join(' · ')
@@ -3883,7 +3890,8 @@ function proxyInit() {
   el('btnProxyStart').addEventListener('click', proxyStart)
   el('btnProxyStop').addEventListener('click', proxyStop)
   el('btnProxyJudge').addEventListener('click', () => proxyJudge(false))
-  el('btnProxyJudgeAi').addEventListener('click', () => proxyJudge(true))
+  el('btnProxyJudgeAi').addEventListener('click', () => proxyJudge(true, false))
+  el('btnProxyJudgeDeep').addEventListener('click', () => proxyJudge(true, true))
   el('btnProxyClear').addEventListener('click', proxyClear)
   el('btnProxySelectAds').addEventListener('click', proxySelectAds)
   el('btnProxySelectNone').addEventListener('click', proxySelectNone)

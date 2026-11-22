@@ -13,7 +13,9 @@ import {
   fromAi,
   judgeHosts,
   parseAdRuleDomains,
+  pickDeepCandidates,
   AI_MIN_CONFIDENCE,
+  type HostAdVerdict,
 } from './judge-pipeline.ts'
 import type { AiJudge, AiVerdict } from './ai-judge.ts'
 
@@ -153,4 +155,56 @@ test('limit 限制处理数量', async () => {
 
 test('AI 阈值常量是 0.8', () => {
   assert.equal(AI_MIN_CONFIDENCE, 0.8)
+})
+
+test('pickDeepCandidates 只挑可疑的：已是广告的不查', () => {
+  const m = new Map<string, HostAdVerdict>([
+    ['a.com', { host: 'a.com', isAd: true, strength: 'high', source: 'rule', signals: [] }],
+    ['b.com', { host: 'b.com', isAd: false, strength: 'low', source: 'none', signals: [] }],
+    ['c.com', { host: 'c.com', isAd: false, strength: 'low', source: 'ai', signals: [], confidence: 0.9 }],
+    ['d.com', { host: 'd.com', isAd: false, strength: 'low', source: 'ai', signals: [], confidence: 0.99 }],
+  ])
+  const picked = pickDeepCandidates(m)
+  assert.ok(!picked.includes('a.com'), '已判广告不该再查')
+  assert.ok(picked.includes('b.com'), '无结论的该查')
+  assert.ok(picked.includes('c.com'), 'AI 低置信度该查')
+  assert.ok(!picked.includes('d.com'), '高置信度 normal 不必再花钱查')
+})
+
+test('deep=false 时不调用 judgeDeep', async () => {
+  const ai = fakeAi({})
+  let deepCalled = false
+  ;(ai as unknown as { judgeDeep: () => Promise<Map<string, never>> }).judgeDeep = async () => {
+    deepCalled = true
+    return new Map()
+  }
+  await judgeHosts(['unknown.com'], knownAds, ai, { useAi: true, deep: false })
+  assert.equal(deepCalled, false)
+})
+
+test('deep=true 时会调用 judgeDeep 且只传可疑域名', async () => {
+  const ai = fakeAi({ 'maybe.com': { domain: 'maybe.com', category: 'normal', confidence: 0.9 } })
+  const asked: string[] = []
+  ;(ai as unknown as { judgeDeep: (d: string[]) => Promise<Map<string, never>> }).judgeDeep = async (d) => {
+    asked.push(...d)
+    return new Map()
+  }
+  await judgeHosts(['ad.doubleclick.net', 'maybe.com', 'unknown.com'], knownAds, ai, {
+    useAi: true,
+    deep: true,
+  })
+  assert.ok(!asked.includes('ad.doubleclick.net'), '规则命中的不该再查')
+  assert.ok(asked.includes('maybe.com'))
+  assert.ok(asked.includes('unknown.com'))
+})
+
+test('深度重判结果会覆盖原结论', async () => {
+  // 模拟：无检索判 normal，联网后纠正为 ad
+  const ai = fakeAi({ 'adjoe.io': { domain: 'adjoe.io', category: 'normal', confidence: 0.95 } })
+  ;(ai as unknown as { judgeDeep: (d: string[]) => Promise<Map<string, AiVerdict>> }).judgeDeep =
+    async () => new Map([['adjoe.io', { domain: 'adjoe.io', category: 'ad', confidence: 0.95, searched: true }]])
+  const r = await judgeHosts(['adjoe.io'], knownAds, ai, { useAi: true, deep: true })
+  const v = r.verdicts.get('adjoe.io')!
+  assert.equal(v.isAd, true, '联网后应纠正为广告')
+  assert.match(v.signals[0], /已联网核实/)
 })
