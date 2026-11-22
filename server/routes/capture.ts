@@ -285,10 +285,10 @@ export function createCaptureRoutes(getEnv: () => Bindings, getCdpUrl: () => str
       return c.json({ error: '请指定要清理的会话（ids），或传 all=true 清空全部' }, 400)
     }
 
-    // 运行中的会话集合：manager.list 会把 live 与磁盘合并，status=running 即 live
-    const running = new Set(
-      (await manager.list(1000)).filter((s) => s.status === 'running').map((s) => s.id),
-    )
+    // 运行中的会话集合必须取真实 live，不能用状态字段：
+    // 进程重启后磁盘上仍写着 running，但那些会话早就不存在了，
+    // 按状态判断会让它们永远处于"正在抓包，请先停止"而删不掉。
+    const running = manager.liveIds()
 
     const deleted: string[] = []
     const failed: Array<{ id: string; reason: string }> = []

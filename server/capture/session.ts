@@ -380,6 +380,17 @@ export class CaptureManager {
     }
   }
 
+  /**
+   * 真正在跑的会话 id 集合。
+   *
+   * 与 list() 的区别：list 会把磁盘上残留的 running 状态原样返回，
+   * 那些是进程重启后的僵尸记录。这里只认真实存在的 live 会话，
+   * 清理接口据此判断"能不能删"——否则僵尸会话永远删不掉。
+   */
+  liveIds(): Set<string> {
+    return new Set(this.live.keys())
+  }
+
   /** 进程退出时用：不留悬空标签页 */
   async shutdown(): Promise<void> {
     for (const rec of [...this.live.values()]) {

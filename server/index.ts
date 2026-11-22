@@ -31,6 +31,7 @@ import { getBlockedDomains } from "./blocked.js"
 import { pickPaused } from "./pause-filter.js"
 import { analyzeSession, loadReport, MAX_DOMAINS_PER_RUN } from "./discover.js"
 import { ensureHostsFile } from "./capture/preview-hosts.ts"
+import { repairStaleRunning } from "./capture/store.ts"
 import {
   getPaused,
   getPausedAccel,
@@ -1438,6 +1439,10 @@ const server = serve({ fetch: (req) => root.fetch(req, env), port: PORT, hostnam
 
 // 后台重试：探测失败的域名每分钟重测，连续失败到阈值才判死
 startRetrier(env)
+
+// 清扫上次运行残留的「进行中」状态：进程重启后那些会话已不存在，
+// 不纠正的话它们会永远显示进行中、且清理接口拒绝删除。
+void repairStaleRunning().catch((err) => console.error("[capture] 清扫残留会话状态失败", err))
 
 // 预览 hosts 文件兜底：宿主机上若不存在，Docker 会把 /etc/hosts 绑成目录。
 // 这里尽早创建，配合 compose 的 ./data/preview-hosts:/etc/hosts 挂载。

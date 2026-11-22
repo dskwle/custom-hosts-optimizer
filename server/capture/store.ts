@@ -133,6 +133,51 @@ export async function clearStoredSessions(except: ReadonlySet<string> = new Set(
 }
 
 /**
+ * 启动时清扫：把磁盘上残留的 `running` / `starting` 状态改成 `stopped`。
+ *
+ * 为什么必须做：状态是随会话一起落盘的，进程重启（容器更新、崩溃）后
+ * 那些会话的 live 记录已经不存在了，但磁盘上还写着 running。
+ * 列表接口把磁盘状态原样返回，前端就一直显示"进行中"；
+ * 而清理接口为了保护正在抓包的会话会跳过它们——于是这些会话永远删不掉。
+ *
+ * 在进程启动时统一纠正，比在每个读取点都判断"是不是僵尸"更简单，也更彻底。
+ *
+ * @returns 被纠正的会话数
+ */
+export async function repairStaleRunning(): Promise<number> {
+  let names: string[]
+  try {
+    names = await fs.readdir(dir())
+  } catch {
+    return 0
+  }
+  let fixed = 0
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue
+    const id = name.slice(0, -'.json'.length)
+    const file = fileOf(id)
+    if (!file) continue
+    try {
+      const parsed = JSON.parse(await fs.readFile(file, 'utf8')) as StoredSession
+      const status = parsed?.session?.status
+      if (status !== 'running' && status !== 'starting') continue
+      parsed.session.status = 'stopped'
+      // 没记结束时间的补一个，前端据此显示时长而不是"进行中"
+      if (!parsed.session.endedAt) parsed.session.endedAt = new Date().toISOString()
+      parsed.session.error = parsed.session.error || '上次运行被中断（进程已重启）'
+      const tmp = `${file}.tmp`
+      await fs.writeFile(tmp, JSON.stringify(parsed), 'utf8')
+      await fs.rename(tmp, file)
+      fixed += 1
+    } catch {
+      // 损坏文件跳过：cleanStoredSessions 会把它一并清掉
+    }
+  }
+  if (fixed) console.log(`[capture] 已修正 ${fixed} 个残留的「进行中」会话状态`)
+  return fixed
+}
+
+/**
  * 只保留最近 retain 个会话。删除失败的忽略：
  * 磁盘满/权限不足时，宁可多留几个文件也不能让 stop 接口整个失败——
  * 用户已经抓完的数据比"目录整齐"重要得多。
