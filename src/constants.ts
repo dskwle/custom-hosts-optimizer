@@ -146,11 +146,18 @@ export const SITE_GROUPS: SiteGroup[] = [
     name: "游戏平台",
     description: "Rockstar、Epic、Battle.net、EA、Ubisoft、Riot、GOG",
     domains: [
-      // Rockstar
-      "socialclub.rockstargames.com",
+      // Rockstar（启动器/账号/商店/下载/在线服务）
+      // 注意 launcher/assets/telemetry/gta5/rdr2 这几个虽被网上清单广泛推荐，
+      // 实测均已无 A 记录（官方调整过命名），写进来只会每轮白耗时，故不加。
+      "rockstargames.com",
       "www.rockstargames.com",
+      "socialclub.rockstargames.com",
       "rgl.rockstargames.com",
       "gamedownloads.rockstargames.com",
+      "prod.ros.rockstargames.com",
+      "store.rockstargames.com",
+      "support.rockstargames.com",
+      "rockstar.com",
       // Epic（按官方白名单补全：商店、启动器、账号、目录、权益、好友、下载）
       "store.epicgames.com",
       "www.epicgames.com",
