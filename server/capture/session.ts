@@ -38,6 +38,7 @@ import { listStoredSessions, loadSession, saveSession, type StoredSession } from
 import { inferPageHost, normalizeHost } from './aggregate.ts'
 import { markSniBlocked, summarize } from './advice.ts'
 import { comparePreview } from './preview-compare.ts'
+import { writeInjected, clearInjected, readInjected } from './preview-hosts.ts'
 import { listBlocked } from '../blocked.ts'
 
 /** 默认最长采集时长：3 分钟。再长基本是用户忘了关，占着浏览器窗口没意义 */
@@ -292,13 +293,11 @@ export class CaptureManager {
   }
 
   /**
-   * 应用一组域名映射（预览），只影响当前抓包标签页。
+   * 应用一组域名映射（预览），只影响抓包浏览器。
    *
-   * 实现用 CDP 的 Network.setHostMapping：它改的是浏览器内部的解析表，
-   * 系统 hosts 与其它程序完全不受影响。重载页面后即按新映射访问，
-   * 于是能拿到「换 IP 之后」的真实耗时。
-   *
-   * @returns 应用后的映射；会话不在运行时抛错
+   * 走共享文件而不是 CDP：Network.setHostMapping 不是标准 CDP 命令
+   * （实测报 wasn't found）。chromium 容器把 /etc/hosts 绑到 data/preview-hosts，
+   * app 写同一个文件即可，且实测 Chrome 会实时读取、无需重启。
    */
   async applyPreview(id: string, mappings: Record<string, string>): Promise<PreviewState> {
     const rec = this.live.get(id)
@@ -310,7 +309,6 @@ export class CaptureManager {
     for (const [rawHost, rawIp] of Object.entries(mappings)) {
       const host = String(rawHost || '').trim().toLowerCase()
       const ip = String(rawIp || '').trim()
-      // 只接受合法域名 + IP：非法值会让 setHostMapping 整批失败
       if (!host || !ip) continue
       if (!/^[a-z0-9.-]+$/.test(host)) continue
       if (!/^[0-9a-fA-F:.]+$/.test(ip)) continue
@@ -322,18 +320,18 @@ export class CaptureManager {
 
     // 分界点必须在重载之前取：重载会立刻产生新请求
     const fromIndex = rec.tracker.entries.length
-    await rec.client.send('Network.setHostMapping', { hosts: clean }, 5000)
+    await writeInjected(clean)
     rec.preview = { mappings: clean, fromIndex, appliedAt: Date.now() }
-    // 重载页面，让新映射立即生效（CDP 的映射对已建立的连接不追溯）
+    // 重载页面让映射立即生效（虽实测会实时读取，但重载能拿到干净的对比数据）
     await this.navigate(rec, rec.session.url)
     return rec.preview
   }
 
-  /** 撤销预览：清空浏览器内映射并重载回原始状态 */
+  /** 撤销预览：清掉注入的映射并重载回原始状态 */
   async clearPreview(id: string): Promise<boolean> {
     const rec = this.live.get(id)
+    await clearInjected()
     if (!rec?.client) return false
-    await rec.client.send('Network.setHostMapping', { hosts: {} }, 5000)
     rec.preview = null
     await this.navigate(rec, rec.session.url)
     return true

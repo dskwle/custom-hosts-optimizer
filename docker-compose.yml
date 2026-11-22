@@ -148,6 +148,14 @@ services:
     memswap_limit: 1g
     # 配合 --disable-dev-shm-usage：/dev/shm 用不满，留 512MB 给渲染进程
     shm_size: "512mb"
+    volumes:
+      # 预览用的 hosts：把容器的 /etc/hosts 绑到宿主机文件，
+      # app 容器挂的是同一个 data 目录，于是「写文件」就等于「改浏览器解析」。
+      # 只影响这个容器，宿主机 /etc/hosts 完全不动。
+      #
+      # 注意：宿主上这个文件必须存在且是**文件**。若不存在，Docker 会建成目录，
+      # /etc/hosts 就废了。deploy 脚本与应用启动都会兜底创建（见 preview-hosts.ts）。
+      - ./data/preview-hosts:/etc/hosts
     depends_on:
       - novnc
     environment:

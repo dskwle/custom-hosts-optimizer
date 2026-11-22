@@ -30,6 +30,7 @@ import { clearFailure, recordFailure, listFailures, clearAllFailures } from "./f
 import { getBlockedDomains } from "./blocked.js"
 import { pickPaused } from "./pause-filter.js"
 import { analyzeSession, loadReport, MAX_DOMAINS_PER_RUN } from "./discover.js"
+import { ensureHostsFile } from "./capture/preview-hosts.ts"
 import {
   getPaused,
   getPausedAccel,
@@ -1437,6 +1438,10 @@ const server = serve({ fetch: (req) => root.fetch(req, env), port: PORT, hostnam
 
 // 后台重试：探测失败的域名每分钟重测，连续失败到阈值才判死
 startRetrier(env)
+
+// 预览 hosts 文件兜底：宿主机上若不存在，Docker 会把 /etc/hosts 绑成目录。
+// 这里尽早创建，配合 compose 的 ./data/preview-hosts:/etc/hosts 挂载。
+void ensureHostsFile().catch((err) => console.error("[preview] 初始化 hosts 文件失败", err))
 
 /**
  * WebSocket 升级：把 /novnc/websockify 原始字节转发到 127.0.0.1:6080/websockify。
