@@ -301,6 +301,7 @@
     <div class="tab" data-tab="block">屏蔽网站</div>
     <div class="tab" data-tab="lookup">域名查询</div>
     <div class="tab" data-tab="capture">网页诊断</div>
+    <div class="tab" data-tab="proxy">代理观察</div>
   </div>
 
   <!-- ========== Hosts ========== -->
@@ -710,6 +711,57 @@
   </div>
 </div>
 
+<!-- ========== 代理观察 ========== -->
+<div class="tab-content" id="proxy-tab">
+  <div class="card">
+    <h2>
+      代理流量观察
+      <span class="badge gray" id="proxyState">未开始</span>
+      <span class="sub" id="proxyEnv" style="font-weight:400;font-size:12px"></span>
+    </h2>
+    <p class="hint">
+      通过 mihomo 的连接数据观察<strong>非网页流量</strong>（App、客户端、小程序）。
+      与「网页诊断」互补：那边能拿到 URL 和资源路径，这边只有域名，但覆盖面更广。
+      <br>采集只读 mihomo 的接口，不修改任何代理配置；识别结果也只给建议，
+      <strong>勾选后点「加入屏蔽」才写入</strong>。
+    </p>
+    <div class="row" style="margin-bottom:10px">
+      <button class="primary" id="btnProxyStart">开始采集</button>
+      <button id="btnProxyStop" disabled>停止</button>
+      <button id="btnProxyJudge">规则识别</button>
+      <button id="btnProxyJudgeAi">AI 识别</button>
+      <button id="btnProxyClear">清空</button>
+      <span id="proxyStatus" class="sub"></span>
+    </div>
+    <p class="sub" id="proxyStats" style="margin:0 0 10px"></p>
+  </div>
+
+  <div class="card">
+    <h2>域名列表 <span class="badge gray" id="proxyCount">0</span></h2>
+    <div class="row" style="margin-bottom:10px">
+      <select id="proxyFilter">
+        <option value="all">全部</option>
+        <option value="ad">广告</option>
+        <option value="track">追踪</option>
+        <option value="sdk">第三方 SDK</option>
+        <option value="hit">仅命中广告/追踪</option>
+        <option value="unknown">仅未识别</option>
+        <option value="blocked">已屏蔽</option>
+      </select>
+      <select id="proxySort">
+        <option value="connections">按连接数</option>
+        <option value="download">按下行流量</option>
+        <option value="host">按域名</option>
+      </select>
+      <button class="sm" id="btnProxySelectAds" title="勾选所有建议屏蔽的域名">选中广告</button>
+      <button class="sm" id="btnProxySelectNone">清空选择</button>
+      <span style="flex:1"></span>
+      <button class="danger" id="btnProxyBlock" disabled>加入屏蔽(0)</button>
+    </div>
+    <div id="proxyList"><p class="empty">尚未采集</p></div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -846,6 +898,8 @@ document.querySelectorAll('.tab').forEach((tab) => {
     })
     if (name === 'monitor') { startChartPolling(); drawChart() }
     if (name === 'capture') capOnShow()
+    // 切到代理页时拉一次最新数据：可能是别的标签页开着时数据变了
+    if (name === 'proxy') proxyOnShow()
   })
 })
 document.querySelectorAll('.tab-content').forEach((c) => {
@@ -3529,6 +3583,324 @@ async function discAdopt() {
   }
 }
 
+/* ---------- 代理观察 ---------- */
+/**
+ * 通过 mihomo 的连接数据观察非网页流量。
+ *
+ * 与网页诊断的区别：拿不到 URL 路径，只有域名。
+ * 所以识别依赖「规则库 → 内置服务商表 → AI」三层，前两层命中就不调模型。
+ */
+const proxy = {
+  hosts: [],
+  view: [],
+  picked: new Set(),
+  timer: null,
+  filter: 'all',
+  sortKey: 'connections',
+}
+
+function proxyFmtBytes(n) {
+  const v = Number(n) || 0
+  if (v < 1024) return v + 'B'
+  if (v < 1024 * 1024) return (v / 1024).toFixed(1) + 'KB'
+  return (v / 1024 / 1024).toFixed(1) + 'MB'
+}
+
+/** 结论徽标：来源不同，措辞也要不同，否则用户不知道依据从哪来 */
+function proxyAdCell(h) {
+  const ad = h.ad
+  if (!ad) return '<span class="sub">未识别</span>'
+  if (ad.isAd) {
+    const cls = ad.strength === 'high' ? 'badge bad' : 'badge'
+    const label = ad.category === 'track' ? '追踪' : '广告'
+    return `<span class="${cls}">${label}</span>`
+  }
+  if (ad.category === 'sdk') return '<span class="badge gray">SDK</span>'
+  if (ad.category === 'normal') return '<span class="sub">正常</span>'
+  if (ad.source === 'none') return '<span class="sub">未定</span>'
+  return '<span class="sub">存疑</span>'
+}
+
+function proxyRowHtml(h) {
+  const pickable = !h.blocked
+  const checked = pickable && proxy.picked.has(h.host) ? ' checked' : ''
+  const box = pickable
+    ? `<input type="checkbox" data-proxy-pick="${escAttr(h.host)}"${checked}>`
+    : '<span class="sub" title="已在屏蔽清单">✓</span>'
+  const ad = h.ad || {}
+  const reason = (ad.signals || []).join('；')
+  const chainText = (h.chains || []).join(', ')
+  const viaProxy = (h.chains || []).some((c) => c !== 'DIRECT')
+  return `<tr>
+    <td>${box}</td>
+    <td class="cap-host" title="${escAttr(h.host)}">${escAttr(h.host)}</td>
+    <td>${proxyAdCell(h)}</td>
+    <td class="num">${h.connections}</td>
+    <td class="num">${proxyFmtBytes(h.download)}</td>
+    <td class="num">${proxyFmtBytes(h.upload)}</td>
+    <td class="sub" style="max-width:120px" title="${escAttr(chainText)}">${viaProxy ? '代理' : '直连'}</td>
+    <td class="sub" style="max-width:320px" title="${escAttr(reason)}">${escAttr(reason)}</td>
+  </tr>`
+}
+
+function proxySyncBtns() {
+  const n = [...proxy.picked].length
+  const btn = el('btnProxyBlock')
+  if (!btn) return
+  btn.textContent = `加入屏蔽(${n})`
+  btn.disabled = n === 0
+}
+
+function proxyRender() {
+  const f = proxy.filter
+  const rows = proxy.hosts.filter((h) => {
+    const ad = h.ad || {}
+    if (f === 'ad') return ad.isAd && ad.category !== 'track'
+    if (f === 'track') return ad.category === 'track'
+    if (f === 'sdk') return ad.category === 'sdk'
+    if (f === 'hit') return !!ad.isAd
+    if (f === 'unknown') return !h.ad || h.ad.source === 'none'
+    if (f === 'blocked') return !!h.blocked
+    return true
+  })
+
+  const key = proxy.sortKey
+  rows.sort((a, b) => {
+    if (key === 'host') return a.host.localeCompare(b.host)
+    if (key === 'download') return (b.download || 0) - (a.download || 0)
+    return (b.connections || 0) - (a.connections || 0)
+  })
+
+  proxy.view = rows
+  el('proxyCount').textContent = String(rows.length)
+
+  if (!rows.length) {
+    el('proxyList').innerHTML = `<p class="empty">${proxy.hosts.length ? '当前筛选无结果' : '尚未采集到域名'}</p>`
+    proxySyncBtns()
+    return
+  }
+
+  el('proxyList').innerHTML = `<div class="cap-table-wrap" style="display:block">
+    <table>
+      <thead><tr>
+        <th style="width:28px"></th><th>域名</th><th>识别</th>
+        <th>连接</th><th>下行</th><th>上行</th><th>链路</th><th>依据</th>
+      </tr></thead>
+      <tbody>${rows.map(proxyRowHtml).join('')}</tbody>
+    </table>
+  </div>`
+
+  el('proxyList').querySelectorAll('input[data-proxy-pick]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const h = cb.dataset.proxyPick
+      if (cb.checked) proxy.picked.add(h)
+      else proxy.picked.delete(h)
+      proxySyncBtns()
+    })
+  })
+  proxySyncBtns()
+}
+
+async function proxyLoadHosts() {
+  try {
+    const d = await (await fetch(`${API}/local/proxy/hosts?_t=${Date.now()}`, { cache: 'no-store' })).json()
+    proxy.hosts = d.hosts || []
+    proxyRender()
+  } catch (e) {
+    el('proxyStatus').textContent = `拉取失败：${e.message}`
+  }
+}
+
+async function proxyLoadStatus() {
+  try {
+    const d = await (await fetch(`${API}/local/proxy/status?_t=${Date.now()}`, { cache: 'no-store' })).json()
+    const s = d.session || {}
+    const running = s.status === 'running'
+    el('proxyState').textContent = running ? '采集中' : s.status === 'stopped' ? '已停止' : '未开始'
+    el('proxyState').className = running ? 'badge good' : 'badge gray'
+    el('btnProxyStart').disabled = running
+    el('btnProxyStop').disabled = !running
+
+    const bits = []
+    if (s.polls) bits.push(`轮询 ${s.polls} 次`)
+    if (s.totalConnections != null) bits.push(`连接 ${s.totalConnections}`)
+    if (s.hostCount != null) bits.push(`域名 ${s.hostCount}`)
+    if (d.judged) bits.push(`已识别 ${d.judged}`)
+    if (s.error) bits.push(`⚠ ${s.error}`)
+    el('proxyStats').textContent = bits.join(' · ')
+
+    // 采集中就自动刷新列表
+    if (running) {
+      if (!proxy.timer) proxy.timer = setInterval(() => void proxyLoadHosts(), 5000)
+    } else if (proxy.timer) {
+      clearInterval(proxy.timer)
+      proxy.timer = null
+    }
+  } catch {
+    // 状态接口失败不影响列表
+  }
+}
+
+async function proxyStart() {
+  el('proxyStatus').textContent = '正在连接 mihomo…'
+  try {
+    const d = await (await fetch(`${API}/local/proxy/start`, { method: 'POST' })).json()
+    if (!d.ok) {
+      el('proxyStatus').textContent = d.error || '启动失败'
+      return
+    }
+    el('proxyStatus').textContent = '已开始采集，让设备产生流量即可'
+    toast('开始采集代理流量')
+    void proxyLoadStatus()
+  } catch (e) {
+    el('proxyStatus').textContent = `启动失败：${e.message}`
+  }
+}
+
+async function proxyStop() {
+  try {
+    await fetch(`${API}/local/proxy/stop`, { method: 'POST' })
+    el('proxyStatus').textContent = '已停止（数据保留）'
+    void proxyLoadStatus()
+  } catch (e) {
+    el('proxyStatus').textContent = `停止失败：${e.message}`
+  }
+}
+
+async function proxyClear() {
+  if (!confirm('清空已采集的数据？采集状态保持不变。')) return
+  await fetch(`${API}/local/proxy/clear`, { method: 'POST' })
+  proxy.picked = new Set()
+  proxy.hosts = []
+  proxyRender()
+  el('proxyStatus').textContent = '已清空'
+  void proxyLoadStatus()
+}
+
+async function proxyJudge(useAi) {
+  const btn = useAi ? el('btnProxyJudgeAi') : el('btnProxyJudge')
+  btn.disabled = true
+  el('proxyStatus').textContent = useAi
+    ? '正在识别（本地规则 + AI，首次较慢，之后走缓存）…'
+    : '正在按规则库识别…'
+  try {
+    const d = await (await fetch(`${API}/local/proxy/judge`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ useAi }),
+    })).json()
+    if (!d.ok) {
+      el('proxyStatus').textContent = d.error || '识别失败'
+      return
+    }
+    const parts = [`识别 ${d.judged} 个`, `建议屏蔽 ${d.recommended} 个`]
+    if (d.stats) {
+      const s = d.stats
+      parts.push(`规则 ${s.rule} / 内置 ${s.vendor} / AI ${s.ai} / 未定 ${s.none}`)
+    }
+    if (useAi && !d.aiUsed) parts.push('⚠ AI 未生效，仅本地判定')
+    if (d.aiError) parts.push(`AI 错误：${d.aiError}`)
+    el('proxyStatus').textContent = parts.join(' · ')
+    toast(`识别完成，建议屏蔽 ${d.recommended} 个`)
+    await proxyLoadHosts()
+    void proxyLoadStatus()
+  } catch (e) {
+    el('proxyStatus').textContent = `识别失败：${e.message}`
+  } finally {
+    btn.disabled = false
+  }
+}
+
+function proxySelectAds() {
+  const targets = proxy.view.filter((h) => h.ad && h.ad.isAd && !h.blocked)
+  if (!targets.length) {
+    toast('当前筛选结果里没有建议屏蔽的域名')
+    return
+  }
+  for (const h of targets) proxy.picked.add(h.host)
+  proxyRender()
+  toast(`已勾选 ${targets.length} 个`)
+}
+
+function proxySelectNone() {
+  proxy.picked = new Set()
+  proxyRender()
+}
+
+async function proxyBlock() {
+  const hosts = [...proxy.picked]
+  if (!hosts.length) return
+  // 代理模式下封错域名可能让 App 登录失败，必须明确确认
+  if (!confirm(`将屏蔽 ${hosts.length} 个域名。\n\n代理模式下，误封可能导致 App 功能异常。\n写入后可在「屏蔽网站」里删除。继续？`)) return
+
+  const btn = el('btnProxyBlock')
+  btn.disabled = true
+  el('proxyStatus').textContent = `正在写入 ${hosts.length} 个…`
+  try {
+    const d = await (await fetch(`${API}/local/proxy/block`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ hosts }),
+    })).json()
+    if (!d.ok) {
+      el('proxyStatus').textContent = d.error || '写入失败'
+      return
+    }
+    const added = (d.added || []).length
+    const skipped = (d.existed || []).length + (d.builtin || []).length
+    el('proxyStatus').textContent = `已屏蔽 ${added} 个` + (skipped ? `，${skipped} 个已存在` : '')
+    toast(`已屏蔽 ${added} 个域名`)
+    proxy.picked = new Set()
+    await proxyLoadHosts()
+    if (typeof loadBlocked === 'function') loadBlocked()
+  } catch (e) {
+    el('proxyStatus').textContent = `写入失败：${e.message}`
+  } finally {
+    proxySyncBtns()
+  }
+}
+
+async function proxyLoadEnv() {
+  try {
+    const d = await (await fetch(`${API}/local/proxy/env`)).json()
+    const bits = []
+    bits.push(d.mihomo?.ok ? `mihomo ${d.mihomo.version || '已连接'}` : `mihomo 不可达：${d.mihomo?.error || '未知'}`)
+    bits.push(d.ai?.ok ? 'AI 就绪' : `AI 不可达：${d.ai?.error || '未知'}`)
+    el('proxyEnv').textContent = bits.join(' · ')
+  } catch {
+    el('proxyEnv').textContent = ''
+  }
+}
+
+/** 切到本页时刷新：状态、环境、列表都重新拉，避免看着过期数据 */
+function proxyOnShow() {
+  void proxyLoadEnv()
+  void proxyLoadStatus()
+  void proxyLoadHosts()
+}
+
+function proxyInit() {
+  el('btnProxyStart').addEventListener('click', proxyStart)
+  el('btnProxyStop').addEventListener('click', proxyStop)
+  el('btnProxyJudge').addEventListener('click', () => proxyJudge(false))
+  el('btnProxyJudgeAi').addEventListener('click', () => proxyJudge(true))
+  el('btnProxyClear').addEventListener('click', proxyClear)
+  el('btnProxySelectAds').addEventListener('click', proxySelectAds)
+  el('btnProxySelectNone').addEventListener('click', proxySelectNone)
+  el('btnProxyBlock').addEventListener('click', proxyBlock)
+  el('proxyFilter').addEventListener('change', () => {
+    proxy.filter = el('proxyFilter').value
+    proxyRender()
+  })
+  el('proxySort').addEventListener('change', () => {
+    proxy.sortKey = el('proxySort').value
+    proxyRender()
+  })
+  void proxyLoadEnv()
+  void proxyLoadStatus()
+  void proxyLoadHosts()
+}
+
 /* ---------- 会话历史 ---------- */
 
 /** 会话状态 → 徽标 */
@@ -3985,6 +4357,7 @@ loadGroups()
 loadHosts()
 loadDomains()
 loadBlocked()
+proxyInit()
 loadFailures()
 refreshResume()
 timingResume()
