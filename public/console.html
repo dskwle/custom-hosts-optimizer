@@ -692,6 +692,7 @@ const API = ''
 const el = (id) => document.getElementById(id)
 let chartTimer = null
 let refreshTimer = null
+let timingTimer = null
 let chartData = {}
 // 记录当前展开详情的域名，轮询重绘后按域名恢复展开状态
 const expandedDomains = new Set()
@@ -1226,104 +1227,139 @@ function batchRowView(r, adopt) {
 }
 
 /* 批量检测：并发 3 个域名同时探测，进度与结果实时刷新 */
+/**
+ * 批量延迟检测。
+ *
+ * 走后台任务（/local/timing/batch）而不是前端逐个 fetch：
+ * 那样页面一刷新进度就没了，可实际上检测也随之中断。
+ * 现在任务跑在服务端，刷新后由 timingResume() 接上同一个 taskId。
+ */
 async function doTimingBatch(targets) {
   const adopt = el('timingAdopt').checked
   const withSni = el('timingSni').checked
   const btn = el('btnTiming')
   const status = el('timingStatus')
-  const box = el('timingResult')
-
   btn.disabled = true
-  status.textContent = `检测中 0/${targets.length}…`
+  status.textContent = `已提交 ${targets.length} 个，检测中…`
 
-  const results = targets.map((domain) => ({ domain, state: 'pending' }))
-  let done = 0
-
-  const draw = () => {
-    const list = results.slice().sort((a, b) => {
-      const av = a.state === 'done' ? (a.verdict.ok ? 1 : 0) : 0
-      const bv = b.state === 'done' ? (b.verdict.ok ? 1 : 0) : 0
-      if (av !== bv) return av - bv
-      return a.domain.localeCompare(b.domain)
+  try {
+    const res = await fetch(`${API}/local/timing/batch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ domains: targets, sni: withSni, adopt }),
     })
-    const bad = results.filter((r) => r.state === 'done' && !r.verdict.ok).length
-    box.innerHTML = `
-      <p class="sub" style="margin:14px 0 8px">
-        共 ${targets.length} 个，已完成 ${done} 个${bad ? `，其中 <strong class="bad">${bad} 个不可用</strong>（已置顶）` : ''}。
-        ${adopt ? '判定可用的会连同实测最优 IP 一起写入自定义域名。' : ''}
-        悬停任意行可看 SNI 判定依据。
-      </p>
-      <table>
-        <thead><tr><th>域名</th><th>判定</th><th>最优 IP</th><th>TCP</th><th>TLS</th><th>处理</th></tr></thead>
-        <tbody>${list.map((r) => batchRowView(r, adopt)).join('')}</tbody>
-      </table>`
-  }
-
-  const run = async () => {
-    while (true) {
-      const r = results.find((x) => x.state === 'pending')
-      if (!r) return
-      r.state = 'running'
-      try {
-        const res = await fetch(`${API}/local/probe?domain=${encodeURIComponent(r.domain)}&sni=${withSni}`)
-        const p = await res.json()
-        r.probe = p
-        r.verdict = batchVerdict(p)
-      } catch (e) {
-        r.probe = null
-        r.verdict = { ok: false, label: '请求失败', cls: 'bad', note: e && e.message ? e.message : String(e) }
-      }
-      r.state = 'done'
-      done++
-      status.textContent = `检测中 ${done}/${targets.length}…`
-      draw()
-    }
-  }
-
-  draw()
-  await Promise.all(Array.from({ length: Math.min(3, results.length) }, run))
-
-  const adoptable = results.filter((r) => r.state === 'done' && r.verdict.ok && r.probe && r.probe.bestIp)
-  if (adopt && adoptable.length) {
-    status.textContent = `写入 ${adoptable.length} 个自定义域名…`
-    try {
-      const res = await fetch(`${API}/local/adopt`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ items: adoptable.map((r) => ({ domain: r.domain, ip: r.probe.bestIp })) }),
-      })
-      const d = await res.json()
-      const added = new Set(d.added || [])
-      const updated = new Set(d.updated || [])
-      const skipped = new Map((d.skipped || []).map((s) => [s.domain, s.reason]))
-      for (const r of adoptable) {
-        if (added.has(r.domain)) r.action = 'added'
-        else if (updated.has(r.domain)) r.action = 'updated'
-        else if (skipped.has(r.domain)) {
-          const why = skipped.get(r.domain)
-          r.action = why === '内置加速' ? 'builtin' : why === '已屏蔽' ? 'blocked' : 'exists'
-        }
-        else r.action = 'failed'
-      }
-      draw()
-      loadDomains()
-      loadHosts()
-      const notes = []
-      if (updated.size) notes.push(`更新 ${updated.size} 个`)
-      if (skipped.size) notes.push(`${skipped.size} 个已存在`)
-      toast(`已加入 ${added.size} 个${notes.length ? `，${notes.join('，')}` : ''}`)
-    } catch (e) {
-      status.textContent = '写入失败：' + (e && e.message ? e.message : e)
+    const d = await res.json()
+    if (!res.ok || d.ok === false) {
+      status.textContent = d.error || `HTTP ${res.status}`
       btn.disabled = false
       return
     }
-  } else {
-    draw()
+    if (d.truncated) toast(`超出上限，已截断 ${d.truncated} 个`)
+    timingWatch(d.taskId)
+  } catch (e) {
+    status.textContent = `提交失败：${e.message}`
+    btn.disabled = false
   }
+}
 
-  const okCount = results.filter((r) => r.state === 'done' && r.verdict.ok).length
-  status.textContent = `完成：${okCount}/${targets.length} 个可用`
-  btn.disabled = false
+/**
+ * 跟随一个延迟检测任务。
+ * 结果行用 batchRowView 渲染，与原来前端直跑时的外观保持一致。
+ */
+function timingWatch(taskId) {
+  if (!taskId) return
+  if (refreshTimer && timingTimer) clearInterval(timingTimer)
+  const btn = el('btnTiming')
+  const status = el('timingStatus')
+  const box = el('timingResult')
+  btn.disabled = true
+
+  const tick = async () => {
+    try {
+      const t = await (await fetch(`${API}/local/tasks/${taskId}?_t=${Date.now()}`, { cache: 'no-store' })).json()
+      if (t.error) {
+        clearInterval(timingTimer); timingTimer = null
+        btn.disabled = false
+        status.textContent = '任务不存在或已过期'
+        return
+      }
+      const total = t.total || 0
+      const doneN = t.done || 0
+      const pct = total ? Math.round((doneN / total) * 100) : 0
+
+      // 把后端结果映射成 batchRowView 期望的形状
+      const rows = (t.recent || []).map((r) => ({
+        domain: r.domain,
+        state: 'done',
+        probe: r.detail
+          ? {
+              bestIp: r.bestIp,
+              bestIpV6: r.bestIpV6,
+              v6OnlyBroken: r.v6OnlyBroken,
+              latency: r.latency,
+              tlsMs: r.tlsMs,
+              tlsOkCount: r.tlsOkCount,
+              uniqueIpCount: r.candidateCount,
+              sni: r.detail.sni,
+            }
+          : null,
+        verdict: r.ok
+          ? { ok: true, label: '可用', cls: 'good', note: '' }
+          : { ok: false, label: '不可用', cls: 'bad', note: r.error || '' },
+        action: r.adopted === 'added' ? 'added' : r.adopted === 'updated' ? 'updated' : r.adopted === 'failed' ? 'failed' : undefined,
+      }))
+
+      const bad = rows.filter((r) => !r.verdict.ok).length
+      box.innerHTML = `<p class="sub" style="margin:14px 0 8px">
+        共 ${total} 个，已完成 ${doneN} 个（${pct}%）${bad ? `，其中 <strong class="bad">${bad} 个不可用</strong>` : ''}。
+        任务在服务端运行，刷新页面不会中断。
+      </p>` + (rows.length
+        ? `<table>
+            <thead><tr><th>域名</th><th>判定</th><th>最优 IP</th><th>TCP</th><th>TLS</th><th>处理</th></tr></thead>
+            <tbody>${rows.map((r) => batchRowView(r, false)).join('')}</tbody>
+          </table>`
+        : '<p class="empty">尚无结果</p>')
+
+      status.textContent = `检测中 ${doneN}/${total}（${pct}%）`
+
+      if (t.state === 'done' || t.state === 'failed') {
+        clearInterval(timingTimer); timingTimer = null
+        btn.disabled = false
+        const okN = rows.filter((r) => r.verdict.ok).length
+        status.textContent = t.state === 'done'
+          ? `完成：${okN}/${total} 个可用`
+          : `失败：${t.error || ''}`
+        toast(t.state === 'done' ? '延迟检测完成' : '延迟检测失败')
+        if (typeof loadDomains === 'function') loadDomains()
+        if (typeof loadHosts === 'function') loadHosts()
+      }
+    } catch (e) {
+      clearInterval(timingTimer); timingTimer = null
+      btn.disabled = false
+      status.textContent = '轮询失败：' + e.message
+    }
+  }
+  void tick()
+  timingTimer = setInterval(tick, 1200)
+}
+
+/**
+ * 页面加载时恢复延迟检测。
+ * 与批量刷新同理：任务在服务端，刷新页面不该让它「消失」。
+ */
+async function timingResume() {
+  try {
+    const d = await (await fetch(`${API}/local/tasks?_t=${Date.now()}`, { cache: 'no-store' })).json()
+    const tasks = (d.tasks || []).filter((t) => t.kind === 'timing')
+    if (!tasks.length) return
+    const running = tasks.find((t) => t.state === 'running')
+    if (running) {
+      el('timingStatus').textContent = '检测到延迟检测仍在运行，已接上进度'
+      timingWatch(running.taskId)
+    }
+  } catch {
+    // 拿不到任务列表不影响其它功能
+  }
 }
 
 async function doTiming() {
@@ -1628,34 +1664,89 @@ async function doRefresh() {
       el('refreshStatus').textContent = `已跳过 ${skippedCount} 个 SNI 阻断域名`
     }
 
-    if (refreshTimer) clearInterval(refreshTimer)
-    refreshTimer = setInterval(async () => {
-      try {
-        const t = await (await fetch(`${API}/local/tasks/${start.taskId}?_t=${Date.now()}`, { cache: 'no-store' })).json()
-        const pct = t.total ? Math.round((t.done / t.total) * 100) : 0
-        el('refreshFill').style.width = pct + '%'
-        el('refreshText').textContent = `${t.done}/${t.total}（${pct}%）· 失败 ${t.failed} · 当前 ${t.current || '—'}`
-        renderRecent(t.recent)
-
-        if (t.state === 'done' || t.state === 'failed') {
-          clearInterval(refreshTimer); refreshTimer = null
-          btn.disabled = false
-          el('refreshFill').style.width = '100%'
-          el('refreshStatus').textContent = t.state === 'done' ? `完成：${t.message || ''}` : `失败：${t.error || ''}`
-          toast(t.state === 'done' ? '刷新完成' : '刷新失败')
-          // 刷新过程中可能新判定出 SNI 阻断，完成后同步清单
-          loadBlocked()
-          loadCacheInfo()
-        }
-      } catch (e) {
-        clearInterval(refreshTimer); refreshTimer = null
-        btn.disabled = false
-        el('refreshStatus').textContent = '轮询失败：' + e.message
-      }
-    }, 1200)
+    refreshWatch(start.taskId)
   } catch (e) {
     btn.disabled = false
     el('refreshStatus').textContent = '启动失败：' + e.message
+  }
+}
+
+/**
+ * 跟随一个刷新任务的进度。
+ *
+ * 单独抽出来是因为「页面刷新后恢复」也要用它：
+ * 任务本身跑在后端（taskManager），前端只是观看者，
+ * 所以任何时候接上同一个 taskId 都应该看到同样的进度。
+ */
+function refreshWatch(taskId) {
+  if (!taskId) return
+  if (refreshTimer) clearInterval(refreshTimer)
+  const btn = el('btnRefresh')
+  btn.disabled = true
+
+  const tick = async () => {
+    try {
+      const t = await (await fetch(`${API}/local/tasks/${taskId}?_t=${Date.now()}`, { cache: 'no-store' })).json()
+      if (t.error) {
+        clearInterval(refreshTimer); refreshTimer = null
+        btn.disabled = false
+        el('refreshStatus').textContent = '任务不存在或已过期'
+        return
+      }
+      const pct = t.total ? Math.round((t.done / t.total) * 100) : 0
+      el('refreshFill').style.width = pct + '%'
+      el('refreshText').textContent = `${t.done}/${t.total}（${pct}%）· 失败 ${t.failed} · 当前 ${t.current || '—'}`
+      renderRecent(t.recent)
+
+      if (t.state === 'done' || t.state === 'failed') {
+        clearInterval(refreshTimer); refreshTimer = null
+        btn.disabled = false
+        el('refreshFill').style.width = '100%'
+        el('refreshStatus').textContent = t.state === 'done' ? `完成：${t.message || ''}` : `失败：${t.error || ''}`
+        toast(t.state === 'done' ? '刷新完成' : '刷新失败')
+        loadBlocked()
+        loadCacheInfo()
+      }
+    } catch (e) {
+      clearInterval(refreshTimer); refreshTimer = null
+      btn.disabled = false
+      el('refreshStatus').textContent = '轮询失败：' + e.message
+    }
+  }
+  void tick()
+  refreshTimer = setInterval(tick, 1200)
+}
+
+/**
+ * 页面加载时恢复：如果后端还有正在跑（或刚跑完但没看过）的刷新任务，
+ * 直接接上它的进度，而不是显示一个空白的进度条。
+ *
+ * 之前进度只存在前端变量里，一刷新就什么都没了——但任务其实还在后台跑，
+ * 用户看到的「任务消失」是假象。
+ */
+async function refreshResume() {
+  try {
+    const d = await (await fetch(`${API}/local/tasks?_t=${Date.now()}`, { cache: 'no-store' })).json()
+    const tasks = d.tasks || []
+    // 优先接运行中的；没有运行中的就接最近一个已完成的，让结果不至于一片空白
+    const running = tasks.find((t) => t.state === 'running')
+    const latest = running || tasks.find((t) => t.kind === 'refresh')
+    if (!running) {
+      // 已完成的任务不上轮询，只回填一次结果
+      if (latest && latest.state !== 'running') {
+        const pct = latest.total ? Math.round((latest.done / latest.total) * 100) : 0
+        el('refreshFill').style.width = pct + '%'
+        el('refreshText').textContent = `${latest.done}/${latest.total}（${pct}%）· 失败 ${latest.failed}`
+        renderRecent(latest.recent)
+        el('refreshStatus').textContent =
+          latest.state === 'done' ? `上次完成：${latest.message || ''}` : `上次失败：${latest.error || ''}`
+      }
+      return
+    }
+    el('refreshStatus').textContent = '检测到后台任务仍在运行，已接上进度'
+    refreshWatch(running.taskId)
+  } catch {
+    // 拿不到任务列表不影响其它功能
   }
 }
 
@@ -3609,6 +3700,8 @@ loadHosts()
 loadDomains()
 loadBlocked()
 loadFailures()
+refreshResume()
+timingResume()
 loadBlocklist()
 loadCacheInfo()
 loadAdsInfo()

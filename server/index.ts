@@ -1044,6 +1044,110 @@ root.get("/local/compare", async (c) => {
 })
 
 /** 长时间监控：启动后按间隔反复采样，结果进入时序，可查趋势 */
+/**
+ * 批量延迟检测改为后台任务。
+ *
+ * 原来前端逐个域名发 /local/probe，状态全在前端数组里：
+ * 页面一刷新，进度和结果就都没了——但其实那轮检测在浏览器里已经中断，
+ * 用户看到的是"什么都没发生"。
+ *
+ * 现在把整轮检测搬到后端 taskManager：
+ *   - 发起后立即返回 taskId，前端轮询 /local/tasks/:id
+ *   - 刷新页面后接上同一个 taskId 继续看，进度不丢
+ *   - 检测在服务端跑完，不依赖页面是否开着
+ */
+root.post("/local/timing/batch", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as
+    | { domains?: string[]; sni?: boolean; adopt?: boolean }
+    | null
+  const domains = Array.isArray(body?.domains) ? body!.domains.map(String) : []
+  if (!domains.length) return c.json({ ok: false, error: "domains 为空" }, 400)
+
+  const withSni = body?.sni !== false
+  const adopt = body?.adopt === true
+  // 与前端原有限制保持一致：一次最多 60 个
+  const targets = domains.slice(0, 60)
+  const truncated = Math.max(0, domains.length - targets.length)
+
+  const task = taskManager.create("timing", targets.length)
+
+  const run = async () => {
+    const startedAt = Date.now()
+    let index = 0
+    const CONCURRENCY = 3
+    const workers = Array.from({ length: Math.min(CONCURRENCY, targets.length) }, async () => {
+      while (true) {
+        const i = index++
+        if (i >= targets.length) return
+        const domain = targets[i]
+        taskManager.startItem(task.taskId, domain)
+        try {
+          // 延迟检测不写缓存：用户想看的就是「现在」的真实表现
+          const probe = await probeDomain(domain, { checkSni: withSni, useCache: false })
+          const item: TaskItemResult = {
+            domain,
+            ok: probe.bestIp !== null,
+            bestIp: probe.bestIp,
+            bestIpV6: probe.bestIpV4 && probe.bestIpV6 ? probe.bestIpV6 : undefined,
+            v6OnlyBroken: probe.v6OnlyBroken,
+            family: probe.bestIp
+              ? (probe.candidates.find((x) => x.ip === probe.bestIp)?.family ?? "v4")
+              : undefined,
+            latency: probe.latency,
+            tlsOk: probe.tlsOkCount > 0,
+            candidateCount: probe.uniqueIpCount,
+            tlsOkCount: probe.tlsOkCount,
+            tlsMs: probe.tlsMs,
+            error: probe.bestIp ? undefined : (probe.sni?.explanation ?? "没有 TLS 握手成功的 IP"),
+            detail: {
+              providers: probe.providers,
+              candidates: probe.candidates,
+              systemIps: probe.systemIps,
+              upstreamIps: probe.upstreamIps,
+              hostsOverride: probe.hostsOverride,
+              inconsistent: probe.inconsistent,
+              systemDiffers: probe.systemDiffers,
+              totalResolvedEntries: probe.totalResolvedEntries,
+              v4Count: probe.v4Count,
+              v6Count: probe.v6Count,
+              sni: probe.sni,
+            },
+            source: "local",
+          }
+
+          // 可选：判定可用就顺手写入自定义域名（与原前端行为一致）
+          if (adopt && probe.bestIp && probe.sni?.verdict !== "sni-blocked") {
+            try {
+              const r = await addCustomDomain(env as any, domain, probe.bestIp)
+              item.adopted = r ? "added" : "skipped"
+            } catch {
+              item.adopted = "failed"
+            }
+          }
+
+          taskManager.finishItem(task.taskId, item)
+        } catch (err) {
+          taskManager.finishItem(task.taskId, {
+            domain,
+            ok: false,
+            bestIp: null,
+            latency: null,
+            error: `检测异常：${(err as Error).message}`,
+            source: "local",
+          })
+        }
+      }
+    })
+    await Promise.all(workers)
+
+    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1)
+    taskManager.complete(task.taskId, `检测完成，耗时 ${elapsed}s`)
+  }
+
+  void run()
+  return c.json({ ok: true, taskId: task.taskId, total: targets.length, truncated })
+})
+
 root.post("/local/monitor/start", async (c) => {
   const intervalSec = Number(c.req.query("interval") || 300)
   const groupParam = c.req.query("group")

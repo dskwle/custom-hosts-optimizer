@@ -11,7 +11,7 @@ export type TaskState = "pending" | "running" | "done" | "failed" | "cancelled"
 
 export interface TaskProgress {
   taskId: string
-  kind: "refresh" | "monitor"
+  kind: "refresh" | "monitor" | "timing"
   state: TaskState
   total: number
   done: number
@@ -48,6 +48,8 @@ export interface TaskItemResult {
   tlsMs?: number | null
   /** 失败原因汇总，用于在列表上直接说明为什么不可用 */
   error?: string
+  /** 本项目顺带写入自定义域名的结果（仅延迟检测的可选行为） */
+  adopted?: "added" | "updated" | "skipped" | "failed"
   /** 完整探测结果：各 DoH 明细、全部候选、SNI 判定。
    *  批量刷新把每个域名的详情都带回来，前端点开即可看到与单次检测一致的信息 */
   detail?: {
@@ -99,7 +101,7 @@ class TaskManager extends EventEmitter {
   private readonly MAX_POINTS = 2000
   private readonly MAX_TASKS = 50
 
-  create(kind: "refresh" | "monitor", total: number): TaskProgress {
+  create(kind: "refresh" | "monitor" | "timing", total: number): TaskProgress {
     const taskId = `${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const task: TaskProgress = {
       taskId,
