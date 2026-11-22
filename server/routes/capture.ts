@@ -19,6 +19,8 @@ import { CaptureHttpError, CaptureManager } from '../capture/session.ts'
 import type { CaptureFrame } from '../capture/stream.ts'
 import { clearStoredSessions, deleteSession, listStoredSessions } from '../capture/store.ts'
 import { markExisting, type ExistingSets } from '../capture/existing.ts'
+import { detectAd } from '../capture/ad-detect.ts'
+import { getAdsRules, getAdsEnabled } from '../../src/services/ads.ts'
 import { probeDomain } from '../probe.ts'
 import { ALL_DOMAINS } from '../../src/constants.ts'
 import { addCustomDomain, getCustomDomains, removeCustomDomain } from '../../src/services/hosts.ts'
@@ -59,6 +61,28 @@ async function readExistingSets(env: Bindings): Promise<ExistingSets> {
     customAccel,
     blocked,
   }
+}
+
+/**
+ * 读已启用的广告规则，抽成域名集合，供抓包结果做广告识别。
+ * 未启用或还没抓到规则时返回空集合：识别退化为仅靠域名特征，不影响接口可用。
+ */
+async function readAdRuleSet(env: Bindings): Promise<Set<string>> {
+  const out = new Set<string>()
+  try {
+    if (!(await getAdsEnabled(env))) return out
+    const meta = await getAdsRules(env)
+    if (!meta?.content) return out
+    for (const line of meta.content.split('\n')) {
+      const parts = line.trim().split(/\s+/)
+      // hosts 写法是「0.0.0.0 域名」，取最后一列
+      const d = parts[parts.length - 1]?.toLowerCase()
+      if (d && !d.startsWith('#')) out.add(d)
+    }
+  } catch (err) {
+    console.error('[capture] 读取广告规则失败', err)
+  }
+  return out
 }
 
 export interface ApplyResult {
@@ -114,8 +138,20 @@ export function createCaptureRoutes(getEnv: () => Bindings, getCdpUrl: () => str
     if (!hosts) return c.json({ error: 'session not found' }, 404)
     // 已有规则的域名不再默认勾选，并带上归类标签供前端单独列一列
     const marked = markExisting(hosts, await readExistingSets(getEnv()))
+    // 广告识别：规则集合为主线，域名特征作补充，结果只用于"建议屏蔽"
+    const adRules = await readAdRuleSet(getEnv())
+    const withAds = marked.map((h) => {
+      if (h.existing === 'blocked') return h // 已屏蔽的不必再判
+      const v = detectAd({
+        host: h.host,
+        url: undefined, // summary 不带完整 URL，路径特征留给详情页
+        thirdParty: h.thirdParty,
+        knownAds: adRules,
+      })
+      return v.strength ? { ...h, ad: { isAd: v.isAd, strength: v.strength, signals: v.signals } } : h
+    })
     c.header('Cache-Control', 'no-store')
-    return c.json({ sessionId: id, hosts: marked })
+    return c.json({ sessionId: id, hosts: withAds })
   })
 
   routes.post('/:id/stop', async (c) => {

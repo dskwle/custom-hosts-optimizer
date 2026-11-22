@@ -54,6 +54,15 @@ export interface HostSummary {
   suggested: boolean         // 默认是否勾选
   /** 已在内置/自定义/屏蔽清单里；有值时前端默认不勾选并显示归类标签 */
   existing?: ExistingTag
+  /**
+   * 广告/追踪识别结果（v1.2 新增，可选；由路由层读已启用的广告规则后标注）。
+   * isAd=true 才建议屏蔽，其余为"有线索但证据不足"。
+   */
+  ad?: {
+    isAd: boolean
+    strength: 'high' | 'medium' | 'low'
+    signals: string[]
+  }
 }
 
 export interface CaptureEnv {

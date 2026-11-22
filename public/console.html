@@ -561,6 +561,7 @@
             <option value="slow">慢请求（>5s）</option>
             <option value="fail">有失败</option>
             <option value="third">第三方</option>
+            <option value="ad">识别为广告</option>
           </select>
           <select id="capSort">
             <option value="p95" selected>按 p95 耗时</option>
@@ -571,6 +572,7 @@
           <button class="sm" id="btnCapSortDir">降序</button>
           <button class="sm" id="btnCapAll">全选</button>
           <button class="sm" id="btnCapInvert">反选</button>
+          <button class="sm" id="btnCapSelectAds" title="勾选所有识别为广告的域名">选中广告</button>
         </div>
         <div class="cap-table-wrap" id="capTableWrap" style="display:none">
           <table>
@@ -2844,6 +2846,7 @@ function capRebuildView() {
     if (f === 'slow') return capIsSlow(h)
     if (f === 'fail') return (h.failures || 0) > 0
     if (f === 'third') return !!h.thirdParty
+    if (f === 'ad') return !!(h.ad && h.ad.isAd)
     return true
   })
   const dir = cap.sortDesc ? -1 : 1
@@ -2873,6 +2876,42 @@ function capExistingHtml(h) {
   return '<span class="sub">—</span>'
 }
 
+/**
+ * 广告标识。
+ * high 命中已启用规则、medium 靠域名特征，两者都带依据（hover 可见）；
+ * low 只是路径线索，显示成灰字提示，不参与"建议屏蔽"。
+ */
+function capAdHtml(h) {
+  const ad = h.ad
+  if (!ad) return ''
+  const title = (ad.signals || []).join('；')
+  if (ad.isAd) {
+    const cls = ad.strength === 'high' ? 'badge bad' : 'badge'
+    const text = ad.strength === 'high' ? '广告' : '疑似广告'
+    return ` <span class="${cls}" style="font-size:10px" title="${escAttr(title)}">${text}</span>`
+  }
+  if (ad.strength === 'low') {
+    return ` <span class="sub" style="font-size:10px" title="${escAttr(title)}">路径可疑</span>`
+  }
+  return ''
+}
+
+/** 一键勾选所有识别为广告、且可屏蔽的域名 */
+function capSelectAds() {
+  const targets = cap.view.filter(
+    (h) => h.ad && h.ad.isAd && h.verdict !== 'proxy' && h.existing !== 'blocked',
+  )
+  if (!targets.length) {
+    toast('当前筛选结果里没有识别为广告的域名')
+    return
+  }
+  for (const h of targets) cap.selected.add(h.host)
+  cap.selected = new Set(cap.selected)
+  capRenderTable()
+  capSyncActions()
+  toast(`已勾选 ${targets.length} 个广告域名，点「加入屏蔽」生效`)
+}
+
 function capRowHtml(h) {
   // verdict=proxy 表示改 hosts 无效，C 明确要求不给勾选框；其余行（含 ignore/unknown）仍可手选
   const selectable = h.verdict !== 'proxy'
@@ -2899,7 +2938,7 @@ function capRowHtml(h) {
 
   return `<tr>
     <td>${selectable ? `<input type="checkbox" data-check="${escAttr(h.host)}"${checked}>` : ''}</td>
-    <td class="cap-host" title="${escAttr(h.host)}">${escAttr(h.host)}${h.thirdParty ? ' <span class="badge gray" style="font-size:10px">第三方</span>' : ''}</td>
+    <td class="cap-host" title="${escAttr(h.host)}">${escAttr(h.host)}${h.thirdParty ? ' <span class="badge gray" style="font-size:10px">第三方</span>' : ''}${capAdHtml(h)}</td>
     <td class="cap-existing">${capExistingHtml(h)}</td>
     <td class="cap-kinds" title="${escAttr(kinds.join('/'))}">${escAttr(kindText || '—')}</td>
     <td>${status}</td>
@@ -3543,6 +3582,7 @@ el('btnCapVncRetry').addEventListener('click', () => capVncLoad(true))
 el('btnCapReloadSessions').addEventListener('click', () => capLoadSessions(cap.sessionId))
 el('btnCapAccel').addEventListener('click', () => capApply('accel'))
 el('btnCapBlock').addEventListener('click', () => capApply('block'))
+el('btnCapSelectAds').addEventListener('click', capSelectAds)
 el('capFilter').addEventListener('change', () => {
   cap.filter = el('capFilter').value
   capRebuildView()
