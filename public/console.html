@@ -3228,7 +3228,7 @@ async function capPreviewCommit() {
   status.textContent = `正在写入 ${picked.length} 个…`
 
   try {
-    const res = await fetch(`${API}/local/capture/${encodeURIComponent(cap.sessionId)}/apply`, {
+    const res = await fetch(`${API}/local/capture/apply`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ hosts: picked, action: 'accel' }),
