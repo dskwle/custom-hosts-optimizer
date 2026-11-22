@@ -31,9 +31,10 @@ services:
       # 设为 off 可整体关闭鉴权（不建议，控制台能直接改 hosts 配置）
       ADMIN_AUTH: "${ADMIN_AUTH:-on}"
       # ---- 代理观察（走 mihomo 连接数据，覆盖 App/客户端流量）----
-      # mihomo 控制接口。app 用 host 网络，所以直接走 loopback。
-      MIHOMO_API: "${MIHOMO_API:-http://127.0.0.1:9090}"
-      MIHOMO_SECRET: "${MIHOMO_SECRET:-}"
+      # 指向 compose 内置的 mihomo（下面的 proxy 服务），不是宿主上别的代理实例。
+      # 9091 是内置实例的控制端口，刻意避开常见的 9090。
+      MIHOMO_API: "${MIHOMO_API:-http://127.0.0.1:9091}"
+      MIHOMO_SECRET: "${MIHOMO_SECRET:-custom-hosts-local}"
       PROXY_POLL_MS: "${PROXY_POLL_MS:-5000}"
       # 本地 AI 判定服务（llama.cpp + OpenAI 兼容）
       AI_BASE_URL: "${AI_BASE_URL:-http://192.168.6.195:8080}"
@@ -52,6 +53,34 @@ services:
         max-file: "3"
 
   # 每 2 小时触发一次全量刷新（与 IP 缓存 TTL 对齐）
+  # ---------------------------------------------------------------- 代理观察
+  # 承接设备流量的内置 mihomo。
+  #
+  # 为什么内置而不是用宿主上已有的代理：
+  #   1. 控制台要读 /connections，依赖别人实例的端口和 secret 太脆弱；
+  #   2. 往别人的配置里加 rule-provider 会污染其规则；
+  #   3. 自带一个实例，整套系统才是自包含的（compose up 就能用）。
+  #
+  # 出口是 DIRECT：观察流量不需要绕道，多一跳会让测得的耗时失真。
+  # 需要翻墙的场景请用宿主上原有的代理，两者端口不冲突（这里 7891/9091）。
+  proxy:
+    image: ${PROXY_IMAGE:-metacubex/mihomo:latest}
+    container_name: custom-hosts-proxy
+    restart: unless-stopped
+    # 用 host 网络：1) 设备要能连到 7891 2) 访问 app 的 8788 拉规则
+    network_mode: host
+    volumes:
+      # 配置受版本控制，避免"重建容器配置就丢"
+      - ./deploy/mihomo:/root/.config/mihomo
+    # 规则文件要写进挂载目录，宿主机上需要有写权限
+    cap_add:
+      - NET_ADMIN
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
   refresher:
     image: curlimages/curl:8.11.1
     container_name: custom-hosts-refresher

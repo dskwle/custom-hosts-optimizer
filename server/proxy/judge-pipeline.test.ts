@@ -174,10 +174,11 @@ test('pickDeepCandidates 只挑可疑的：已是广告的不查', () => {
 test('deep=false 时不调用 judgeDeep', async () => {
   const ai = fakeAi({})
   let deepCalled = false
-  ;(ai as unknown as { judgeDeep: () => Promise<Map<string, never>> }).judgeDeep = async () => {
-    deepCalled = true
-    return new Map()
-  }
+  ;(ai as unknown as { judgeDeep: (d: string[]) => Promise<Map<string, AiVerdict>> }).judgeDeep =
+    async () => {
+      deepCalled = true
+      return new Map<string, AiVerdict>()
+    }
   await judgeHosts(['unknown.com'], knownAds, ai, { useAi: true, deep: false })
   assert.equal(deepCalled, false)
 })
@@ -185,10 +186,11 @@ test('deep=false 时不调用 judgeDeep', async () => {
 test('deep=true 时会调用 judgeDeep 且只传可疑域名', async () => {
   const ai = fakeAi({ 'maybe.com': { domain: 'maybe.com', category: 'normal', confidence: 0.9 } })
   const asked: string[] = []
-  ;(ai as unknown as { judgeDeep: (d: string[]) => Promise<Map<string, never>> }).judgeDeep = async (d) => {
-    asked.push(...d)
-    return new Map()
-  }
+  ;(ai as unknown as { judgeDeep: (d: string[]) => Promise<Map<string, AiVerdict>> }).judgeDeep =
+    async (d: string[]) => {
+      asked.push(...d)
+      return new Map<string, AiVerdict>()
+    }
   await judgeHosts(['ad.doubleclick.net', 'maybe.com', 'unknown.com'], knownAds, ai, {
     useAi: true,
     deep: true,

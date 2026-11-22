@@ -1,0 +1,95 @@
+# ============================================================
+# 内置 mihomo —— 给「代理观察」用的流量网关
+# ============================================================
+#
+# 定位与普通科学上网配置不同：
+#   这台 mihomo 的作用是**承接设备流量并记录连接**，让控制台能看清
+#   App / 客户端访问了哪些域名，从而识别广告与追踪。
+#
+#   - 出口默认 DIRECT（不负责翻墙）：观察流量不需要绕道，
+#     多一跳只会让测得的耗时失真，也和"判断该不该加速"的目标冲突。
+#   - 不需要订阅、不需要机场，开箱即用。
+#   - 唯一的规则来源是 custom-hosts 控制台输出的屏蔽清单。
+#
+# 端口刻意避开宿主上常见的 7890/9090，防止和已有代理冲突：
+#   混合端口 7891，控制接口 9091。
+#
+# 想让它也能科学上网？把下面 proxies / proxy-groups 换成你的订阅即可，
+# 控制台只读 /connections，不关心出口怎么走。
+
+# ---------------- 基础 ----------------
+mixed-port: 7891
+socks-port: 7892
+# 要接局域网里的手机 / 电视，必须开
+allow-lan: true
+bind-address: '*'
+# 控制接口只绑本机：app 用 host 网络能访问，局域网里的其它机器碰不到，
+# 避免控制面（可改配置、可切节点）暴露出去。
+external-controller: 127.0.0.1:9091
+# 控制接口密码。本地服务，保持简单但仍设一个，防止本机其它进程误用。
+secret: "custom-hosts-local"
+mode: rule
+log-level: warning
+ipv6: true
+unified-delay: true
+
+# 记住面板里手动选择的策略组（这里是单机配置，留着不影响）
+profile:
+  store-selected: true
+
+# ---------------- DNS ----------------
+# 走系统 DNS 即可。开 fake-ip 会让 /connections 里的 host 变成假 IP，
+# 反而看不清真实域名——这正是本服务最需要的字段。
+dns:
+  enable: false
+
+# ---------------- 策略组 ----------------
+# 即使全部走 DIRECT，也必须有至少一个出站策略组：
+# 实测没有 proxies/proxy-groups 时，mihomo 的 /connections 会一直返回 null，
+# 因为直连走了不经连接管理器的快捷路径，控制台就看不到任何连接。
+proxy-groups:
+  - name: "直连"
+    type: select
+    proxies:
+      - DIRECT
+
+# ---------------- 规则来源 ----------------
+# custom-hosts 控制台输出的屏蔽清单。
+# block.yaml 与 ads.yaml 分开：前者是「内置 + 手动屏蔽」，后者是上游广告规则，
+# 便于单独开关。两个都作为 REJECT 来源。
+rule-providers:
+  custom-block:
+    type: http
+    behavior: domain
+    url: "http://127.0.0.1:8788/clash/block.yaml"
+    path: ./ruleset/custom-block.yaml
+    interval: 3600
+  custom-ads:
+    type: http
+    behavior: domain
+    url: "http://127.0.0.1:8788/clash/ads.yaml"
+    path: ./ruleset/custom-ads.yaml
+    interval: 7200
+
+# ---------------- 规则 ----------------
+rules:
+  # 内网与本机直连，不参与代理（否则连控制台自己都会被绕）
+  - DOMAIN-SUFFIX,local,DIRECT
+  - DOMAIN,localhost,DIRECT
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+  - IP-CIDR6,::1/128,DIRECT,no-resolve
+  - IP-CIDR6,fc00::/7,DIRECT,no-resolve
+  - IP-CIDR6,fe80::/10,DIRECT,no-resolve
+
+  # 屏蔽必须放在最后一条 MATCH 之前。
+  # 这里全是 REJECT/DIRECT，没有 GEOSITE,cn 之类的兜底，
+  # 所以位置只要在 MATCH 前面就够，不会出现"国内域名先命中直连"导致屏蔽失效的问题。
+  - RULE-SET,custom-block,REJECT
+  - RULE-SET,custom-ads,REJECT
+
+  # 其余全部走策略组（内部只有 DIRECT）。走策略组而不是直接写 DIRECT，
+  # 是为了让连接经过连接管理器，控制台才看得到。
+  - MATCH,直连
