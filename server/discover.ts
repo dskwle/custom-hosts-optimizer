@@ -125,6 +125,10 @@ export function extractHosts(requests: readonly { url?: string; host?: string }[
  * 这是收益判断的基准：只有系统解析不可用或明显更慢，加速才有意义。
  * 用 resolveAndMeasure 而不是 probeDomain，因为它会走系统 DNS（不传 ip），
  * 拿到的就是用户此刻真实的访问体验。
+ *
+ * 返回的 bestMs 是**完整耗时**（dns+tcp+tls+ttfb），
+ * 与下面 measureCandidate 的量纲必须一致，否则算出来的「收益」是假的：
+ * probeDomain 的 latency 只是 TCP 握手，拿它跟完整耗时相减会凭空多出几百毫秒。
  */
 async function measureSystem(domain: string): Promise<{ ips: string[]; bestMs: number | null }> {
   try {
@@ -133,6 +137,26 @@ async function measureSystem(domain: string): Promise<{ ips: string[]; bestMs: n
     return { ips, bestMs: r.ok && r.totalMs !== null ? r.totalMs : null }
   } catch {
     return { ips: [], bestMs: null }
+  }
+}
+
+/**
+ * 测候选最优 IP 的完整耗时，与 measureSystem 同量纲。
+ *
+ * 为什么不用 probeDomain 里现成的 latency：那是 TCP 握手耗时（通常 10-50ms），
+ * 跟系统侧「DNS+TCP+TLS+TTFB」（通常 100-400ms）不是一回事。
+ * 第一版就是因为混用量纲，把 baidu 这类本来正常的域名全判成了「快 380ms（97%）」。
+ */
+async function measureCandidate(
+  domain: string,
+  ip: string | null,
+): Promise<{ ms: number | null; ok: boolean }> {
+  if (!ip) return { ms: null, ok: false }
+  try {
+    const r = await resolveAndMeasure(domain, ip, { skipDns: true })
+    return { ms: r.ok && r.totalMs !== null ? r.totalMs : null, ok: r.ok }
+  } catch {
+    return { ms: null, ok: false }
   }
 }
 
@@ -194,12 +218,13 @@ export async function analyzeSession(
           measureSystem(domain),
           probeDomain(domain, { checkSni: true, useCache: false, qualityRounds: 2 }),
         ])
-        const best = probe.candidates.find((c) => c.ip === probe.bestIp)
+        // 候选侧必须重新测「完整耗时」，不能用 probe 的 TCP 延迟（量纲不同）
+        const cand = await measureCandidate(domain, probe.bestIp)
         const judge = judgeCandidate({
           domain,
           systemIps: sys.ips,
           systemBestMs: sys.bestMs,
-          bestIpMs: best?.latency ?? null,
+          bestIpMs: cand.ms,
           inconsistent: probe.inconsistent,
           systemDiffers: probe.systemDiffers,
           alreadyAccelerated: accelerated.has(domain),
@@ -216,7 +241,7 @@ export async function analyzeSession(
           detail: {
             systemIps: sys.ips,
             systemBestMs: sys.bestMs,
-            bestIpMs: best?.latency ?? null,
+            bestIpMs: cand.ms,
             candidateCount: probe.uniqueIpCount,
             tlsOkCount: probe.tlsOkCount,
             inconsistent: probe.inconsistent,
