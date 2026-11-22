@@ -29,6 +29,7 @@ import { rankTimingDetails } from "./rank.js"
 import { clearFailure, recordFailure, listFailures, clearAllFailures } from "./failures.js"
 import { getBlockedDomains } from "./blocked.js"
 import { pickPaused } from "./pause-filter.js"
+import { analyzeSession, loadReport, MAX_DOMAINS_PER_RUN } from "./discover.js"
 import {
   getPaused,
   getPausedAccel,
@@ -416,6 +417,35 @@ root.post("/local/refresh", async (c) => {
 })
 
 /* ---------- SNI 阻断域名排除清单 ---------- */
+
+/* ---------- 档位 A：待确认加速（只发现，不自动写） ---------- */
+
+/**
+ * 分析一个抓包会话，产出「值得加速」的建议。
+ *
+ * 只读会话 + 探测，绝不写 hosts / 自定义域名：
+ * 采纳由用户在界面上显式点，走已有的 /local/custom-add。
+ */
+root.post("/local/discover/:sessionId", async (c) => {
+  const id = c.req.param("sessionId")
+  const maxRaw = Number(c.req.query("max") || MAX_DOMAINS_PER_RUN)
+  const maxDomains = Number.isFinite(maxRaw) ? Math.min(Math.max(maxRaw, 1), 100) : MAX_DOMAINS_PER_RUN
+  try {
+    const report = await analyzeSession(env as any, id, { maxDomains })
+    if (!report) return c.json({ ok: false, error: "会话不存在" }, 404)
+    return c.json({ ok: true, ...report })
+  } catch (err) {
+    console.error("[discover] 分析失败", err)
+    return c.json({ ok: false, error: err instanceof Error ? err.message : "分析失败" }, 500)
+  }
+})
+
+/** 读取已有的分析结果（不重新探测） */
+root.get("/local/discover/:sessionId", async (c) => {
+  const report = await loadReport(c.req.param("sessionId"))
+  if (!report) return c.json({ ok: false, error: "尚未分析过该会话" }, 404)
+  return c.json({ ok: true, ...report })
+})
 
 /**
  * 失败计数面板：还没判死、正在后台重试的域名。

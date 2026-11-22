@@ -612,6 +612,27 @@
     </div>
 
     <div class="card">
+      <h2>
+        待确认加速 <span class="badge gray" id="discCount">0</span>
+        <span class="sub" style="font-weight:400;font-size:12px">只给建议，不会自动写入</span>
+      </h2>
+      <p class="hint">
+        分析当前/历史抓包会话里真实访问过的域名，逐个探测后给出加速建议。
+        <strong>不会自动改 hosts</strong>——勾选后点「采纳」才写入，你随时可以否决。
+        <br>
+        判定逻辑：先看有没有 IP 能完成 TLS 握手（没有就一律不建议，写了反而打不开）；
+        再看加速是否真的更快（不足 80ms 不建议，CDN 的多节点调度不该被固定成单 IP）。
+      </p>
+      <div class="row" style="margin-bottom:10px">
+        <button class="primary" id="btnDiscRun">分析当前会话</button>
+        <button id="btnDiscReload">读取上次结果</button>
+        <button id="btnDiscAdopt" disabled>采纳选中(0)</button>
+        <span id="discStatus" class="sub"></span>
+      </div>
+      <div id="discList"><p class="empty">尚未分析</p></div>
+    </div>
+
+    <div class="card">
       <h2>会话历史 <span class="badge gray" id="capHistCount">0</span></h2>
       <p class="hint">
         抓过的每一轮都留在这里，最多保留 20 条。回看是只读的，不影响当前抓包。
@@ -2967,6 +2988,175 @@ async function capApply(action) {
   }
 }
 
+/* ---------- 档位 A：待确认加速 ---------- */
+// 只读建议，绝不自动写入。采纳走已有的 /local/custom-add。
+let discReport = null
+let discPicked = new Set()
+
+const DISC_VERDICT = {
+  recommend: { cls: 'badge good', text: '建议加速' },
+  noop: { cls: 'badge gray', text: '无需处理' },
+  unusable: { cls: 'badge bad', text: '无法加速' },
+  handled: { cls: 'badge gray', text: '已处理' },
+  unclear: { cls: 'badge gray', text: '不确定' },
+}
+
+function discSyncBtn() {
+  const n = [...discPicked].filter((d) => {
+    const it = (discReport?.items || []).find((x) => x.domain === d)
+    return it && it.verdict === 'recommend' && it.suggestedIp
+  }).length
+  const btn = el('btnDiscAdopt')
+  btn.textContent = `采纳选中(${n})`
+  btn.disabled = n === 0
+}
+
+function renderDiscover() {
+  if (!discReport) {
+    el('discList').innerHTML = '<p class="empty">尚未分析</p>'
+    el('discCount').textContent = '0'
+    discSyncBtn()
+    return
+  }
+  const r = discReport
+  const items = r.items || []
+  el('discCount').textContent = String(r.counts?.recommend || 0)
+
+  const meta = `会话 ${escAttr(r.sessionUrl || '')} · 共 ${r.totalHosts} 个域名` +
+    (r.skippedHandled ? `，${r.skippedHandled} 个已处理` : '') +
+    (r.skippedByLimit ? `，${r.skippedByLimit} 个超出单轮上限未分析` : '') +
+    ` · 分析于 ${new Date(r.createdAt).toLocaleString('zh-CN', { hour12: false })}`
+
+  if (!items.length) {
+    el('discList').innerHTML = `<p class="sub">${meta}</p><p class="empty">没有可分析的域名</p>`
+    discSyncBtn()
+    return
+  }
+
+  const rows = items.map((it) => {
+    const v = DISC_VERDICT[it.verdict] || DISC_VERDICT.unclear
+    const canPick = it.verdict === 'recommend' && !!it.suggestedIp
+    const checked = discPicked.has(it.domain) ? ' checked' : ''
+    const checkbox = canPick
+      ? `<input type="checkbox" data-disc-pick="${escAttr(it.domain)}"${checked}>`
+      : ''
+    const sysCell = it.detail.systemBestMs != null
+      ? `${it.detail.systemBestMs}ms`
+      : '<span class="bad">不通</span>'
+    const bestCell = it.detail.bestIpMs != null
+      ? `${it.detail.bestIpMs}ms${it.gainMs ? ` <span class="good">↑${it.gainMs}ms</span>` : ''}`
+      : '—'
+    return `<tr>
+      <td>${checkbox}</td>
+      <td><code>${escAttr(it.domain)}</code></td>
+      <td><span class="${v.cls}">${v.text}</span></td>
+      <td class="num">${sysCell}</td>
+      <td class="num">${bestCell}</td>
+      <td class="sub" style="max-width:340px">${escAttr(it.reason)}</td>
+    </tr>`
+  }).join('')
+
+  el('discList').innerHTML = `<p class="sub" style="margin-bottom:8px">${meta}</p>
+    <table>
+      <thead><tr><th style="width:28px"></th><th>域名</th><th>结论</th><th>当前解析</th><th>候选最优</th><th>依据</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`
+
+  el('discList').querySelectorAll('input[data-disc-pick]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const d = cb.dataset.discPick
+      if (cb.checked) discPicked.add(d)
+      else discPicked.delete(d)
+      discSyncBtn()
+    })
+  })
+  discSyncBtn()
+}
+
+async function discRun() {
+  if (!cap.sessionId) {
+    el('discStatus').textContent = '先开始一次抓包，或从会话历史里选一个'
+    return
+  }
+  const btn = el('btnDiscRun')
+  btn.disabled = true
+  el('discStatus').textContent = '正在探测，域名多时需要一两分钟…'
+  try {
+    const res = await fetch(`${API}/local/discover/${encodeURIComponent(cap.sessionId)}`, { method: 'POST' })
+    const d = await res.json()
+    if (!res.ok || d.ok === false) {
+      el('discStatus').textContent = d.error || `HTTP ${res.status}`
+      return
+    }
+    discReport = d
+    discPicked = new Set()
+    renderDiscover()
+    el('discStatus').textContent = `完成：${d.counts?.recommend || 0} 个建议加速`
+  } catch (e) {
+    el('discStatus').textContent = `分析失败：${e.message}`
+  } finally {
+    btn.disabled = false
+  }
+}
+
+async function discReload() {
+  if (!cap.sessionId) {
+    el('discStatus').textContent = '先选择一个会话'
+    return
+  }
+  try {
+    const res = await fetch(`${API}/local/discover/${encodeURIComponent(cap.sessionId)}`)
+    if (!res.ok) {
+      el('discStatus').textContent = '该会话还没分析过'
+      return
+    }
+    discReport = await res.json()
+    discPicked = new Set()
+    renderDiscover()
+    el('discStatus').textContent = '已读取上次结果'
+  } catch (e) {
+    el('discStatus').textContent = `读取失败：${e.message}`
+  }
+}
+
+/** 采纳：把选中的建议写进自定义域名（复用已有接口，不新增写路径） */
+async function discAdopt() {
+  const picked = [...discPicked].filter((d) => {
+    const it = (discReport?.items || []).find((x) => x.domain === d)
+    return it && it.verdict === 'recommend' && it.suggestedIp
+  })
+  if (!picked.length) return
+  if (!confirm(`将把 ${picked.length} 个域名写入自定义加速。\n\n写入后客户端会直连这些建议 IP；若发现变慢可在「自定义域名」里删除。继续？`)) return
+
+  const btn = el('btnDiscAdopt')
+  btn.disabled = true
+  el('discStatus').textContent = `正在写入 ${picked.length} 个…`
+  try {
+    const res = await fetch(`${API}/local/custom-add`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ domains: picked }),
+    })
+    const d = await res.json()
+    if (!res.ok) {
+      el('discStatus').textContent = d.error || `HTTP ${res.status}`
+      return
+    }
+    const okN = (d.added || []).length + (d.updated || []).length
+    el('discStatus').textContent = `已采纳 ${okN} 个` + ((d.failed || []).length ? `，${d.failed.length} 个失败` : '')
+    toast(`已采纳 ${okN} 个域名`)
+    discPicked = new Set()
+    // 采纳后重新判定，让「已处理」状态立刻反映出来
+    await discRun()
+    if (typeof loadDomains === 'function') loadDomains()
+    if (typeof loadHosts === 'function') loadHosts()
+  } catch (e) {
+    el('discStatus').textContent = `采纳失败：${e.message}`
+  } finally {
+    btn.disabled = false
+  }
+}
+
 /* ---------- 会话历史 ---------- */
 
 /** 会话状态 → 徽标 */
@@ -3326,6 +3516,9 @@ el('capHistAll').addEventListener('change', (e) => {
 el('btnCapHistDel').addEventListener('click', capDeletePicked)
 el('btnCapHistClear').addEventListener('click', capDeleteAll)
 el('btnCapReloadSessions').addEventListener('click', () => capLoadSessions())
+el('btnDiscRun').addEventListener('click', discRun)
+el('btnDiscReload').addEventListener('click', discReload)
+el('btnDiscAdopt').addEventListener('click', discAdopt)
 el('btnCapBackLive').addEventListener('click', capBackToLive)
 document.querySelectorAll('.cap-rule-row [data-copy]').forEach((b) => {
   b.addEventListener('click', () => capRuleCopy(b.dataset.copy, b.dataset.name))
