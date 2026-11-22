@@ -357,6 +357,35 @@ export const SITE_GROUPS: SiteGroup[] = [
     ],
   },
   {
+    /**
+     * 国外社交媒体 / 视频站。
+     *
+     * 只收实测「有 IP 能完成 TLS 握手」的域名。
+     * 主体站点（youtube / facebook / instagram / reddit / x.com / tiktok /
+     * discord / telegram / twitch / vimeo / pinterest / tumblr / medium）
+     * 实测全部 tcp-blocked——TCP 443 就握不上手，属于 IP 层封锁，
+     * 写进 hosts 不能加速，反而会让刷新每轮白等超时，所以刻意不收。
+     * 这几家需要走代理，对应 /clash/proxy.yaml 的用途。
+     *
+     * 能收的是它们的静态资源 CDN，这类通常有国内可达节点。
+     */
+    id: "social",
+    name: "国外社媒 / 视频",
+    description: "LinkedIn、YouTube 头像 CDN、Unsplash 图库（仅静态资源，主体站点需代理）",
+    domains: [
+      // LinkedIn：实测整站可达
+      "www.linkedin.com",
+      "linkedin.com",
+      "static.licdn.com",
+      "media.licdn.com",
+      "static-exp1.licdn.com",
+      // YouTube 头像/封面 CDN：yt4 有部分可用节点，yt3 实测全不通故不收
+      "yt4.ggpht.com",
+      // 图片素材站
+      "images.unsplash.com",
+    ],
+  },
+  {
     id: "anime",
     name: "动漫影视",
     description: "番剧站、影视数据库、追番记录、资源站",
