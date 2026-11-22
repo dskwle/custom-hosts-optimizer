@@ -2888,7 +2888,12 @@ function capAdHtml(h) {
   if (ad.isAd) {
     const cls = ad.strength === 'high' ? 'badge bad' : 'badge'
     const text = ad.strength === 'high' ? '广告' : '疑似广告'
-    return ` <span class="${cls}" style="font-size:10px" title="${escAttr(title)}">${text}</span>`
+    // 广告却正在被加速：这是明显的配置错误（追踪脚本被塞进 hosts 优选），
+    // 单独标出来，否则用户只会看到"广告"和"手动加速"两个矛盾标签
+    const conflict = h.existing === 'custom-accel'
+      ? ` <span class="badge bad" style="font-size:10px" title="该域名当前在自定义加速列表里，建议改加到屏蔽">正被加速</span>`
+      : ''
+    return ` <span class="${cls}" style="font-size:10px" title="${escAttr(title)}">${text}</span>${conflict}`
   }
   if (ad.strength === 'low') {
     return ` <span class="sub" style="font-size:10px" title="${escAttr(title)}">路径可疑</span>`

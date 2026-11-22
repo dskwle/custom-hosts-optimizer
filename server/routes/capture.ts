@@ -140,8 +140,9 @@ export function createCaptureRoutes(getEnv: () => Bindings, getCdpUrl: () => str
     const marked = markExisting(hosts, await readExistingSets(getEnv()))
     // 广告识别：规则集合为主线，域名特征作补充，结果只用于"建议屏蔽"
     const adRules = await readAdRuleSet(getEnv())
+    // 已屏蔽的域名同样要判：结果显示"广告"能说明当初为什么屏蔽它，
+    // 否则用户只看到一行「已屏蔽」，无从复核这个决定对不对。
     const withAds = marked.map((h) => {
-      if (h.existing === 'blocked') return h // 已屏蔽的不必再判
       const v = detectAd({
         host: h.host,
         url: undefined, // summary 不带完整 URL，路径特征留给详情页

@@ -46,6 +46,46 @@ const AD_WORDS = [
   'sharethrough',
 ]
 
+/**
+ * 明确的广告 / 追踪服务商域名（后缀匹配）。
+ *
+ * 为什么需要这份内置表：AWAvenue 那套规则以国内广告为主，
+ * 实测 google-analytics / doubleclick 有收录，但 googletagmanager、
+ * clarity.ms、scorecardresearch 都缺——而它们恰恰是最常见的追踪脚本。
+ * 只靠清单会大量漏判。
+ *
+ * 用精确后缀而不是 includes 关键词，是为了避免误伤：
+ * `segment` 会撞上 segmentfault.com，`clarity` 也可能撞上同名品牌。
+ */
+const TRACKER_VENDORS = [
+  'googletagmanager.com',
+  'googletagservices.com',
+  'google-analytics.com',
+  'googleadservices.com',
+  'googlesyndication.com',
+  'doubleclick.net',
+  'clarity.ms',
+  'hotjar.com',
+  'hotjar.io',
+  'mixpanel.com',
+  'amplitude.com',
+  'segment.io',
+  'segment.com',
+  'scorecardresearch.com',
+  'quantserve.com',
+  'comscore.com',
+  'connect.facebook.net',
+  'facebook.net',
+  'bat.bing.com',
+  'clarity.microsoft.com',
+  'ads.linkedin.com',
+  'snap.licdn.com',
+  'ads.tiktok.com',
+  'analytics.tiktok.com',
+  'static.ads-twitter.com',
+  'analytics.twitter.com',
+]
+
 /** 追踪/分析类词：单独出现不够，需配合第三方身份 */
 const TRACK_WORDS = [
   'analytics',
@@ -127,6 +167,18 @@ export function detectAd(input: AdDetectInput): AdVerdict {
   const known = hitKnownAd(host, input.knownAds)
   if (known) {
     signals.push(`命中已启用的广告规则（${known}）`)
+    return { isAd: true, strength: 'high', signals }
+  }
+
+  // ---- 内置服务商表兜底：清单更新滞后，常见追踪脚本常被漏掉 ----
+  const vendor = TRACKER_VENDORS.find((v) => hostMatchesSuffix(host, v))
+  if (vendor) {
+    const isAdNetwork = /doubleclick|googlesyndication|googleadservices|\.ads\.|adserver/.test(vendor)
+    signals.push(
+      isAdNetwork
+        ? `属于已知广告网络（${vendor}）`
+        : `属于已知追踪/分析服务商（${vendor}）`,
+    )
     return { isAd: true, strength: 'high', signals }
   }
 

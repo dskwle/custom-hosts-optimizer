@@ -29,11 +29,11 @@ test('命中已启用广告清单 → high，建议屏蔽', () => {
   assert.match(r.signals[0], /广告规则/)
 })
 
-test('清单里没有但域名带广告服务商标识 → medium', () => {
+test('清单没收录但属于已知广告网络 → high（内置表兜底）', () => {
   const r = detectAd({ host: 'securepubads.g.doubleclick.net', thirdParty: true })
   assert.equal(r.isAd, true)
-  assert.equal(r.strength, 'medium')
-  assert.match(r.signals[0], /广告服务商/)
+  assert.equal(r.strength, 'high')
+  assert.match(r.signals[0], /广告网络/)
 })
 
 test('ads. 子域前缀 → medium，即使是一方也判', () => {
@@ -109,4 +109,40 @@ test('signals 始终可读（中文）', () => {
     assert.ok(r.signals.length > 0, `${h} 应有依据`)
     assert.match(r.signals[0], /[\u4e00-\u9fa5]/, `${h} 的依据应是中文`)
   }
+})
+
+test('内置服务商表：GTM / Clarity / Scorecard 都能识别', () => {
+  // 这几个在 AWAvenue 清单里没有收录，必须靠内置表
+  for (const h of [
+    'www.googletagmanager.com',
+    'scripts.clarity.ms',
+    'q.clarity.ms',
+    'sb.scorecardresearch.com',
+    'connect.facebook.net',
+    'bat.bing.com',
+  ]) {
+    const r = detectAd({ host: h, thirdParty: true })
+    assert.equal(r.isAd, true, `${h} 应识别为追踪`)
+    assert.equal(r.strength, 'high')
+  }
+})
+
+test('广告网络与追踪服务的措辞要区分', () => {
+  const ad = detectAd({ host: 'pagead2.googlesyndication.com', thirdParty: true })
+  assert.match(ad.signals[0], /广告网络/)
+  const track = detectAd({ host: 'www.googletagmanager.com', thirdParty: true })
+  assert.match(track.signals[0], /追踪/)
+})
+
+test('服务商表用后缀匹配，不误伤相似域名', () => {
+  // segmentfault 是技术社区，不是 segment.io
+  const r = detectAd({ host: 'segmentfault.com', thirdParty: true })
+  assert.equal(r.isAd, false)
+  const r2 = detectAd({ host: 'notgoogletagmanager.com', thirdParty: true })
+  assert.equal(r2.isAd, false)
+})
+
+test('Cloudflare 统计不判（轻量、站点主动加，拦了没意义）', () => {
+  const r = detectAd({ host: 'static.cloudflareinsights.com', thirdParty: true })
+  assert.equal(r.isAd, false)
 })
