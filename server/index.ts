@@ -568,10 +568,9 @@ root.post("/local/adopt", async (c) => {
   for (const it of items) {
     const domain = it.domain.trim().toLowerCase()
     const ip = typeof it.ip === "string" ? it.ip.trim() : undefined
-    if (builtinSet.has(domain)) {
-      skipped.push({ domain, reason: "内置加速" })
-      continue
-    }
+    // 内置域名允许覆盖：自定义优先级最高。
+    // 只跳过"已在内置屏蔽里"的——那个是真冲突，加了也不会生效。
+    const overridesBuiltin = builtinSet.has(domain)
     if (customSet.has(domain)) {
       skipped.push({ domain, reason: "已在自定义域名" })
       continue
@@ -641,15 +640,31 @@ root.delete("/local/blocklist/:domain", async (c) => {
  * 这里复用本地探测（AliDNS + DNSPod + 真实 TLS 握手），拿到的就是实测最优 IP。
  */
 root.post("/local/custom-add", async (c) => {
-  const body = (await c.req.json().catch(() => null)) as { domains?: string[] } | null
+  const body = (await c.req.json().catch(() => null)) as
+    | { domains?: string[]; groups?: string[] }
+    | null
   const raw = Array.isArray(body?.domains) ? body!.domains : []
   if (!raw.length) return c.json({ ok: false, error: "domains 为空" }, 400)
+
+  // 分组归属：未传则"全部分组"。只保留合法 id，避免写入脏数据。
+  const validGroupIds = new Set(SITE_GROUPS.map((g: { id: string }) => g.id))
+  const groups = Array.isArray(body?.groups)
+    ? body!.groups
+        .map((g) => String(g).trim().toLowerCase())
+        .filter((g) => g === "all" || validGroupIds.has(g))
+    : []
 
   const builtinSet = new Set(ALL_DOMAINS.map((d: string) => d.toLowerCase()))
   const customSet = new Set((await getCustomDomains(env as any)).map((d) => d.domain.toLowerCase()))
   const blockedSet = new Set((await getBlocklist(env as any)).map((b) => b.domain.toLowerCase()))
 
-  const added: Array<{ domain: string; ip: string; latency: number | null }> = []
+  const added: Array<{
+    domain: string
+    ip: string
+    latency: number | null
+    /** 该域名原本在内置分组里，本次设置覆盖了它的地址 */
+    overridesBuiltin?: boolean
+  }> = []
   const skipped: Array<{ domain: string; reason: string }> = []
   const failed: Array<{ domain: string; error: string }> = []
 
@@ -659,10 +674,9 @@ root.post("/local/custom-add", async (c) => {
       failed.push({ domain: String(item).trim(), error: "不是合法域名" })
       continue
     }
-    if (builtinSet.has(domain)) {
-      skipped.push({ domain, reason: "内置加速" })
-      continue
-    }
+    // 内置域名允许覆盖：自定义优先级最高。
+    // 若原本在内置分组里，覆盖后仍会出现在该分组（除非用户另行指定分组）。
+    const overridesBuiltin = builtinSet.has(domain)
     if (customSet.has(domain)) {
       skipped.push({ domain, reason: "已在自定义域名" })
       continue
@@ -681,19 +695,30 @@ root.post("/local/custom-add", async (c) => {
         failed.push({ domain, error: "探测不到可用 IP" })
         continue
       }
-      const r = await addCustomDomain(env as any, domain, probe.bestIp)
+      const r = await addCustomDomain(
+        env as any,
+        domain,
+        probe.bestIp,
+        groups.length ? groups : undefined,
+      )
       if (!r) {
         failed.push({ domain, error: "写入失败" })
         continue
       }
-      added.push({ domain, ip: probe.bestIp, latency: probe.latency })
+      added.push({
+        domain,
+        ip: probe.bestIp,
+        latency: probe.latency,
+        // 让前端能提示"这个域名原本在某个内置分组里，现在被你的设置覆盖了"
+        overridesBuiltin,
+      })
       customSet.add(domain)
     } catch (e) {
       failed.push({ domain, error: e instanceof Error ? e.message : String(e) })
     }
   }
 
-  return c.json({ ok: true, added, skipped, failed })
+  return c.json({ ok: true, added, skipped, failed, groups: groups.length ? groups : null })
 })
 
 /**

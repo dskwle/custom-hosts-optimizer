@@ -609,13 +609,59 @@ export interface CustomDomain {
   resolveMethod?: string
   isActive?: boolean
   isUpdate?: boolean  // 新增：标识是否为更新操作
+
+  /**
+   * 归属分组（站点组 id 列表）。
+   *
+   * 语义：
+   *   - 省略 / 空数组 / 含 "all" → 出现在**所有分组**（默认，向后兼容旧数据）
+   *   - 指定 id 列表 → 只出现在这些分组里
+   *
+   * 为什么自定义域名的优先级最高：用户手填 IP 说明他要的是"就是这个地址"，
+   * 任何内置优选结果都不该覆盖它。分组只决定它出现在哪些分类下，
+   * 不参与"谁是最终 IP"的竞争。
+   */
+  groups?: string[]
+}
+
+/** 分组的特殊值：表示全部分组 */
+export const GROUP_ALL = "all"
+
+/**
+ * 解析自定义域名的分组归属。
+ *
+ * @returns 生效的分组 id 集合；null 表示"全部分组"
+ */
+export function resolveCustomGroups(
+  groups: string[] | undefined | null,
+  validIds: ReadonlySet<string>,
+): Set<string> | null {
+  if (!groups || groups.length === 0) return null
+  const cleaned = groups
+    .map((g) => String(g).trim().toLowerCase())
+    .filter(Boolean)
+  if (cleaned.length === 0) return null
+  // 只要包含 all，就视为全部分组
+  if (cleaned.includes(GROUP_ALL)) return null
+  const picked = cleaned.filter((g) => validIds.has(g))
+  // 全是非法 id 时按全部分组处理：宁可多显示，也不要让条目凭空消失
+  return picked.length ? new Set(picked) : null
+}
+
+/** 自定义域名是否应归入某个分组（null=全部分组） */
+export function customBelongsTo(
+  resolved: Set<string> | null,
+  groupId: string,
+): boolean {
+  return resolved === null || resolved.has(groupId)
 }
 
 // 添加自定义域名
 export async function addCustomDomain(
   env: Bindings,
   domain: string,
-  ip?: string
+  ip?: string,
+  groups?: string[]
 ): Promise<CustomDomain | null> {
   try {
     console.log(`Adding custom domain: ${domain}`)
@@ -653,6 +699,8 @@ export async function addCustomDomain(
       resolveMethod,
       isActive: true
     }
+    // 只在明确指定时才写 groups，避免给旧客户端凭空塞字段
+    if (groups && groups.length) customDomain.groups = groups
 
     // 获取现有的自定义域名列表
     const existing = await env.custom_hosts.get("custom_domains", { type: "json" }) as CustomDomain[] || []
@@ -662,6 +710,11 @@ export async function addCustomDomain(
     let isUpdate = false
     
     if (existingIndex >= 0) {
+      // 没传 groups 时保留原有归属，否则"改个 IP"会把分组设置悄悄清掉
+      if (!groups || !groups.length) {
+        const prev = existing[existingIndex].groups
+        if (prev) customDomain.groups = prev
+      }
       existing[existingIndex] = customDomain
       isUpdate = true
       console.log(`Updated existing custom domain: ${domain}`)

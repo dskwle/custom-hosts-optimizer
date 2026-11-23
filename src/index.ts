@@ -12,9 +12,12 @@ import {
   getCustomDomains,
   addCustomDomain,
   removeCustomDomain,
+  touchCustomChanged,
   type HostEntry,
+  type CustomDomain,
 } from "./services/hosts"
 import { SITE_GROUPS, resolveGroupDomains } from "./constants"
+import { mergeCustomWithBuiltin } from "./merge"
 import { getAdsEnabled, getAdsRules } from "./services/ads"
 import { getBlocklist, getBuiltinBlocklist } from "./services/blocklist"
 import { getPausedAccel, getPausedShield } from "../server/paused.ts"
@@ -60,13 +63,16 @@ app.get("/hosts.json", async (c) => {
     const customList = await getCustomDomains(c.env)
     const customSet = new Set(customList.map((d) => d.domain))
     
-    const domainToGroup = new Map<string, string>()
+    // 域名 → 所属分组（一个域名可以属于多个组，所以值是数组）
+    const domainToGroups = new Map<string, string[]>()
     for (const group of SITE_GROUPS) {
       for (const domain of group.domains) {
-        domainToGroup.set(domain, group.id)
+        const list = domainToGroups.get(domain) ?? []
+        list.push(group.id)
+        domainToGroups.set(domain, list)
       }
     }
-    
+
     const entries = allData.filter(
       ([, domain]) => allowedDomains.has(domain) || customSet.has(domain)
     )
@@ -75,22 +81,46 @@ app.get("/hosts.json", async (c) => {
     const blocked = await getBlocklist(c.env)
     const blockedSet = new Set(blocked.map((b) => b.domain))
     const visibleEntries = entries.filter(([, domain]) => !blockedSet.has(domain.toLowerCase()))
-    
-    // 按分组归类输出
+
+    /**
+     * 合并内置与自定义，决定两件事：
+     *   1. 最终 IP（自定义优先，符合"自定义优先级最高"）
+     *   2. 归属分组（自定义显式指定的优先，否则沿用内置）
+     */
+    const builtinMap = new Map<string, string>()
+    for (const [ip, domain] of visibleEntries) builtinMap.set(domain.toLowerCase(), ip)
+
+    const merged = mergeCustomWithBuiltin({
+      builtin: builtinMap,
+      builtinGroups: domainToGroups,
+      custom: (customList as CustomDomain[])
+        .filter((d) => d.isActive !== false)
+        .map((d) => ({ domain: d.domain, ip: d.ip, groups: d.groups })),
+      validGroupIds: new Set(SITE_GROUPS.map((g) => g.id)),
+    })
+
+    const visibleMerged = merged.filter((e) => !blockedSet.has(e.domain))
+
+    // 按分组归类输出（多归属会在多个组里各出现一次）
     const byGroup: Record<string, Array<[string, string]>> = {}
     for (const group of SITE_GROUPS) {
       byGroup[group.id] = []
     }
     const customData: Array<[string, string]> = []
-    
-    for (const entry of visibleEntries) {
-      const groupId = domainToGroup.get(entry[1])
-      if (groupId && byGroup[groupId]) {
-        byGroup[groupId].push(entry)
-      } else {
-        customData.push(entry)
+
+    for (const e of visibleMerged) {
+      if (e.groups.length === 0) {
+        // 不属于任何内置分组的纯自定义域名
+        customData.push([e.ip, e.domain])
+        continue
+      }
+      for (const gid of e.groups) {
+        if (byGroup[gid]) byGroup[gid].push([e.ip, e.domain])
       }
     }
+
+    // entries 用合并后的结果，保证与分组里的一致
+    const finalEntries: Array<[string, string]> = visibleMerged.map((e) => [e.ip, e.domain])
 
     // 添加缓存控制头，参考 TinsFox 最佳实践
     c.header('Cache-Control', forceRefresh ? 'no-cache' : 'public, max-age=3600') // 1小时缓存
@@ -100,8 +130,8 @@ app.get("/hosts.json", async (c) => {
     const updatedAt = await getDataUpdatedAt(c.env)
 
     return c.json({
-      entries: visibleEntries,
-      total: visibleEntries.length,
+      entries: finalEntries,
+      total: finalEntries.length,
       groups: SITE_GROUPS.filter((g) => byGroup[g.id].length > 0).map((g) => ({
         id: g.id,
         name: g.name,
@@ -110,6 +140,10 @@ app.get("/hosts.json", async (c) => {
       })),
       github: byGroup['github'] ?? [],
       custom: customData,
+      // 被自定义覆盖过 IP 的域名清单，便于排查"为什么不是我预期的地址"
+      overrides: visibleMerged
+        .filter((e) => e.overrode)
+        .map((e) => ({ domain: e.domain, ip: e.ip })),
       includeCustom: true,
       timestamp: updatedAt ?? new Date().toISOString(),
       dataUpdatedAt: updatedAt,
@@ -296,33 +330,36 @@ app.post("/api/custom-domains", async (c) => {
     }
 
     const lower = domain.toLowerCase()
-    const builtinGroup = SITE_GROUPS.find((g) => g.domains.includes(lower))
-    if (builtinGroup) {
-      return c.json(
-        { error: `已在内置加速列表「${builtinGroup.name}」，无需重复添加`, reason: "builtin", group: builtinGroup.name },
-        409
-      )
-    }
-    const already = (await getCustomDomains(c.env)).find((x) => x.domain.toLowerCase() === lower)
-    if (already) {
-      return c.json(
-        { error: `已在自定义域名中（${already.ip || "无 IP"}）`, reason: "exists", ip: already.ip },
-        409
-      )
-    }
 
-    const result = await addCustomDomain(c.env, domain)
+    // 内置域名不再拒绝：自定义优先级最高，允许覆盖内置的优选结果。
+    // 这正是「如果此域名在其它规则里已存在，以自定义为准」的要求。
+    const builtinGroup = SITE_GROUPS.find((g) => g.domains.includes(lower))
+
+    const already = (await getCustomDomains(c.env)).find((x) => x.domain.toLowerCase() === lower)
+
+    // 解析分组参数：非数组/未传都视为"不指定"
+    const groups = Array.isArray(body.groups)
+      ? body.groups.map((g: unknown) => String(g).trim().toLowerCase()).filter(Boolean)
+      : undefined
+
+    const result = await addCustomDomain(c.env, domain, body.ip, groups)
 
     if (result) {
-      const message = result.isUpdate 
-        ? `域名 ${domain} 已存在，已更新其配置` 
-        : `域名 ${domain} 添加成功`
-        
-      return c.json({ 
-        message, 
-        domain, 
+      const message = result.isUpdate
+        ? `域名 ${domain} 已存在，已更新其配置`
+        : builtinGroup
+          ? `域名 ${domain} 已添加，将覆盖内置分组「${builtinGroup.name}」的地址`
+          : `域名 ${domain} 添加成功`
+
+      return c.json({
+        message,
+        domain,
         result,
-        isUpdate: result.isUpdate 
+        isUpdate: result.isUpdate,
+        // 让前端能提示"覆盖了内置条目"
+        overridesBuiltin: Boolean(builtinGroup),
+        builtinGroup: builtinGroup ? { id: builtinGroup.id, name: builtinGroup.name } : null,
+        previousIp: already?.ip ?? null,
       })
     } else {
       return c.json({ error: "Failed to add domain or resolve IP" }, 500)
@@ -342,6 +379,11 @@ app.post("/api/custom-domains/batch", async (c) => {
       return c.json({ error: "Domains array is required" }, 400)
     }
 
+    // 整批默认分组：单条没指定时用它
+    const batchGroups = Array.isArray(body.groups)
+      ? body.groups.map((g: unknown) => String(g).trim().toLowerCase()).filter(Boolean)
+      : undefined
+
     const results = []
     const errors = []
 
@@ -360,22 +402,24 @@ app.post("/api/custom-domains/batch", async (c) => {
       }
 
       const lower = domain.toLowerCase()
+      // 内置域名允许覆盖（自定义优先级最高）
       const builtinGroup = SITE_GROUPS.find((g) => g.domains.includes(lower))
-      if (builtinGroup) {
-        errors.push({ domain, error: `已在内置加速列表「${builtinGroup.name}」`, reason: "builtin" })
-        continue
-      }
-      const already = (await getCustomDomains(c.env)).find((x) => x.domain.toLowerCase() === lower)
-      if (already) {
-        errors.push({ domain, error: "已在自定义域名中", reason: "exists" })
-        continue
-      }
+
+      // 每条可单独带 groups，也可用整批的默认值
+      const itemGroups = Array.isArray(domainData.groups)
+        ? domainData.groups.map((g: unknown) => String(g).trim().toLowerCase()).filter(Boolean)
+        : batchGroups
 
       try {
-        const result = await addCustomDomain(c.env, domain)
+        const result = await addCustomDomain(c.env, domain, domainData.ip, itemGroups)
         if (result) {
           const status = result.isUpdate ? "updated" : "success"
-          results.push({ domain, status })
+          results.push({
+            domain,
+            status,
+            overridesBuiltin: Boolean(builtinGroup),
+            builtinGroup: builtinGroup?.name ?? null,
+          })
         } else {
           errors.push({ domain, error: "Failed to add domain" })
         }
@@ -393,6 +437,55 @@ app.post("/api/custom-domains/batch", async (c) => {
     })
   } catch (error) {
     return c.json({ error: "Invalid request body" }, 400)
+  }
+})
+
+/**
+ * 修改自定义域名的分组归属（不动 IP）。
+ *
+ * 单独开一个接口而不是复用 POST：改分组是高频轻操作，
+ * 走 POST 会重新跑一次 DNS 解析、还可能被误当成"更新 IP"。
+ */
+app.patch("/api/custom-domains/:domain/groups", async (c) => {
+  try {
+    const domain = c.req.param("domain").toLowerCase()
+    const body = await c.req.json().catch(() => ({}))
+    const raw = Array.isArray(body.groups) ? body.groups : []
+
+    const validIds = new Set(SITE_GROUPS.map((g) => g.id))
+    const cleaned = raw
+      .map((g: unknown) => String(g).trim().toLowerCase())
+      .filter((g: string) => Boolean(g))
+
+    // 只保留合法 id；all 特殊保留
+    const groups = cleaned.filter((g: string) => g === "all" || validIds.has(g))
+    const invalid = cleaned.filter((g: string) => g !== "all" && !validIds.has(g))
+
+    const list = (await getCustomDomains(c.env)) as CustomDomain[]
+    const idx = list.findIndex((x) => x.domain.toLowerCase() === domain)
+    if (idx < 0) {
+      return c.json({ error: `自定义域名中不存在 ${domain}` }, 404)
+    }
+
+    // 空数组表示"全部分组"，此时删掉字段而不是存空数组，保持数据干净
+    if (groups.length === 0) {
+      delete list[idx].groups
+    } else {
+      list[idx].groups = groups
+    }
+
+    await c.env.custom_hosts.put("custom_domains", JSON.stringify(list))
+    await touchCustomChanged(c.env)
+
+    return c.json({
+      ok: true,
+      domain,
+      groups: groups.length ? groups : null,
+      // 提示被忽略的非法值，避免用户以为设置成功了
+      ignored: invalid,
+    })
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Invalid request" }, 400)
   }
 })
 
