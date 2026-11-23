@@ -452,9 +452,23 @@
       <p class="hint">
         添加的域名会一并出现在 hosts 输出中。支持批量粘贴，每行一个。<br>
         <strong>优先级最高</strong>：如果该域名在内置分组里已经存在，以你这里的设置为准
-        （地址用这里探测到的，分组默认沿用内置的，也可以在下面另选）。
+        （分组默认沿用内置的，也可以在下面另选）。
       </p>
       <textarea id="domainInput" placeholder="example.com&#10;api.example.org"></textarea>
+
+      <div style="margin-top:10px">
+        <label class="sub" style="display:block;margin-bottom:6px">
+          指定 IP（可选，留空则自动探测）
+        </label>
+        <input id="domainIps" type="text"
+          placeholder="多个地址用空格或逗号分隔，如 1.2.3.4 5.6.7.8 2001:db8::1"
+          style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px">
+        <p class="sub" style="margin:6px 0 0">
+          支持多个地址、IPv4 与 IPv6 混填。<strong>只填一族时，另一族会自动屏蔽</strong>
+          （只填 v4 会写入 <code>::</code>，只填 v6 会写入 <code>0.0.0.0</code>），
+          避免双栈设备从真实 DNS 拿到另一族的坏地址。
+        </p>
+      </div>
 
       <div style="margin-top:10px">
         <label class="sub" style="display:block;margin-bottom:6px">归属分组（可多选，不选=全部分组）</label>
@@ -1963,7 +1977,15 @@ async function loadDomains() {
     }
     el('domainTags').innerHTML = list.map((x) => {
       const domain = x.domain || x
-      const ip = x.ip ? `<span class="mono">${x.ip}</span>` : ''
+      // 多地址：全部列出来，屏蔽地址单独标出来（不然用户会以为是自己填错了）
+      const addrs = Array.isArray(x.ips) && x.ips.length ? x.ips : (x.ip ? [x.ip] : [])
+      const ip = addrs
+        .map((a) =>
+          a === '0.0.0.0' || a === '::'
+            ? `<span class="mono" style="opacity:.6" title="自动屏蔽该地址族">${a}</span>`
+            : `<span class="mono">${a}</span>`,
+        )
+        .join(' ')
       // 分组归属：让用户一眼看出这条会不会出现在内置分组里
       const gn = groupNames(x.groups)
       const badge = `<span class="badge gray" style="font-size:10px">${escAttr(gn)}</span>`
@@ -2083,6 +2105,11 @@ async function editDomainGroups(domain, current) {
 
 async function addDomains() {
   const { list, dropped } = parseTargets(el('domainInput').value)
+  // 手动地址：按逗号/空格/换行/分号切分
+  const manualIps = (el('domainIps').value || '')
+    .split(/[,，\s;]+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
   if (!list.length) {
     toast(dropped ? `没有可识别的域名（忽略 ${dropped} 行）` : '请输入至少一个域名')
     return
@@ -2096,6 +2123,8 @@ async function addDomains() {
         domains: list,
         // 空集合就不传 groups，后端按"全部分组"处理
         groups: domainGroups.size ? [...domainGroups] : undefined,
+        // 手动指定的多地址；留空则后端自动探测
+        ips: manualIps.length ? manualIps : undefined,
       }),
     })
     const d = await res.json().catch(() => ({}))
@@ -2107,10 +2136,16 @@ async function addDomains() {
     const added = d.added || []
     const skipped = d.skipped || []
     const failed = d.failed || []
-    if (added.length) el('domainInput').value = ''
+    if (added.length) {
+      el('domainInput').value = ''
+      el('domainIps').value = ''
+    }
     const notes = []
     const overrides = added.filter((a) => a.overridesBuiltin)
     if (overrides.length) notes.push(`${overrides.length} 个覆盖了内置地址`)
+    // 提示"自动补了屏蔽地址"，否则用户会疑惑为什么多了 0.0.0.0 / ::
+    const synth = added.flatMap((a) => a.synthesized || [])
+    if (synth.length) notes.push(`自动屏蔽 ${[...new Set(synth)].join('/')}`)
     if (skipped.length) notes.push(`${skipped.length} 个已存在（${skipped[0].reason}）`)
     if (failed.length) notes.push(`${failed.length} 个失败（${failed[0].error}）`)
     el('domainsStatus').textContent = `新增 ${added.length} 个` + (notes.length ? `，${notes.join('，')}` : '')

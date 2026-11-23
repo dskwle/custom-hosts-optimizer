@@ -160,3 +160,40 @@ test('filterByGroup 无分组条目默认不出现，除非显式要求', () => 
     'includeUngrouped 时应出现',
   )
 })
+
+test('自定义多地址整组替换内置单地址', () => {
+  const rows = mergeCustomWithBuiltin(
+    mk({
+      custom: [
+        { domain: 'api.github.com', ips: ['1.1.1.1', '2.2.2.2', '::'] },
+      ],
+    }),
+  )
+  const hit = rows.find((r) => r.domain === 'api.github.com')!
+  assert.deepEqual(hit.ips, ['1.1.1.1', '2.2.2.2', '::'])
+  assert.equal(hit.ip, '1.1.1.1', '主地址是第一个')
+})
+
+test('自定义多地址时不会只剩最后一条（覆盖 set 的坑）', () => {
+  const rows = mergeCustomWithBuiltin(
+    mk({ custom: [{ domain: 'api.github.com', ips: ['1.2.3.4', '3.3.3.3'] }] }),
+  )
+  assert.equal(rows.filter((r) => r.domain === 'api.github.com').length, 1)
+  assert.equal(rows.find((r) => r.domain === 'api.github.com')!.ips.length, 2)
+})
+
+test('兼容旧写法：只给 ip 单值', () => {
+  const rows = mergeCustomWithBuiltin(
+    mk({ custom: [{ domain: 'api.github.com', ip: '9.9.9.9' }] }),
+  )
+  const hit = rows.find((r) => r.domain === 'api.github.com')!
+  assert.deepEqual(hit.ips, ['9.9.9.9'])
+  assert.equal(hit.ip, '9.9.9.9')
+})
+
+test('内置条目 ips 为单元素数组', () => {
+  const rows = mergeCustomWithBuiltin(mk())
+  const hit = rows.find((r) => r.domain === 'registry.npmjs.org')!
+  assert.deepEqual(hit.ips, ['2.2.2.2'])
+  assert.deepEqual(hit.ips, [hit.ip])
+})

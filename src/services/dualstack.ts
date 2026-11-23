@@ -67,3 +67,102 @@ export function formatV6OnlySection(
     list.map((d) => `${addr.padEnd(pad)}${d}`).join("\n"),
   ].join("\n")
 }
+
+/* ------------------------------------------------------------------
+ * 自定义域名的多地址与地址族补齐
+ * ------------------------------------------------------------------ */
+
+/** v4 的屏蔽地址：不可路由，等价于"这一族别用" */
+export const BLOCK_ADDR_V4 = "0.0.0.0"
+/** v6 的屏蔽地址 */
+export const BLOCK_ADDR_V6 = "::"
+
+/** 地址是否像 IPv4（四段十进制，允许带端口以外的写法都不接受） */
+export function isIpv4Addr(addr: string): boolean {
+  const s = String(addr ?? "").trim()
+  if (!s || s.includes(":")) return false
+  const parts = s.split(".")
+  if (parts.length !== 4) return false
+  return parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255)
+}
+
+/** 地址是否像 IPv6（简化判断：含冒号且字符合法） */
+export function isIpv6Loose(addr: string): boolean {
+  const s = String(addr ?? "").trim()
+  if (!s.includes(":")) return false
+  return /^[0-9a-fA-F:]+$/.test(s) && s.split(":").length >= 2
+}
+
+/** 地址是否是合法 hosts 地址（v4 或 v6） */
+export function isHostAddr(addr: string): boolean {
+  return isIpv4Addr(addr) || isIpv6Loose(addr)
+}
+
+export interface FamilyCompletion {
+  /** 最终要写入的地址，按 v4 在前、v6 在后 */
+  addrs: string[]
+  /** 补出来的屏蔽地址（用于界面提示"这一族被屏蔽了"） */
+  synthesized: string[]
+}
+
+/**
+ * 补齐地址族。
+ *
+ * 需求：只给了 v4 就把 v6 屏蔽掉，反之亦然。
+ *
+ * 为什么必须补而不是"少写一族就算了"：
+ * hosts / mihomo hosts 只回答被显式写入的地址，未写入的那一族会回落到真实 DNS。
+ * 用户之所以手填地址，往往正是因为那一族的 DNS 结果不可用（污染 / 黑洞）。
+ * 不补的话，双栈客户端会从 DNS 拿到坏地址并优先尝试，表现为偶发卡顿甚至超时等待。
+ * 显式写 0.0.0.0 / :: 等于告诉客户端"这一族没有可用地址"，立刻回落。
+ *
+ * 规则：
+ *   - v4 有 → 保留全部 v4；v4 无 → 补 0.0.0.0
+ *   - v6 有 → 保留全部 v6；v6 无 → 补 ::
+ *   - 非法地址直接丢弃
+ *   - 输出的屏蔽地址一定排在可用地址之后
+ */
+export function completeAddrFamilies(input: readonly string[]): FamilyCompletion {
+  const v4: string[] = []
+  const v6: string[] = []
+  const seen = new Set<string>()
+
+  for (const raw of input) {
+    const a = String(raw ?? "").trim()
+    if (!a || !isHostAddr(a)) continue
+    if (seen.has(a)) continue
+    seen.add(a)
+    if (isIpv4Addr(a)) v4.push(a)
+    else v6.push(a)
+  }
+
+  const synthesized: string[] = []
+  if (!v4.length) {
+    v4.push(BLOCK_ADDR_V4)
+    synthesized.push(BLOCK_ADDR_V4)
+  }
+  if (!v6.length) {
+    v6.push(BLOCK_ADDR_V6)
+    synthesized.push(BLOCK_ADDR_V6)
+  }
+
+  return { addrs: [...v4, ...v6], synthesized }
+}
+
+/** 从任意输入解析出地址数组（兼容单个字符串、逗号/空格/换行分隔） */
+export function parseAddrInput(input: unknown): string[] {
+  const raw: string[] = []
+  const push = (x: unknown) => {
+    if (x == null) return
+    if (Array.isArray(x)) {
+      x.forEach(push)
+      return
+    }
+    // 一个字符串里可能塞了多个地址（逗号/空格/换行/分号分隔）
+    for (const piece of String(x).split(/[,\s;]+/)) {
+      if (piece) raw.push(piece)
+    }
+  }
+  push(input)
+  return raw
+}

@@ -61,6 +61,7 @@ import {
 import worker from "../src/index.js"
 import { ALL_DOMAINS, SITE_GROUPS, resolveGroupDomains } from "../src/constants.js"
 import { addCustomDomain, removeCustomDomain, getCustomDomains } from "../src/services/hosts.js"
+import { parseAddrInput } from "../src/services/dualstack.js"
 import {
   getBlocklist,
   getBuiltinBlocklist,
@@ -641,7 +642,7 @@ root.delete("/local/blocklist/:domain", async (c) => {
  */
 root.post("/local/custom-add", async (c) => {
   const body = (await c.req.json().catch(() => null)) as
-    | { domains?: string[]; groups?: string[] }
+    | { domains?: string[]; groups?: string[]; ips?: string[] | string; ip?: string }
     | null
   const raw = Array.isArray(body?.domains) ? body!.domains : []
   if (!raw.length) return c.json({ ok: false, error: "domains 为空" }, 400)
@@ -653,6 +654,9 @@ root.post("/local/custom-add", async (c) => {
         .map((g) => String(g).trim().toLowerCase())
         .filter((g) => g === "all" || validGroupIds.has(g))
     : []
+
+  // 手动指定的地址：接受数组或分隔字符串。给了就不再依赖探测结果。
+  const manualIps = parseAddrInput(body?.ips ?? body?.ip ?? []).filter(Boolean)
 
   const builtinSet = new Set(ALL_DOMAINS.map((d: string) => d.toLowerCase()))
   const customSet = new Set((await getCustomDomains(env as any)).map((d) => d.domain.toLowerCase()))
@@ -695,10 +699,12 @@ root.post("/local/custom-add", async (c) => {
         failed.push({ domain, error: "探测不到可用 IP" })
         continue
       }
+      // 手动指定了地址就用手动地址（多条），否则用探测到的那条
+      const manual = manualIps.length ? manualIps : undefined
       const r = await addCustomDomain(
         env as any,
         domain,
-        probe.bestIp,
+        manual ?? probe.bestIp,
         groups.length ? groups : undefined,
       )
       if (!r) {

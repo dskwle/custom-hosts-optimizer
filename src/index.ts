@@ -13,11 +13,13 @@ import {
   addCustomDomain,
   removeCustomDomain,
   touchCustomChanged,
+  customDomainAddrs,
   type HostEntry,
   type CustomDomain,
 } from "./services/hosts"
 import { SITE_GROUPS, resolveGroupDomains } from "./constants"
 import { mergeCustomWithBuiltin } from "./merge"
+import { parseAddrInput } from "./services/dualstack"
 import { getAdsEnabled, getAdsRules } from "./services/ads"
 import { getBlocklist, getBuiltinBlocklist } from "./services/blocklist"
 import { getPausedAccel, getPausedShield } from "../server/paused.ts"
@@ -95,7 +97,13 @@ app.get("/hosts.json", async (c) => {
       builtinGroups: domainToGroups,
       custom: (customList as CustomDomain[])
         .filter((d) => d.isActive !== false)
-        .map((d) => ({ domain: d.domain, ip: d.ip, groups: d.groups })),
+        .map((d) => ({
+          domain: d.domain,
+          // 用 customDomainAddrs 会补齐地址族（只给 v4 时自动加 ::）
+          ips: customDomainAddrs(d),
+          ip: d.ip,
+          groups: d.groups,
+        })),
       validGroupIds: new Set(SITE_GROUPS.map((g) => g.id)),
     })
 
@@ -109,18 +117,22 @@ app.get("/hosts.json", async (c) => {
     const customData: Array<[string, string]> = []
 
     for (const e of visibleMerged) {
+      // 一个域名可能有多个地址，逐条展开
       if (e.groups.length === 0) {
         // 不属于任何内置分组的纯自定义域名
-        customData.push([e.ip, e.domain])
+        for (const a of e.ips) customData.push([a, e.domain])
         continue
       }
       for (const gid of e.groups) {
-        if (byGroup[gid]) byGroup[gid].push([e.ip, e.domain])
+        if (!byGroup[gid]) continue
+        for (const a of e.ips) byGroup[gid].push([a, e.domain])
       }
     }
 
     // entries 用合并后的结果，保证与分组里的一致
-    const finalEntries: Array<[string, string]> = visibleMerged.map((e) => [e.ip, e.domain])
+    const finalEntries: Array<[string, string]> = visibleMerged.flatMap((e) =>
+      e.ips.map((a) => [a, e.domain] as [string, string]),
+    )
 
     // 添加缓存控制头，参考 TinsFox 最佳实践
     c.header('Cache-Control', forceRefresh ? 'no-cache' : 'public, max-age=3600') // 1小时缓存
@@ -143,7 +155,7 @@ app.get("/hosts.json", async (c) => {
       // 被自定义覆盖过 IP 的域名清单，便于排查"为什么不是我预期的地址"
       overrides: visibleMerged
         .filter((e) => e.overrode)
-        .map((e) => ({ domain: e.domain, ip: e.ip })),
+        .map((e) => ({ domain: e.domain, ip: e.ip, ips: e.ips })),
       includeCustom: true,
       timestamp: updatedAt ?? new Date().toISOString(),
       dataUpdatedAt: updatedAt,
@@ -342,7 +354,9 @@ app.post("/api/custom-domains", async (c) => {
       ? body.groups.map((g: unknown) => String(g).trim().toLowerCase()).filter(Boolean)
       : undefined
 
-    const result = await addCustomDomain(c.env, domain, body.ip, groups)
+    // 接受 ips 数组（多条），兼容旧的单个 ip
+    const addrs = parseAddrInput(body.ips ?? body.ip ?? [])
+    const result = await addCustomDomain(c.env, domain, addrs.length ? addrs : undefined, groups)
 
     if (result) {
       const message = result.isUpdate
@@ -411,7 +425,13 @@ app.post("/api/custom-domains/batch", async (c) => {
         : batchGroups
 
       try {
-        const result = await addCustomDomain(c.env, domain, domainData.ip, itemGroups)
+        const itemAddrs = parseAddrInput(domainData.ips ?? domainData.ip ?? [])
+        const result = await addCustomDomain(
+          c.env,
+          domain,
+          itemAddrs.length ? itemAddrs : undefined,
+          itemGroups,
+        )
         if (result) {
           const status = result.isUpdate ? "updated" : "success"
           results.push({

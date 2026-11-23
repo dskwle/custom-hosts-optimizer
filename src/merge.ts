@@ -28,14 +28,25 @@ export interface MergeInput {
   builtin: ReadonlyMap<string, string>
   /** 域名 → 内置所属分组 id（一个域名可能属于多个组） */
   builtinGroups: ReadonlyMap<string, string[]>
-  /** 自定义条目 */
-  custom: ReadonlyArray<{ domain: string; ip: string; groups?: string[] }>
+  /**
+   * 自定义条目。
+   * ips 为多地址（已含族补齐）；为兼容旧调用方也接受单个 ip。
+   */
+  custom: ReadonlyArray<{
+    domain: string
+    ip?: string
+    ips?: string[]
+    groups?: string[]
+  }>
   /** 合法分组 id 集合 */
   validGroupIds: ReadonlySet<string>
 }
 
 export interface MergedEntry {
   domain: string
+  /** 全部地址（v4 在前）。第一个即主地址 */
+  ips: string[]
+  /** 主地址，等价 ips[0]，保留以便旧调用方 */
   ip: string
   /** 归属分组；空数组表示不属于任何已知分组（纯自定义） */
   groups: string[]
@@ -84,6 +95,7 @@ export function mergeCustomWithBuiltin(input: MergeInput): MergedEntry[] {
     const key = domain.toLowerCase()
     out.set(key, {
       domain: key,
+      ips: [ip],
       ip,
       groups: builtinGroups.get(key) ?? [],
       overrode: false,
@@ -108,9 +120,13 @@ export function mergeCustomWithBuiltin(input: MergeInput): MergedEntry[] {
       groups = [...declared]
     }
 
+    // 自定义的多地址整组替换内置的单地址
+    const ips = (c.ips?.length ? c.ips : c.ip ? [c.ip] : []).filter(Boolean)
+
     out.set(key, {
       domain: key,
-      ip: c.ip,
+      ips: ips.length ? ips : [c.ip ?? ""].filter(Boolean),
+      ip: (ips.length ? ips : [c.ip ?? ""])[0] ?? "",
       groups,
       overrode: Boolean(existed),
       fromCustom: true,

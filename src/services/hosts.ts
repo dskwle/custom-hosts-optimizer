@@ -3,7 +3,12 @@ import { ALL_DOMAINS, DNS_PROVIDERS, HOSTS_TEMPLATE, SITE_GROUPS } from "../cons
 import { Bindings } from "../types"
 import type { BlockEntry } from "./blocklist"
 
-import { filterByFamily, formatV6OnlySection } from "./dualstack.ts"
+import {
+  filterByFamily,
+  formatV6OnlySection,
+  completeAddrFamilies,
+  parseAddrInput,
+} from "./dualstack.ts"
 import { pickLatest } from "./timestamp.ts"
 
 export type HostEntry = [string, string]
@@ -601,7 +606,18 @@ export async function getDomainData(
 // 自定义域名相关功能
 export interface CustomDomain {
   domain: string
+  /**
+   * 主地址。保留单值字段是为了向后兼容旧数据与旧调用方。
+   * 新的多地址信息看 ips；读到旧数据时两者等价。
+   */
   ip: string
+  /**
+   * 全部地址（v4 / v6 混排，按输入顺序）。
+   *
+   * 与 ip 的关系：ips[0] 就是 ip。省略 ips 表示"只有 ip 一个地址"。
+   * 为什么要多地址：一个域名可能有多个可用 A 记录，也可能要同时指定 v4 与 v6。
+   */
+  ips?: string[]
   addedAt: string
   resolvedAt?: string
   standardIp?: string
@@ -622,6 +638,23 @@ export interface CustomDomain {
    * 不参与"谁是最终 IP"的竞争。
    */
   groups?: string[]
+}
+
+/**
+ * 取出某个自定义条目的全部地址（自动兼容只有 ip 的旧数据）。
+ *
+ * 还会补齐地址族：只给 v4 就补 ::，只给 v6 就补 0.0.0.0。
+ * 这是需求要的行为——防止双栈客户端从真实 DNS 拿到另一族的坏地址。
+ */
+export function customDomainAddrs(cd: CustomDomain): string[] {
+  const raw = cd.ips?.length ? cd.ips : cd.ip ? [cd.ip] : []
+  return completeAddrFamilies(raw).addrs
+}
+
+/** 主地址（供只支持单值的旧调用方使用） */
+export function customDomainPrimaryIp(cd: CustomDomain): string {
+  const raw = cd.ips?.length ? cd.ips : cd.ip ? [cd.ip] : []
+  return raw[0] ?? ""
 }
 
 /** 分组的特殊值：表示全部分组 */
@@ -657,41 +690,55 @@ export function customBelongsTo(
 }
 
 // 添加自定义域名
+/**
+ * @param ips 可以是单个地址、多个地址的数组，或逗号/空格/换行分隔的字符串。
+ *            传空则尝试自动解析。
+ */
 export async function addCustomDomain(
   env: Bindings,
   domain: string,
-  ip?: string,
+  ips?: string | string[],
   groups?: string[]
 ): Promise<CustomDomain | null> {
   try {
     console.log(`Adding custom domain: ${domain}`)
-    
-    let resolvedIp = ip
+
+    // 统一解析成一个地址数组，过滤掉非法值
+    const parsed = parseAddrInput(ips).filter(Boolean)
+
+    let addrs: string[] = []
     let standardIp: string | undefined
     let optimizedIp: string | undefined
     let resolveMethod = 'manual'
-    
-    if (!ip) {
-      // 如果没有提供 IP，尝试解析
+
+    if (!parsed.length) {
+      // 没有提供地址：自动解析一条
       const resolvedResult = await fetchIPFromMultipleDNS(domain)
       if (!resolvedResult) {
         console.error(`Failed to resolve domain: ${domain}`)
         return null
       }
-      resolvedIp = resolvedResult
+      addrs = [resolvedResult]
       standardIp = resolvedResult
       optimizedIp = resolvedResult
       resolveMethod = 'dns'
     } else {
-      // 如果提供了 IP，也尝试获取标准解析作为对比
-      standardIp = await fetchIPFromMultipleDNS(domain) || undefined
-      optimizedIp = ip
+      addrs = parsed
+      // 顺带取一次系统解析做对照，失败不影响写入
+      standardIp = (await fetchIPFromMultipleDNS(domain)) || undefined
+      optimizedIp = addrs[0]
       resolveMethod = 'manual'
     }
 
+    // 落盘时补齐地址族：只给 v4 会补 ::，只给 v6 会补 0.0.0.0。
+    // 存补齐后的结果而不是只存用户输入，读取端（hosts/clash/json）才能拿到完整语义。
+    const completed = completeAddrFamilies(addrs)
+
     const customDomain: CustomDomain = {
       domain,
-      ip: resolvedIp!,
+      // ip 保留主地址（第一个非屏蔽地址），兼容旧调用方
+      ip: completed.addrs.find((a) => a !== "0.0.0.0" && a !== "::") ?? completed.addrs[0],
+      ips: completed.addrs,
       addedAt: new Date().toISOString(),
       resolvedAt: new Date().toISOString(),
       standardIp,
@@ -727,12 +774,17 @@ export async function addCustomDomain(
     // 自定义域名也是 hosts 内容的一部分，加了就该体现在头部时间上
     await touchCustomChanged(env)
 
-    console.log(`Custom domain ${domain} -> ${resolvedIp} saved successfully`)
+    console.log(
+      `Custom domain ${domain} -> [${completed.addrs.join(", ")}] saved successfully` +
+        (completed.synthesized.length ? `（自动屏蔽：${completed.synthesized.join(", ")}）` : ""),
+    )
     // 返回结果，包含是否为更新操作的信息
     return {
       ...customDomain,
-      isUpdate
-    }
+      isUpdate,
+      // 告知前端哪些地址是系统补的屏蔽地址
+      synthesized: completed.synthesized,
+    } as CustomDomain & { synthesized: string[] }
   } catch (error) {
     console.error(`Error adding custom domain ${domain}:`, error)
     return null
@@ -776,11 +828,14 @@ export async function fetchCustomDomainsData(env: Bindings): Promise<HostEntry[]
     const customDomains = await getCustomDomains(env)
     console.log(`Raw custom domains from storage: ${customDomains?.length || 0}`)
     
+    // 一个域名可能对应多个地址（多 A 记录 / v4+v6 双栈），
+    // 所以这里展开成多条 [地址, 域名]，而不是只取一个。
     const customEntries: HostEntry[] = customDomains
       .filter(cd => cd.isActive !== false)
-      .map(cd => {
-        console.log(`Processing custom domain: ${cd.domain} -> ${cd.ip} (active: ${cd.isActive !== false})`)
-        return [cd.ip, cd.domain]
+      .flatMap(cd => {
+        const addrs = customDomainAddrs(cd)
+        console.log(`Processing custom domain: ${cd.domain} -> [${addrs.join(", ")}]`)
+        return addrs.map((a) => [a, cd.domain] as HostEntry)
       })
     
     console.log(`Found ${customEntries.length} active custom domains`)
@@ -820,10 +875,18 @@ export async function getCompleteHostsData(env: Bindings, forceRefresh: boolean 
     // 先加 GitHub 域名
     for (const [ip, domain] of githubEntries) push(ip, domain)
 
-    // 自定义域名覆盖同名的 GitHub 域名
+    // 自定义域名覆盖同名的 GitHub 域名。
+    // 注意要整组替换（可能多个地址），而不是逐条 set —— 后者会让
+    // 同名域名的多条自定义地址互相覆盖，只剩最后一条。
+    const customByDomain = new Map<string, string[]>()
     for (const [ip, domain] of customEntries) {
-      domainMap.set(domain, [ip])
-      console.log(`Added custom domain to map: ${domain} -> ${ip}`)
+      const list = customByDomain.get(domain) ?? []
+      if (!list.includes(ip)) list.push(ip)
+      customByDomain.set(domain, list)
+    }
+    for (const [domain, ips] of customByDomain) {
+      domainMap.set(domain, ips)
+      console.log(`Added custom domain to map: ${domain} -> [${ips.join(", ")}]`)
     }
 
     const allEntries: HostEntry[] = [...domainMap.entries()].flatMap(([domain, ips]) =>
