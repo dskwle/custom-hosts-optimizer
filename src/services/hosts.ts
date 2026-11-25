@@ -8,6 +8,7 @@ import {
   formatV6OnlySection,
   completeAddrFamilies,
   parseAddrInput,
+  isUsableTarget,
 } from "./dualstack.ts"
 import { pickLatest } from "./timestamp.ts"
 
@@ -282,14 +283,38 @@ export async function getHostsData(env: Bindings, forceRefresh: boolean = false)
     // 把它们输出到 hosts 会让对应域名彻底不可用，必须过滤掉。
     const entries: HostEntry[] = []
     const v6BrokenDomains: string[] = []
+    // KV 里没有可用地址的域名（脏数据 / 探测彻底失败），跳过并记录
+    const skippedUnusable: string[] = []
     for (const domain of ALL_DOMAINS) {
       const domainData = kvData!.domain_data[domain]
       if (domainData && domainData.isOptimized !== false) {
-        entries.push([domainData.ip, domain])
-        // 双栈：v4/v6 都可用时两条都输出，客户端各取所需
-        if (domainData.ipv6 && domainData.ipv6 !== domainData.ip) {
-          entries.push([domainData.ipv6, domain])
+        /**
+         * 输出前再挡一道：0.0.0.0 / :: / 回环都不是可用地址。
+         *
+         * 探测层已经拦过一次（server/probe.ts 的候选池），这里是第二道保险。
+         * 因为 KV 里可能残留旧版本写入的脏数据（github.io 就曾被写成
+         * ip=0.0.0.0、v6=::），不清掉的话照样会让域名看起来被屏蔽。
+         */
+        const usableAddrs: string[] = []
+        if (domainData.ip && isUsableTarget(domainData.ip)) usableAddrs.push(domainData.ip)
+        // v4/v6 任一缺失时，需要给缺的那一族补屏蔽地址吗？
+        // 不需要：这里的语义是"优选地址"，缺族就让客户端走 DNS，
+        // 是否屏蔽 v6 由 v6Broken 单独决定，别把两件事混在一起。
+        if (
+          domainData.ipv6 &&
+          domainData.ipv6 !== domainData.ip &&
+          isUsableTarget(domainData.ipv6)
+        ) {
+          usableAddrs.push(domainData.ipv6)
         }
+
+        // 一个可用地址都没有：这条记录等于报废，跳过而不是输出屏蔽地址
+        if (!usableAddrs.length) {
+          skippedUnusable.push(domain)
+          continue
+        }
+
+        for (const a of usableAddrs) entries.push([a, domain])
         if (domainData.v6Broken) v6BrokenDomains.push(domain)
       }
     }
@@ -298,6 +323,13 @@ export async function getHostsData(env: Bindings, forceRefresh: boolean = false)
       const dd = kvData!.domain_data[d]
       return dd && dd.isOptimized === false
     }).length
+    if (skippedUnusable.length) {
+      console.warn(
+        `[hosts] 跳过 ${skippedUnusable.length} 个无可用地址的域名：` +
+          skippedUnusable.slice(0, 8).join(", ") +
+          (skippedUnusable.length > 8 ? " …" : ""),
+      )
+    }
     const cacheAge = Math.round((Date.now() - new Date(kvData!.lastUpdated).getTime()) / 60000)
     console.log(
       `Loaded ${entries.length} entries from cache (age: ${cacheAge} minutes)` +
@@ -414,9 +446,11 @@ export function formatFastHosts(
 
   const groups = SITE_GROUPS.map((g) => g.name).join(" / ")
 
-  return HOSTS_TEMPLATE.replace("{groups}", groups)
-    .replace("{content}", content)
-    .replace("{updateTime}", updateTime)
+  // 用 replaceAll：{updateTime} 在模板里出现两次（头部与尾部），
+  // String.replace 只换第一处，会让文件末尾一直残留字面量 {updateTime}。
+  return HOSTS_TEMPLATE.replaceAll("{groups}", groups)
+    .replaceAll("{content}", content)
+    .replaceAll("{updateTime}", updateTime)
 }
 
 /**
@@ -647,8 +681,14 @@ export interface CustomDomain {
  * 这是需求要的行为——防止双栈客户端从真实 DNS 拿到另一族的坏地址。
  */
 export function customDomainAddrs(cd: CustomDomain): string[] {
-  const raw = cd.ips?.length ? cd.ips : cd.ip ? [cd.ip] : []
-  return completeAddrFamilies(raw).addrs
+  // 有 ips = 用户显式指定过多地址 → 按新规则补齐缺失的地址族。
+  // 只有旧的单值 ip = 历史上自动探测写入的结果，**不补族**：
+  // 那种记录只存了当时最优的一族（常见是 v6），补族会把另一族屏蔽掉，
+  // 而用户从没要求过——等于把原本能用的域名按族切了一半。
+  // 实测踩过：72 条旧自定义域名里有一批 ip 是 v6，补族后凭空多出
+  // 0.0.0.0 行，v4 用户直接访问不了。
+  if (cd.ips?.length) return completeAddrFamilies(cd.ips).addrs
+  return cd.ip ? [cd.ip] : []
 }
 
 /** 主地址（供只支持单值的旧调用方使用） */

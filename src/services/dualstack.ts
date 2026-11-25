@@ -166,3 +166,46 @@ export function parseAddrInput(input: unknown): string[] {
   push(input)
   return raw
 }
+
+/* ------------------------------------------------------------------
+ * 不可作为目标的地址
+ * ------------------------------------------------------------------ */
+
+/**
+ * 「未指定地址」：0.0.0.0 与 ::。
+ *
+ * 为什么必须拦住：Linux 上 connect(0.0.0.0:443) 会被路由到本机，
+ * 若本机恰好有服务在听，探测就会**误判为连接成功**，随后把
+ * 0.0.0.0 当成「最优 IP」写进 hosts —— 等于把这个域名整段封掉。
+ *
+ * 实测踩过：github.io 的裸域 DNS 就返回 0.0.0.0 / ::（只有
+ * user.github.io 子域提供 Pages），探测把它当可用地址，hosts 里
+ * 于是出现 `0.0.0.0 github.io`；registry-1.docker.io 更糟，
+ * v4 明明可用，却因 v6 候选是 :: 而被选成主地址，只输出了一条 `::`。
+ */
+export function isUnspecifiedAddr(addr: string): boolean {
+  const s = String(addr ?? "").trim().toLowerCase()
+  return s === "0.0.0.0" || s === "::" || s === "::0" || s === "0:0:0:0:0:0:0:0"
+}
+
+/** 回环地址：探测它只会测到本机，没有意义 */
+export function isLoopbackAddr(addr: string): boolean {
+  const s = String(addr ?? "").trim().toLowerCase()
+  if (s === "::1" || s === "localhost") return true
+  if (!isIpv4Addr(s)) return false
+  return s.startsWith("127.")
+}
+
+/**
+ * 是否是可以作为探测目标 / hosts 条目的地址。
+ *
+ * 排序与格式校验之外，必须排除未指定地址与回环地址：
+ * 它们要么连到本机造成假成功，要么指向客户端自己，写进 hosts 只会添乱。
+ */
+export function isUsableTarget(addr: string): boolean {
+  const s = String(addr ?? "").trim()
+  if (!isHostAddr(s)) return false
+  if (isUnspecifiedAddr(s)) return false
+  if (isLoopbackAddr(s)) return false
+  return true
+}

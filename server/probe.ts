@@ -12,6 +12,7 @@
 import dns from "node:dns/promises"
 import net from "node:net"
 import tls from "node:tls"
+import { isUsableTarget } from "../src/services/dualstack.js"
 import { getCachedMany, setCached, cacheKey } from "./ipcache.js"
 import { measureQuality, type QualityResult } from "./probe-quality.js"
 import { judgeSni } from "./sni-judge.js"
@@ -90,6 +91,11 @@ export interface ProbeResult {
   hostsOverride: boolean
   /** 去重后的候选 IP 总数（含 IPv4 与 IPv6） */
   uniqueIpCount: number
+  /**
+   * 从候选池里剔除掉的不可用地址（0.0.0.0 / :: / 回环）。
+   * 保留下来是为了排查"D NS 明明返回了地址，为什么没被探测"这类疑问。
+   */
+  droppedUnusable?: string[]
   /** 其中 IPv4 数量 */
   v4Count?: number
   /** 其中 IPv6 数量 */
@@ -775,6 +781,7 @@ export async function probeDomain(
     upstreamIps: [],
     hostsOverride: false,
     uniqueIpCount: 0,
+    droppedUnusable: [],
     totalResolvedEntries: 0,
     tlsOkCount: 0,
     cacheHits: 0,
@@ -834,12 +841,26 @@ export async function probeDomain(
     result.systemDiffers = systemIps.some((ip) => !dohSet.has(ip))
   }
 
-  const allCandidates = new Set<string>([
-    ...ipsFromDoh,
-    ...systemIps,
-    ...ips6FromDoh,
-    ...sysDns.lookup6,
-  ])
+  /**
+   * 候选地址池。
+   *
+   * 必须剔除 0.0.0.0 / :: / 回环：Linux 上 connect(0.0.0.0:443) 会命中本机，
+   * 本机只要有服务在听就会被判成"握手成功"，随后 0.0.0.0 被选为最优 IP
+   * 写进 hosts —— 等于把这个域名整个封掉。
+   *
+   * 实测踩过：github.io 裸域的 A 记录就是 0.0.0.0、AAAA 是 ::；
+   * registry-1.docker.io 的 v4 明明可用，却因为 v6 候选是 :: 而被选成主地址，
+   * 输出端只留下一行 `::`。
+   */
+  const droppedUnusable: string[] = []
+  const allCandidates = new Set<string>()
+  for (const ip of [...ipsFromDoh, ...systemIps, ...ips6FromDoh, ...sysDns.lookup6]) {
+    if (isUsableTarget(ip)) allCandidates.add(ip)
+    else droppedUnusable.push(ip)
+  }
+  if (droppedUnusable.length) {
+    result.droppedUnusable = droppedUnusable
+  }
   result.uniqueIpCount = allCandidates.size
   result.v4Count = [...allCandidates].filter((ip) => ipFamily(ip) === "v4").length
   result.v6Count = [...allCandidates].filter((ip) => ipFamily(ip) === "v6").length

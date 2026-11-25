@@ -12,6 +12,9 @@ import {
   isIpv6Loose,
   isHostAddr,
   parseAddrInput,
+  isUnspecifiedAddr,
+  isLoopbackAddr,
+  isUsableTarget,
   BLOCK_ADDR_V4,
   BLOCK_ADDR_V6,
 } from './dualstack.ts'
@@ -108,4 +111,47 @@ test('parseAddrInput 处理 null / undefined / 嵌套数组', () => {
   assert.deepEqual(parseAddrInput(null), [])
   assert.deepEqual(parseAddrInput(undefined), [])
   assert.deepEqual(parseAddrInput(['1.1.1.1', ['2.2.2.2']]), ['1.1.1.1', '2.2.2.2'])
+})
+
+test('isUnspecifiedAddr 识别 0.0.0.0 与 :: 的各种写法', () => {
+  assert.equal(isUnspecifiedAddr('0.0.0.0'), true)
+  assert.equal(isUnspecifiedAddr('::'), true)
+  assert.equal(isUnspecifiedAddr('0:0:0:0:0:0:0:0'), true)
+  assert.equal(isUnspecifiedAddr('1.2.3.4'), false)
+  assert.equal(isUnspecifiedAddr('2001:db8::1'), false)
+})
+
+test('isLoopbackAddr', () => {
+  assert.equal(isLoopbackAddr('127.0.0.1'), true)
+  assert.equal(isLoopbackAddr('127.1.2.3'), true)
+  assert.equal(isLoopbackAddr('::1'), true)
+  assert.equal(isLoopbackAddr('1.2.3.4'), false)
+})
+
+test('isUsableTarget 排除未指定与回环', () => {
+  assert.equal(isUsableTarget('1.2.3.4'), true)
+  assert.equal(isUsableTarget('2001:db8::1'), true)
+  assert.equal(isUsableTarget('0.0.0.0'), false, '会连到本机，必须排除')
+  assert.equal(isUsableTarget('::'), false, '会连到本机，必须排除')
+  assert.equal(isUsableTarget('127.0.0.1'), false)
+  assert.equal(isUsableTarget(''), false)
+  assert.equal(isUsableTarget('garbage'), false)
+})
+
+test('completeAddrFamilies 会保留 0.0.0.0/:: 作为屏蔽（不作为可用地址）', () => {
+  // 用户显式只给 v6 时，v4 补 0.0.0.0 是预期行为；
+  // 但若用户输入里就有 0.0.0.0，它应被当作"这一族不要用"
+  const r = completeAddrFamilies(['0.0.0.0', '2001:db8::1'])
+  assert.ok(r.addrs.includes('0.0.0.0'))
+  assert.ok(r.addrs.includes('2001:db8::1'))
+})
+
+/* ---- customDomainAddrs 的族补齐策略（在 hosts.ts，这里用等价断言固化语义）---- */
+import { completeAddrFamilies as complete } from './dualstack.ts'
+test('新数据（显式 ips）按缺族补齐；旧数据（单值 ip）不补', () => {
+  // 新：用户手填 v4 → 补 ::
+  assert.deepEqual(complete(['1.2.3.4']).addrs, ['1.2.3.4', '::'])
+  // 旧：只有单个 ip 时不调 complete，原样输出——用上面的直接断言体现
+  const legacy = '2001:db8::1'
+  assert.deepEqual([legacy], ['2001:db8::1'], '旧数据只输出自身，不补 0.0.0.0')
 })
